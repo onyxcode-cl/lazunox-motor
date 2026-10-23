@@ -16,8 +16,24 @@ Nuestros cambios se publican bajo la misma licencia. Las marcas «OpenCode» y �
 - Compilación (Bun 1.3.14, `python3` y `build-essential` para el módulo nativo `tree-sitter-powershell`) y pruebas: ver `docs/FORK-MOTOR-PASO-2.md` en el repositorio de Lazunox
   (compilación repetible byte a byte, test de contrato de la app y 27 comprobaciones de seguridad contra el motor real).
 
+## Conexiones a internet (paso 3.1, hecho)
+
+Quitado o apagado por defecto (la prueba `packages/opencode/test/lazunox/sin-red-de-opencode.test.ts` falla si vuelve a aparecer un servidor de OpenCode):
+
+| Antes | Ahora |
+|---|---|
+| `Installation.latest/upgrade/upgradeMajor` consultaban `opencode.ai`, GitHub, npm, brew, choco, scoop y ejecutaban el instalador | No consultan nada; `latest` devuelve la versión instalada y `upgrade*` se niegan. El motor se actualiza con la app |
+| `share-next` subía sesiones a `opncd.ai` | Compartir desactivado siempre |
+| Sin interfaz web embebida, el servidor reenviaba a `app.opencode.ai` | Responde 404, sin petición saliente |
+| Catálogo de modelos desde `models.opencode.ai` | Desde `models.dev` (catálogo público; la app además usa su copia local) |
+| Descarga automática de servidores LSP | Apagada por defecto (`OPENCODE_DISABLE_LSP_DOWNLOAD=0` la enciende) |
+| Cabeceras `HTTP-Referer: https://opencode.ai/` a OpenRouter, Kilo, Vercel… | Apuntan a este repositorio |
+
+Se conserva a propósito: el proveedor **OpenCode Zen** (modelos gratuitos, `plugin/provider/opencode.ts`), la búsqueda web de Exa/Parallel (la gobierna el proxy de Lazunox),
+los comandos de la CLI que el motor embebido nunca ejecuta (`github`, `account`, `import`) y los textos `$schema` (ayuda del editor; el motor no los descarga).
+
 ## Estado
 
 - Paso 2 hecho: compila desde el código fuente, repetible, pasa el contrato de Lazunox.
-- Pendiente: quitar las conexiones a servicios de OpenCode (actualización automática, compartir, proxy a `app.opencode.ai`, búsqueda web de ellos), renombrar el producto,
-  funciones propias en el motor y compilar Windows. Los flujos de GitHub Actions de OpenCode (`.github`) se eliminaron: eran de su publicación y no aplican aquí.
+- Paso 3.1 hecho: sin conexiones a servicios de OpenCode (ver arriba).
+- Pendiente: renombrar el producto, funciones propias en el motor y mantenimiento mensual. Los flujos de GitHub Actions de OpenCode (`.github`) se eliminaron: eran de su publicación y no aplican aquí.
