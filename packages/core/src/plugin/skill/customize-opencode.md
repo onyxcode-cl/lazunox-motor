@@ -16,12 +16,12 @@ is wrong. The shapes below cover the common surface area, but they are a
 The authoritative list of every config option — with field types, enums,
 defaults, and descriptions — lives in the published JSON Schema:
 
-**<https://opencode.ai/config.json>**
+(Lazunox does not download documentation at run time: do not fetch it.)
 
 If a field is not documented in this skill, or you need to confirm an exact
-shape before writing config, **fetch that URL and read the schema directly**
-rather than guessing. opencode hard-fails on invalid config, so the cost of a
-wrong shape is a broken startup.
+shape before writing config, **read the user's existing config for a working
+example or ask the user** rather than guessing. The engine hard-fails on
+invalid config, so the cost of a wrong shape is a broken startup.
 
 Independently, every `opencode.json` should declare
 `"$schema": "https://opencode.ai/config.json"` so the user's editor catches
@@ -440,9 +440,9 @@ When a user's config is broken and opencode won't start, these env vars help:
 
 ## When proposing edits
 
-- Validate against the schema before writing. If you are unsure of a field's
-  exact shape, or the field is not covered in this skill, fetch
-  `https://opencode.ai/config.json` and read the schema rather than guessing.
+- Validate before writing. If you are unsure of a field's exact shape, or the
+  field is not covered in this skill, look at an existing working config or ask
+  the user rather than guessing (do not fetch documentation from the internet).
 - Preserve `$schema` and any existing fields the user did not ask to change.
 - For agent, command, skill, and plugin definitions, prefer creating new files
   in the correct location over inlining everything in `opencode.json`.

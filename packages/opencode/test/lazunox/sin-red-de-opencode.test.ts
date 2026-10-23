@@ -23,6 +23,8 @@ function* archivos(dir: string): Generator<string> {
     const p = path.join(dir, nombre)
     if (statSync(p).isDirectory()) yield* archivos(p)
     else if (/\.(ts|tsx)$/.test(nombre) && !/\.test\.tsx?$/.test(nombre)) yield p
+    // Los textos que ve el modelo (prompts de sistema) tampoco pueden mandarlo a servidores de OpenCode ni presentarse como OpenCode.
+    else if (/\.txt$/.test(nombre) && p.includes(`${path.sep}session${path.sep}prompt${path.sep}`)) yield p
   }
 }
 
@@ -41,6 +43,16 @@ describe("sin conexiones a servicios de OpenCode", () => {
       }
     }
     expect(hallazgos).toEqual([])
+  })
+
+  test("los prompts de sistema no presentan al modelo como OpenCode ni lo mandan a su documentación", () => {
+    const dir = path.join(RAIZ, "packages/opencode/src/session/prompt")
+    const malos: string[] = []
+    for (const nombre of readdirSync(dir).filter((n) => n.endsWith(".txt"))) {
+      const texto = readFileSync(path.join(dir, nombre), "utf8")
+      if (/opencode/i.test(texto)) malos.push(nombre)
+    }
+    expect(malos).toEqual([])
   })
 
   test("las excepciones apuntan a archivos que existen", () => {
