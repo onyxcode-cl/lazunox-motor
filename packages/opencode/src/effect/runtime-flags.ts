@@ -19,7 +19,8 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
   disableDefaultPlugins: bool("OPENCODE_DISABLE_DEFAULT_PLUGINS"),
   disableEmbeddedWebUi: bool("OPENCODE_DISABLE_EMBEDDED_WEB_UI"),
   disableExternalSkills: bool("OPENCODE_DISABLE_EXTERNAL_SKILLS"),
-  disableLspDownload: bool("OPENCODE_DISABLE_LSP_DOWNLOAD"),
+  // Lazunox: sin descargas automáticas de servidores LSP salvo que se pida con OPENCODE_DISABLE_LSP_DOWNLOAD=0.
+  disableLspDownload: Config.boolean("OPENCODE_DISABLE_LSP_DOWNLOAD").pipe(Config.withDefault(true)),
   disableClaudeCodePrompt: Config.all({
     broad: bool("OPENCODE_DISABLE_CLAUDE_CODE"),
     direct: bool("OPENCODE_DISABLE_CLAUDE_CODE_PROMPT"),

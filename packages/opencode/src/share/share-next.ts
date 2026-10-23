@@ -20,7 +20,8 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { EventV2 } from "@opencode-ai/core/event"
 
-const disabled = process.env["OPENCODE_DISABLE_SHARE"] === "true" || process.env["OPENCODE_DISABLE_SHARE"] === "1"
+// Lazunox: compartir sesiones queda desactivado siempre; nada sale hacia servidores de OpenCode.
+const disabled = true
 
 export type Api = {
   create: string
@@ -207,7 +208,7 @@ const layer = Layer.effect(
       const headers: Record<string, string> = {}
       const active = yield* account.active()
       if (Option.isNone(active) || !active.value.active_org_id) {
-        const baseUrl = (yield* cfg.get()).enterprise?.url ?? "https://opncd.ai"
+        const baseUrl = (yield* cfg.get()).enterprise?.url ?? ""
         return { headers, api: legacyApi, baseUrl } satisfies Req
       }
 

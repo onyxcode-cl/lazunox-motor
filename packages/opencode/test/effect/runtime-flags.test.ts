@@ -110,7 +110,7 @@ describe("RuntimeFlags", () => {
       expect(flags.disableDefaultPlugins).toBe(true)
       expect(flags.disableEmbeddedWebUi).toBe(false)
       expect(flags.disableExternalSkills).toBe(false)
-      expect(flags.disableLspDownload).toBe(false)
+      expect(flags.disableLspDownload).toBe(true)
       expect(flags.disableClaudeCodePrompt).toBe(false)
       expect(flags.disableClaudeCodeSkills).toBe(false)
       expect(flags.enableExa).toBe(false)
@@ -147,11 +147,11 @@ describe("RuntimeFlags", () => {
     }),
   )
 
-  it.effect("disableLspDownload defaults to false", () =>
+  it.effect("disableLspDownload defaults to true (Lazunox)", () =>
     Effect.gen(function* () {
       const flags = yield* readFlags.pipe(Effect.provide(fromConfig({})))
 
-      expect(flags.disableLspDownload).toBe(false)
+      expect(flags.disableLspDownload).toBe(true)
     }),
   )
 
@@ -336,7 +336,7 @@ describe("RuntimeFlags", () => {
       expect(flags.disableDefaultPlugins).toBe(false)
       expect(flags.disableEmbeddedWebUi).toBe(false)
       expect(flags.disableExternalSkills).toBe(false)
-      expect(flags.disableLspDownload).toBe(false)
+      expect(flags.disableLspDownload).toBe(true)
       expect(flags.disableClaudeCodePrompt).toBe(false)
       expect(flags.disableClaudeCodeSkills).toBe(false)
       expect(flags.enableExa).toBe(false)

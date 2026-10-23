@@ -6,8 +6,6 @@ import { ProxyUtil } from "../proxy-util"
 
 let embeddedUIPromise: Promise<Record<string, string> | null> | undefined
 
-export const UI_UPSTREAM = new URL("https://app.opencode.ai")
-
 export const csp = (hash = "") =>
   `default-src 'self'; script-src 'self' 'wasm-unsafe-eval'${hash ? ` 'sha256-${hash}'` : ""}; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: blob:; font-src 'self' data:; media-src 'self' data:; connect-src * data: blob:`
 export const DEFAULT_CSP = csp()
@@ -35,10 +33,6 @@ function proxyResponseHeaders(headers: Record<string, string>) {
   result.delete("content-length")
   result.delete("transfer-encoding")
   return result
-}
-
-export function upstreamURL(path: string) {
-  return new URL(path, UI_UPSTREAM).toString()
 }
 
 export function embeddedUI(disableEmbeddedWebUi: boolean) {
@@ -85,24 +79,7 @@ export function serveUIEffect(
 
     if (embeddedWebUI) return yield* serveEmbeddedUIEffect(path, services.fs, embeddedWebUI)
 
-    const response = yield* services.client.execute(
-      HttpClientRequest.make(request.method)(upstreamURL(path), {
-        headers: ProxyUtil.headers(request.headers, { host: UI_UPSTREAM.host }),
-        body: requestBody(request),
-      }),
-    )
-    const headers = proxyResponseHeaders(response.headers)
-
-    if (response.headers["content-type"]?.includes("text/html")) {
-      const body = yield* response.text
-      headers.set("Content-Security-Policy", cspForHtml(body))
-      return HttpServerResponse.text(body, { status: response.status, headers })
-    }
-
-    headers.set("Content-Security-Policy", csp())
-    return HttpServerResponse.stream(response.stream.pipe(Stream.catchCause(() => Stream.empty)), {
-      status: response.status,
-      headers,
-    })
+    // Lazunox: sin interfaz web propia no se reenvía nada a servidores de OpenCode.
+    return HttpServerResponse.text("Not found", { status: 404 })
   })
 }

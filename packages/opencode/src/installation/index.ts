@@ -82,30 +82,8 @@ export interface Interface {
 
 // OpenCode 2 ships under different package names but the same `opencode` binary, so package
 // manager installs remove V1 first and restore it if the V2 install fails.
-const MAJOR_INSTALL: Partial<Record<Method, { remove: string[]; install: string[]; restore: string[] }>> = {
-  npm: {
-    remove: ["npm", "uninstall", "-g", "opencode-ai"],
-    install: ["npm", "install", "-g", "@opencode/cli"],
-    restore: ["npm", "install", "-g", `opencode-ai@${InstallationVersion}`],
-  },
-  pnpm: {
-    remove: ["pnpm", "remove", "-g", "opencode-ai"],
-    install: ["pnpm", "add", "-g", "--allow-build=@opencode/cli", "@opencode/cli"],
-    restore: ["pnpm", "add", "-g", `opencode-ai@${InstallationVersion}`],
-  },
-  bun: {
-    remove: ["bun", "remove", "-g", "opencode-ai"],
-    install: ["bun", "install", "-g", "--trust", "@opencode/cli"],
-    restore: ["bun", "install", "-g", `opencode-ai@${InstallationVersion}`],
-  },
-  yarn: {
-    remove: ["yarn", "global", "remove", "opencode-ai"],
-    install: ["yarn", "global", "add", "@opencode/cli"],
-    restore: ["yarn", "global", "add", `opencode-ai@${InstallationVersion}`],
-  },
-}
-
-export const MAJOR_INSTRUCTIONS = "https://opencode.ai/v2/docs"
+export const MAJOR_INSTRUCTIONS = "https://github.com/onyxcode-cl/lazunox-motor"
+export const LAZUNOX_NO_UPGRADE = "El motor de Lazunox se actualiza junto con la aplicación; no se actualiza por su cuenta."
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Installation") {}
 
@@ -170,62 +148,6 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
       return "sh"
     })
 
-    const upgradeCurl = Effect.fnUntraced(
-      function* (target: string) {
-        const response = yield* httpOk.execute(HttpClientRequest.get("https://opencode.ai/install"))
-        const body = yield* response.text
-        const bodyBytes = new TextEncoder().encode(body)
-        const shell = yield* upgradeScriptShell()
-        const result = yield* appProcess.run(
-          ChildProcess.make(shell, [], {
-            stdin: Stream.make(bodyBytes),
-            env: { VERSION: target },
-            extendEnv: true,
-          }),
-        )
-        return {
-          code: result.exitCode,
-          stdout: result.stdout.toString("utf8"),
-          stderr: result.stderr.toString("utf8"),
-        }
-      },
-      Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
-    )
-
-    const majorUpgrade = Effect.fnUntraced(function* (m: Method) {
-      if (m === "curl") {
-        // The V2 installer writes to the same ~/.opencode/bin/opencode path, replacing V1 in place.
-        const response = yield* httpOk
-          .execute(HttpClientRequest.get("https://opencode.ai/v2/install"))
-          .pipe(Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })))
-        const body = yield* response.text.pipe(
-          Effect.mapError(() => new UpgradeFailedError({ stderr: upgradeFailure("curl") })),
-        )
-        return yield* run([yield* upgradeScriptShell(), "-c", body])
-      }
-
-      if (m === "brew") {
-        const formula = yield* getBrewFormula()
-        const env = { HOMEBREW_NO_AUTO_UPDATE: "1" }
-        const removed = yield* run(["brew", "uninstall", formula], { env })
-        if (removed.code !== 0) return removed
-        const installed = yield* run(["brew", "install", "anomalyco/tap/opencode-v2"], { env })
-        if (installed.code !== 0) yield* run(["brew", "install", formula], { env })
-        return installed
-      }
-
-      const steps = MAJOR_INSTALL[m]
-      if (!steps)
-        return yield* new UpgradeFailedError({
-          stderr: `OpenCode 2 can't be installed automatically with ${m}. See ${MAJOR_INSTRUCTIONS}`,
-        })
-      const removed = yield* run(steps.remove)
-      if (removed.code !== 0) return removed
-      const installed = yield* run(steps.install)
-      if (installed.code !== 0) yield* run(steps.restore)
-      return installed
-    })
-
     const result: Interface = {
       info: Effect.fn("Installation.info")(function* () {
         return {
@@ -267,124 +189,15 @@ const layer: Layer.Layer<Service, never, HttpClient.HttpClient | AppProcess.Serv
 
         return "unknown" as Method
       }),
-      latest: Effect.fn("Installation.latest")(function* (installMethod?: Method) {
-        const detectedMethod = installMethod || (yield* result.method())
-
-        if (detectedMethod === "brew") {
-          const formula = yield* getBrewFormula()
-          if (formula.includes("/")) {
-            const infoJson = yield* text(["brew", "info", "--json=v2", formula])
-            const info = yield* Schema.decodeUnknownEffect(Schema.fromJsonString(BrewInfoV2))(infoJson)
-            return info.formulae[0].versions.stable
-          }
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get("https://formulae.brew.sh/api/formula/opencode.json").pipe(
-              HttpClientRequest.acceptJson,
-            ),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(BrewFormula)(response)
-          return data.versions.stable
-        }
-
-        if (detectedMethod === "npm" || detectedMethod === "bun" || detectedMethod === "pnpm") {
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get(
-              `${yield* NpmConfig.registry(process.cwd())}/opencode-ai/${InstallationChannel}`,
-            ).pipe(HttpClientRequest.acceptJson),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(NpmPackage)(response)
-          return data.version
-        }
-
-        if (detectedMethod === "choco") {
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get(
-              "https://community.chocolatey.org/api/v2/Packages?$filter=Id%20eq%20%27opencode%27%20and%20IsLatestVersion&$select=Version",
-            ).pipe(HttpClientRequest.setHeaders({ Accept: "application/json;odata=verbose" })),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(ChocoPackage)(response)
-          return data.d.results[0].Version
-        }
-
-        if (detectedMethod === "scoop") {
-          const response = yield* httpOk.execute(
-            HttpClientRequest.get(
-              "https://raw.githubusercontent.com/ScoopInstaller/Main/master/bucket/opencode.json",
-            ).pipe(HttpClientRequest.setHeaders({ Accept: "application/json" })),
-          )
-          const data = yield* HttpClientResponse.schemaBodyJson(ScoopManifest)(response)
-          return data.version
-        }
-
-        const response = yield* httpOk.execute(
-          HttpClientRequest.get("https://api.github.com/repos/anomalyco/opencode/releases/latest").pipe(
-            HttpClientRequest.acceptJson,
-          ),
-        )
-        const data = yield* HttpClientResponse.schemaBodyJson(GitHubRelease)(response)
-        return data.tag_name.replace(/^v/, "")
-      }, Effect.orDie),
-      upgrade: Effect.fn("Installation.upgrade")(function* (m: Method, target: string) {
-        let upgradeResult: { code: number; stdout: string; stderr: string } | undefined
-        switch (m) {
-          case "curl":
-            upgradeResult = yield* upgradeCurl(target)
-            break
-          case "npm":
-            upgradeResult = yield* run(["npm", "install", "-g", `opencode-ai@${target}`])
-            break
-          case "pnpm":
-            upgradeResult = yield* run(["pnpm", "install", "-g", `opencode-ai@${target}`])
-            break
-          case "bun":
-            upgradeResult = yield* run(["bun", "install", "-g", `opencode-ai@${target}`])
-            break
-          case "brew": {
-            const formula = yield* getBrewFormula()
-            const env = { HOMEBREW_NO_AUTO_UPDATE: "1" }
-            if (formula.includes("/")) {
-              const tap = yield* run(["brew", "tap", "anomalyco/tap"], { env })
-              if (tap.code !== 0) {
-                upgradeResult = tap
-                break
-              }
-              const repo = yield* text(["brew", "--repo", "anomalyco/tap"])
-              const dir = repo.trim()
-              if (dir) {
-                const pull = yield* run(["git", "pull", "--ff-only"], { cwd: dir, env })
-                if (pull.code !== 0) {
-                  upgradeResult = pull
-                  break
-                }
-              }
-            }
-            upgradeResult = yield* run(["brew", "upgrade", formula], { env })
-            break
-          }
-          case "choco":
-            upgradeResult = yield* run(["choco", "upgrade", "opencode", `--version=${target}`, "-y"])
-            break
-          case "scoop":
-            upgradeResult = yield* run(["scoop", "install", `opencode@${target}`])
-            break
-          default:
-            return yield* new UpgradeFailedError({ stderr: `Unknown installation method: ${m}` })
-        }
-        if (!upgradeResult || upgradeResult.code !== 0) {
-          return yield* new UpgradeFailedError({ stderr: upgradeFailure(m, upgradeResult) })
-        }
-        yield* Effect.logInfo("upgraded", {
-          method: m,
-          target,
-          stdout: upgradeResult.stdout,
-          stderr: upgradeResult.stderr,
-        })
-        yield* text([process.execPath, "--version"])
+      // Lazunox: el motor se actualiza con la app, nunca por su cuenta ni consultando servicios de OpenCode.
+      latest: Effect.fn("Installation.latest")(function* (_installMethod?: Method) {
+        return InstallationVersion
       }),
-      upgradeMajor: Effect.fn("Installation.upgradeMajor")(function* (m: Method) {
-        const outcome = yield* majorUpgrade(m)
-        if (outcome.code !== 0) return yield* new UpgradeFailedError({ stderr: upgradeFailure(m, outcome) })
-        yield* Effect.logInfo("upgraded major", { method: m, stdout: outcome.stdout, stderr: outcome.stderr })
+      upgrade: Effect.fn("Installation.upgrade")(function* (_m: Method, _target: string) {
+        return yield* new UpgradeFailedError({ stderr: LAZUNOX_NO_UPGRADE })
+      }),
+      upgradeMajor: Effect.fn("Installation.upgradeMajor")(function* (_m: Method) {
+        return yield* new UpgradeFailedError({ stderr: LAZUNOX_NO_UPGRADE })
       }),
     }
 
