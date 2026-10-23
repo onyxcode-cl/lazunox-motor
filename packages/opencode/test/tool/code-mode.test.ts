@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { CODE_MODE_TOOL, CodeModeTool, Parameters, describeCatalog } from "@/tool/code-mode"
+import { CODE_MODE_TOOL, CodeModeTool, CodeModeWaitTool, Parameters, describeCatalog } from "@/tool/code-mode"
 import type { Tool as MCPToolDef } from "@modelcontextprotocol/sdk/types.js"
 import type { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
@@ -10,7 +10,15 @@ import { Session } from "@/session/session"
 import { Tool } from "@/tool/tool"
 import * as Truncate from "@/tool/truncate"
 import { MessageID, SessionID } from "@/session/schema"
-import { Cause, Effect, Exit, Layer, Schema } from "effect"
+import { Cause, Effect, Exit, Layer, Schema, Scope } from "effect"
+import { BackgroundJob as CoreBackgroundJob } from "@opencode-ai/core/background-job"
+
+// Lazunox: el Code Mode corre como trabajo en segundo plano; en las pruebas el registro vive en un ámbito que no se cierra.
+const jobsScope = Effect.runSync(Scope.make())
+const jobsLayer = Layer.succeed(
+  CoreBackgroundJob.Service,
+  Effect.runSync(CoreBackgroundJob.make.pipe(Effect.provideService(Scope.Scope, jobsScope))),
+)
 
 const ctx: Tool.Context = {
   sessionID: SessionID.make("ses_code-mode"),
@@ -44,6 +52,7 @@ function harness(input: {
   trigger?: Plugin.Interface["trigger"]
 }) {
   return Layer.mergeAll(
+    jobsLayer,
     Layer.mock(Plugin.Service, {
       trigger: input.trigger ?? (((_name, _input, output) => Effect.succeed(output)) as Plugin.Interface["trigger"]),
     }),
@@ -139,7 +148,8 @@ describe("code mode execute", () => {
   test("the static base description carries no catalog; the registry appends it", async () => {
     const tool = await build({ github_list_issues: mcpTool("list_issues", () => "") })
     expect(tool.id).toBe(CODE_MODE_TOOL)
-    expect(tool.description).toBe("Run a confined orchestration script with access to connected MCP tools.")
+    expect(tool.description).toContain("Run a confined orchestration script with access to connected MCP tools.")
+    expect(tool.description).toContain("execute_wait")
     expect(tool.description).not.toContain("Available tools")
     expect(tool.description).not.toContain("list_issues")
   })
@@ -726,5 +736,65 @@ describe("code mode permission visibility", () => {
       { permission: "c_tool", pattern: "something", action: "deny" },
     ])
     expect(Object.keys(visible)).toEqual(["b_tool", "c_tool"])
+  })
+})
+
+// Lazunox: pausa y espera. Si el script tarda más que yield_ms sigue vivo y se retoma con execute_wait.
+describe("code mode: pausa y espera", () => {
+  const slow = (ms: number) => mcpTool("slow", () => new Promise((resolve) => setTimeout(() => resolve({ content: [{ type: "text", text: "listo" }] }), ms)))
+  const tools = (ms: number) => ({ srv_slow: slow(ms) })
+  const buildPair = (ms: number) => {
+    const mcpTools = tools(ms)
+    const layer = harness({ mcpTools, servers: ["srv"] })
+    return Effect.runPromise(
+      Effect.all([
+        CodeModeTool.pipe(Effect.flatMap(Tool.init)),
+        CodeModeWaitTool.pipe(Effect.flatMap(Tool.init)),
+      ]).pipe(Effect.provide(layer)),
+    )
+  }
+  const cellOf = (output: string) => /cell_id=(cm_\w+)/.exec(output)?.[1]
+
+  test("un script lento devuelve «en curso» y execute_wait entrega el resultado final", async () => {
+    const [exec, wait] = await buildPair(1500)
+    const first = await Effect.runPromise(exec.execute({ code: "return await tools.srv.slow({})", yield_ms: 1000 }, ctx))
+    const cell = cellOf(first.output)
+    expect(cell).toBeDefined()
+    expect(first.output).toContain("Script en curso")
+    const done = await Effect.runPromise(wait.execute({ cell_id: cell!, yield_ms: 5000 }, ctx))
+    expect(done.output).toContain("listo")
+  })
+
+  test("terminate para el script y lo ya hecho queda", async () => {
+    const [exec, wait] = await buildPair(5000)
+    const first = await Effect.runPromise(exec.execute({ code: "return await tools.srv.slow({})", yield_ms: 1000 }, ctx))
+    const cell = cellOf(first.output)!
+    const stopped = await Effect.runPromise(wait.execute({ cell_id: cell, terminate: true }, ctx))
+    expect(stopped.output).toContain("Script terminado")
+    const again = await Effect.runPromise(wait.execute({ cell_id: cell }, ctx))
+    expect(again.output).toContain("Script terminado")
+  })
+
+  test("una celda que no existe falla con un mensaje claro", async () => {
+    const [, wait] = await buildPair(10)
+    const err = await failure(wait.execute({ cell_id: "cm_nada" }, ctx))
+    expect(err.message).toContain("No existe la celda")
+  })
+
+  test("un script rápido sigue devolviendo el resultado directo (sin pausa)", async () => {
+    const [exec] = await buildPair(10)
+    const r = await Effect.runPromise(exec.execute({ code: "return await tools.srv.slow({})" }, ctx))
+    expect(r.output).toContain("listo")
+    expect(r.output).not.toContain("Script en curso")
+  })
+
+  test("tope de celdas vivas a la vez", async () => {
+    const [exec] = await buildPair(6000)
+    for (let i = 0; i < 3; i++) {
+      const r = await Effect.runPromise(exec.execute({ code: "return await tools.srv.slow({})", yield_ms: 1000 }, ctx))
+      expect(r.output).toContain("Script en curso")
+    }
+    const err = await failure(exec.execute({ code: "return 1", yield_ms: 1000 }, ctx))
+    expect(err.message).toContain("scripts en curso")
   })
 })

@@ -17,7 +17,17 @@ import {
   ListToolsRequestSchema,
   type Tool as MCPToolDef,
 } from "@modelcontextprotocol/sdk/types.js"
-import { Cause, Effect, Exit, Layer } from "effect"
+import { Cause, Effect, Exit, Layer, Scope } from "effect"
+import { BackgroundJob as CoreBackgroundJob } from "@opencode-ai/core/background-job"
+
+
+// Lazunox: el Code Mode corre como trabajo en segundo plano; en las pruebas el registro vive en un ámbito que no se cierra.
+const jobsScope = Effect.runSync(Scope.make())
+const jobsLayer = Layer.succeed(
+  CoreBackgroundJob.Service,
+  Effect.runSync(CoreBackgroundJob.make.pipe(Effect.provideService(Scope.Scope, jobsScope))),
+)
+
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
 
@@ -139,6 +149,7 @@ async function buildTool() {
   }
 
   const layer = Layer.mergeAll(
+    jobsLayer,
     Layer.mock(Plugin.Service, {
       trigger: ((_name: unknown, _input: unknown, output: unknown) =>
         Effect.succeed(output)) as Plugin.Interface["trigger"],

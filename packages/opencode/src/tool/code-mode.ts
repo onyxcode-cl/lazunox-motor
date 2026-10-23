@@ -8,14 +8,33 @@ import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
+import { BackgroundJob } from "@/background/job"
 
 export const CODE_MODE_TOOL = "execute"
 
-const DESCRIPTION = "Run a confined orchestration script with access to connected MCP tools."
+const DESCRIPTION =
+  "Run a confined orchestration script with access to connected MCP tools. If the script takes longer than yield_ms it keeps running in the background and you get a cell_id: use execute_wait to keep waiting, read the result or terminate it. Calls it already made are never undone."
+
+const WAIT_DESCRIPTION =
+  "Wait for a script started with execute that was still running (use its cell_id), or terminate it with terminate: true. Returns the final result when it finishes, or says it is still running."
 
 export const Parameters = Schema.Struct({
   code: Schema.String.annotate({
     description: "Script body executed by the confined interpreter.",
+  }),
+  yield_ms: Schema.optional(Schema.Number).annotate({
+    description:
+      "Optional. How many milliseconds to wait for the script before returning while it keeps running (default 30000). If it is still running you get a cell_id: call execute_wait to keep waiting, read its progress, or terminate it.",
+  }),
+})
+
+export const WaitParameters = Schema.Struct({
+  cell_id: Schema.String.annotate({ description: "The cell_id returned by execute while the script was still running." }),
+  yield_ms: Schema.optional(Schema.Number).annotate({
+    description: "Optional. Milliseconds to wait before returning again (default 30000).",
+  }),
+  terminate: Schema.optional(Schema.Boolean).annotate({
+    description: "Optional. true stops the script instead of waiting. What it already did is not undone.",
   }),
 })
 
@@ -24,6 +43,7 @@ type CallEntry = { tool: string; status: "running" | "completed" | "error"; inpu
 type Metadata = {
   toolCalls: CallEntry[]
   error?: boolean
+  cellId?: string
 }
 
 type Attachment = NonNullable<Tool.ExecuteResult["attachments"]>[number]
@@ -61,6 +81,8 @@ const limitFromEnv = (name: string, fallback: number) => {
   const n = Number(process.env[name])
   return Number.isInteger(n) && n > 0 ? n : fallback
 }
+export const CODE_MODE_YIELD_MS = limitFromEnv("LAZUNOX_CODE_MODE_YIELD_MS", 30_000)
+export const CODE_MODE_MAX_CELLS = limitFromEnv("LAZUNOX_CODE_MODE_MAX_CELLS", 3)
 export const CODE_MODE_LIMITS = {
   timeoutMs: limitFromEnv("LAZUNOX_CODE_MODE_TIMEOUT_MS", 300_000),
   maxToolCalls: limitFromEnv("LAZUNOX_CODE_MODE_MAX_TOOL_CALLS", 200),
@@ -197,6 +219,38 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
   return result
 })
 
+const CELL_JOB_TYPE = "code-mode"
+
+const clampYield = (value: number | undefined) => {
+  const requested = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : CODE_MODE_YIELD_MS
+  return Math.min(Math.max(requested, 1_000), CODE_MODE_LIMITS.timeoutMs)
+}
+
+type Settled =
+  | { kind: "done"; text: string }
+  | { kind: "running"; text: string }
+  | { kind: "failed"; message: string }
+  | { kind: "cancelled"; text: string }
+
+/** Traduce el estado de la celda (trabajo en segundo plano) en lo que ve el modelo. */
+const settledResult = (waited: BackgroundJob.WaitResult, cellId: string, calls: CallEntry[]): Settled => {
+  const info = waited.info
+  if (!info) return { kind: "failed", message: `No existe la celda ${cellId} (¿ya terminó hace tiempo o se reinició el motor?).` }
+  if (info.status === "running") {
+    const doneCalls = calls.filter((c) => c.status === "completed").length
+    return {
+      kind: "running",
+      text: [
+        `Script en curso (cell_id=${cellId}). Lleva ${doneCalls} llamada(s) completada(s) y sigue ejecutándose.`,
+        "No lo vuelvas a lanzar. Usa execute_wait con este cell_id para seguir esperando o leer el resultado, o terminate: true para pararlo (lo ya hecho no se deshace).",
+      ].join("\n"),
+    }
+  }
+  if (info.status === "completed") return { kind: "done", text: info.output ?? "" }
+  if (info.status === "cancelled") return { kind: "cancelled", text: "Script terminado (lo que ya había hecho no se deshizo)." }
+  return { kind: "failed", message: info.error ?? "El script falló." }
+}
+
 export const CodeModeTool = Tool.define(
   CODE_MODE_TOOL,
   Effect.gen(function* () {
@@ -204,6 +258,7 @@ export const CodeModeTool = Tool.define(
     const agents = yield* Agent.Service
     const sessions = yield* Session.Service
     const plugin = yield* Plugin.Service
+    const jobs = yield* BackgroundJob.Service
 
     const init: Tool.DefWithoutID<typeof Parameters, Metadata> = {
       description: DESCRIPTION,
@@ -239,6 +294,12 @@ export const CodeModeTool = Tool.define(
           }
         }
 
+        // Lazunox: el script corre como una «celda» que puede seguir viva después de que esta llamada devuelva el control (pausa y
+        // espera al estilo de Codex). `ctx.abort` se dispara al terminar el turno del modelo, así que las llamadas internas usan una
+        // señal propia que solo se activa al terminar o cancelar la celda.
+        const cellAbort = new AbortController()
+        const cellCtx: Tool.Context = { ...ctx, abort: cellAbort.signal }
+
         let childCalls = 0
         const callTool = (entry: CatalogEntry) => (input: unknown) =>
           Effect.gen(function* () {
@@ -248,7 +309,7 @@ export const CodeModeTool = Tool.define(
               entry,
               args: (input ?? {}) as Record<string, unknown>,
               callID: `${ctx.callID ?? entry.key}/${childCalls}`,
-              ctx,
+              ctx: cellCtx,
             })
             const projected = projectMcpResult(result, (attachment: Attachment) => void attachments.push(attachment))
             if (done.length < 30)
@@ -292,58 +353,139 @@ export const CodeModeTool = Tool.define(
           ctx.abort.addEventListener("abort", handler, { once: true })
           return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
         })
-        const cancelled = (): CodeMode.Result => ({
-          ok: false,
-          error: { kind: "ExecutionFailure", message: "Execution cancelled." },
-          toolCalls: calls.map((call) => ({ name: call.tool })),
-        })
 
-        const result = yield* Effect.raceFirst(runtime.execute(params.code), abort.pipe(Effect.map(cancelled)))
-        const logs = result.logs ?? []
-        const withLogs = (text: string) => {
-          if (logs.length === 0) return text
-          return text.length > 0 ? `${text}\n\nLogs:\n${logs.join("\n")}` : `Logs:\n${logs.join("\n")}`
-        }
-
-        if (!result.ok) {
-          if (ctx.abort.aborted) {
-            return {
-              title: CODE_MODE_TOOL,
-              metadata: { toolCalls: calls, error: true },
-              output: "Execution cancelled.",
-            } satisfies Tool.ExecuteResult<Metadata>
+        // Cuerpo de la celda: ejecuta el script y devuelve el texto final (o falla con el mensaje para el modelo).
+        const cell = Effect.gen(function* () {
+          const result = yield* runtime.execute(params.code)
+          const logs = result.logs ?? []
+          const withLogs = (text: string) => {
+            if (logs.length === 0) return text
+            return text.length > 0 ? `${text}\n\nLogs:\n${logs.join("\n")}` : `Logs:\n${logs.join("\n")}`
           }
-          const hints = (result.error.suggestions ?? []).filter((hint) => !result.error.message.includes(hint))
-          // Lazunox: al llegar a un límite el script se corta, pero lo que ya hizo se conserva (las llamadas hechas no se deshacen).
-          // Se lo decimos al modelo para que retome por tandas en vez de repetir todo.
-          const stopped =
-            result.error.kind === "ToolCallLimitExceeded" || result.error.kind === "TimeoutExceeded"
-              ? [
-                  `El script se detuvo por un límite (${result.error.kind}). Las ${calls.filter((c) => c.status === "completed").length} llamadas que ya se completaron SÍ se ejecutaron y no se deshacen; solo se perdió lo que el script guardaba en memoria.`,
-                  ...(done.length > 0
-                    ? [
-                        "Ya obtenido (no lo repitas):",
-                        ...done.map((d, i) => `${i + 1}. ${d.tool}(${d.input}) -> ${d.result}`),
-                      ]
-                    : []),
-                  "Para continuar, vuelve a ejecutar solo lo que faltó, en tandas más chicas, y devuelve los resultados parciales al terminar cada tanda (puedes envolver el bucle en try/catch: el límite se puede atrapar y devolver lo hecho hasta ese punto).",
-                ]
-              : []
-          return yield* Effect.fail(new Error(withLogs([result.error.message, ...hints, ...stopped].join("\n"))))
+
+          if (!result.ok) {
+            const hints = (result.error.suggestions ?? []).filter((hint) => !result.error.message.includes(hint))
+            // Lazunox: al llegar a un límite el script se corta, pero lo que ya hizo se conserva (las llamadas hechas no se deshacen).
+            // Se lo decimos al modelo para que retome por tandas en vez de repetir todo.
+            const stopped =
+              result.error.kind === "ToolCallLimitExceeded" || result.error.kind === "TimeoutExceeded"
+                ? [
+                    `El script se detuvo por un límite (${result.error.kind}). Las ${calls.filter((c) => c.status === "completed").length} llamadas que ya se completaron SÍ se ejecutaron y no se deshacen; solo se perdió lo que el script guardaba en memoria.`,
+                    ...(done.length > 0
+                      ? [
+                          "Ya obtenido (no lo repitas):",
+                          ...done.map((d, i) => `${i + 1}. ${d.tool}(${d.input}) -> ${d.result}`),
+                        ]
+                      : []),
+                    "Para continuar, vuelve a ejecutar solo lo que faltó, en tandas más chicas, y devuelve los resultados parciales al terminar cada tanda (puedes envolver el bucle en try/catch: el límite se puede atrapar y devolver lo hecho hasta ese punto).",
+                  ]
+                : []
+            return yield* Effect.fail(new Error(withLogs([result.error.message, ...hints, ...stopped].join("\n"))))
+          }
+
+          // The interpreter validates returned values as plain JSON, so stringify cannot throw;
+          // it yields undefined only for a program that returns undefined.
+          const output =
+            typeof result.value === "string"
+              ? result.value
+              : (JSON.stringify(result.value, null, 2) ?? String(result.value))
+          return withLogs(output)
+        }).pipe(Effect.onInterrupt(() => Effect.sync(() => cellAbort.abort())))
+
+        const running = (yield* jobs.list()).filter((j) => j.type === CELL_JOB_TYPE && j.status === "running")
+        if (running.length >= CODE_MODE_MAX_CELLS) {
+          return yield* Effect.fail(
+            new Error(
+              `Ya hay ${running.length} scripts en curso (${running.map((j) => j.id).join(", ")}). Espera a que terminen con execute_wait o termina alguno con terminate: true.`,
+            ),
+          )
         }
 
-        // The interpreter validates returned values as plain JSON, so stringify cannot throw;
-        // it yields undefined only for a program that returns undefined.
-        const output =
-          typeof result.value === "string"
-            ? result.value
-            : (JSON.stringify(result.value, null, 2) ?? String(result.value))
+        const cellId = `cm_${(ctx.callID ?? "").replace(/[^A-Za-z0-9]/g, "").slice(-8)}${Math.random().toString(36).slice(2, 6)}`
+        yield* jobs.start({ id: cellId, type: CELL_JOB_TYPE, title: "Code Mode", run: cell })
 
+        const yieldMs = clampYield(params.yield_ms)
+        const waited = yield* Effect.raceFirst(
+          jobs.wait({ id: cellId, timeout: yieldMs }),
+          abort.pipe(Effect.map(() => "aborted" as const)),
+        )
+
+        if (waited === "aborted") {
+          yield* jobs.cancel(cellId)
+          return {
+            title: CODE_MODE_TOOL,
+            metadata: { toolCalls: calls, error: true },
+            output: "Execution cancelled.",
+          } satisfies Tool.ExecuteResult<Metadata>
+        }
+
+        const settled = settledResult(waited, cellId, calls)
+        if (settled.kind === "failed") return yield* Effect.fail(new Error(settled.message))
         return {
           title: CODE_MODE_TOOL,
-          metadata: { toolCalls: calls },
-          output: withLogs(output),
-          ...(attachments.length > 0 ? { attachments } : {}),
+          metadata: { toolCalls: calls, ...(settled.kind === "running" ? { cellId } : {}) },
+          output: settled.text,
+          ...(settled.kind === "done" && attachments.length > 0 ? { attachments } : {}),
+        } satisfies Tool.ExecuteResult<Metadata>
+      }, Effect.orDie),
+    }
+    return init
+  }),
+)
+
+export const CODE_MODE_WAIT_TOOL = "execute_wait"
+
+export const CodeModeWaitTool = Tool.define(
+  CODE_MODE_WAIT_TOOL,
+  Effect.gen(function* () {
+    const jobs = yield* BackgroundJob.Service
+
+    const init: Tool.DefWithoutID<typeof WaitParameters, Metadata> = {
+      description: WAIT_DESCRIPTION,
+      parameters: WaitParameters,
+      execute: Effect.fn("CodeMode.wait")(function* (params, ctx) {
+        const id = params.cell_id
+        const job = yield* jobs.get(id)
+        if (!job || job.type !== CELL_JOB_TYPE) {
+          return yield* Effect.fail(
+            new Error(`No existe la celda ${id} (¿ya terminó hace tiempo, no es de Code Mode o se reinició el motor?).`),
+          )
+        }
+
+        if (params.terminate && job.status === "running") {
+          yield* jobs.cancel(id)
+          return {
+            title: CODE_MODE_WAIT_TOOL,
+            metadata: { toolCalls: [], cellId: id },
+            output: "Script terminado. Lo que ya había hecho no se deshizo.",
+          } satisfies Tool.ExecuteResult<Metadata>
+        }
+
+        const abort = Effect.callback<void>((resume) => {
+          if (ctx.abort.aborted) return resume(Effect.void)
+          const handler = () => resume(Effect.void)
+          ctx.abort.addEventListener("abort", handler, { once: true })
+          return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
+        })
+        const waited = yield* Effect.raceFirst(
+          jobs.wait({ id, timeout: clampYield(params.yield_ms) }),
+          abort.pipe(Effect.map(() => "aborted" as const)),
+        )
+        // Interrumpir la espera NO mata el script: sigue vivo y se puede volver a esperar.
+        if (waited === "aborted") {
+          return {
+            title: CODE_MODE_WAIT_TOOL,
+            metadata: { toolCalls: [], cellId: id },
+            output: `Espera interrumpida; el script ${id} sigue en curso.`,
+          } satisfies Tool.ExecuteResult<Metadata>
+        }
+
+        const settled = settledResult(waited, id, [])
+        if (settled.kind === "failed") return yield* Effect.fail(new Error(settled.message))
+        return {
+          title: CODE_MODE_WAIT_TOOL,
+          metadata: { toolCalls: [], ...(settled.kind === "running" ? { cellId: id } : {}) },
+          output: settled.text,
         } satisfies Tool.ExecuteResult<Metadata>
       }, Effect.orDie),
     }
