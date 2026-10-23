@@ -55,6 +55,18 @@ function groupByServer(mcpTools: Record<string, MCP.McpTool>, servers: readonly 
   return groups
 }
 
+// Lazunox: OpenCode no fija límites en Code Mode (un script podría encadenar cientos de llamadas MCP). Estos valores por defecto
+// se pueden bajar o subir con LAZUNOX_CODE_MODE_TIMEOUT_MS, LAZUNOX_CODE_MODE_MAX_TOOL_CALLS y LAZUNOX_CODE_MODE_MAX_OUTPUT_BYTES.
+const limitFromEnv = (name: string, fallback: number) => {
+  const n = Number(process.env[name])
+  return Number.isInteger(n) && n > 0 ? n : fallback
+}
+export const CODE_MODE_LIMITS = {
+  timeoutMs: limitFromEnv("LAZUNOX_CODE_MODE_TIMEOUT_MS", 300_000),
+  maxToolCalls: limitFromEnv("LAZUNOX_CODE_MODE_MAX_TOOL_CALLS", 200),
+  maxOutputBytes: limitFromEnv("LAZUNOX_CODE_MODE_MAX_OUTPUT_BYTES", 1_000_000),
+} as const
+
 export function describeCatalog(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): string {
   return CodeMode.make({
     tools: toolTree(
@@ -216,6 +228,17 @@ export const CodeModeTool = Tool.define(
         const publish = () =>
           ctx.metadata({ title: CODE_MODE_TOOL, metadata: { toolCalls: calls.map((c) => ({ ...c })) } })
 
+        // Lazunox: resumen de lo que cada llamada ya devolvió, para que el modelo retome sin repetir si un límite corta el script.
+        const done: { tool: string; input: string; result: string }[] = []
+        const preview = (value: unknown, max: number) => {
+          try {
+            const text = typeof value === "string" ? value : JSON.stringify(value)
+            return (text ?? "").length > max ? (text ?? "").slice(0, max) + "…" : (text ?? "")
+          } catch {
+            return "(no se pudo resumir)"
+          }
+        }
+
         let childCalls = 0
         const callTool = (entry: CatalogEntry) => (input: unknown) =>
           Effect.gen(function* () {
@@ -227,7 +250,10 @@ export const CodeModeTool = Tool.define(
               callID: `${ctx.callID ?? entry.key}/${childCalls}`,
               ctx,
             })
-            return projectMcpResult(result, (attachment: Attachment) => void attachments.push(attachment))
+            const projected = projectMcpResult(result, (attachment: Attachment) => void attachments.push(attachment))
+            if (done.length < 30)
+              done.push({ tool: entry.key, input: preview(input, 120), result: preview(projected, 300) })
+            return projected
           }).pipe(
             Effect.catchCause((cause) => {
               if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
@@ -238,6 +264,7 @@ export const CodeModeTool = Tool.define(
 
         const runtime = CodeMode.make({
           tools: toolTree(catalog, callTool),
+          limits: CODE_MODE_LIMITS,
           onToolCallStart: ({ index, name, input }) =>
             Effect.suspend(() => {
               const shown = (() => {
@@ -287,7 +314,22 @@ export const CodeModeTool = Tool.define(
             } satisfies Tool.ExecuteResult<Metadata>
           }
           const hints = (result.error.suggestions ?? []).filter((hint) => !result.error.message.includes(hint))
-          return yield* Effect.fail(new Error(withLogs([result.error.message, ...hints].join("\n"))))
+          // Lazunox: al llegar a un límite el script se corta, pero lo que ya hizo se conserva (las llamadas hechas no se deshacen).
+          // Se lo decimos al modelo para que retome por tandas en vez de repetir todo.
+          const stopped =
+            result.error.kind === "ToolCallLimitExceeded" || result.error.kind === "TimeoutExceeded"
+              ? [
+                  `El script se detuvo por un límite (${result.error.kind}). Las ${calls.filter((c) => c.status === "completed").length} llamadas que ya se completaron SÍ se ejecutaron y no se deshacen; solo se perdió lo que el script guardaba en memoria.`,
+                  ...(done.length > 0
+                    ? [
+                        "Ya obtenido (no lo repitas):",
+                        ...done.map((d, i) => `${i + 1}. ${d.tool}(${d.input}) -> ${d.result}`),
+                      ]
+                    : []),
+                  "Para continuar, vuelve a ejecutar solo lo que faltó, en tandas más chicas, y devuelve los resultados parciales al terminar cada tanda (puedes envolver el bucle en try/catch: el límite se puede atrapar y devolver lo hecho hasta ese punto).",
+                ]
+              : []
+          return yield* Effect.fail(new Error(withLogs([result.error.message, ...hints, ...stopped].join("\n"))))
         }
 
         // The interpreter validates returned values as plain JSON, so stringify cannot throw;
