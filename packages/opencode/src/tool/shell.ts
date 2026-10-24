@@ -24,6 +24,7 @@ import { BashArity } from "@/permission/arity"
 import { ShellBackground, type Job } from "./shell/background"
 import { LazunoxWake } from "./lazunox-wake"
 import { TrabajosDisco } from "./shell/trabajos-disco"
+import { utf8Command } from "./shell/utf8-windows"
 
 export { Parameters } from "./shell/prompt"
 
@@ -297,7 +298,8 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
   })
 })
 
-function cmd(shell: string, command: string, cwd: string, env: NodeJS.ProcessEnv) {
+function cmd(shell: string, original: string, cwd: string, env: NodeJS.ProcessEnv) {
+  const command = utf8Command(shell, original, Shell.ps(shell))
   if (process.platform === "win32" && Shell.ps(shell)) {
     return ChildProcess.make(shell, ["-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command], {
       cwd,
