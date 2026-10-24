@@ -2,10 +2,8 @@ import { describe, expect, test } from "bun:test"
 import { utf8Command } from "../../src/tool/shell/utf8-windows"
 
 describe("utf8Command (Windows)", () => {
-  test("cmd: pasa a UTF-8 antes del comando y conserva el comando entero", () => {
-    const out = utf8Command("C:\\Windows\\System32\\cmd.exe", "echo áéíóú ñ", false, "win32")
-    expect(out.startsWith("chcp 65001>nul & ")).toBe(true)
-    expect(out.endsWith("echo áéíóú ñ")).toBe(true)
+  test("cmd no se toca (el cambio de página de códigos no funciona sin consola)", () => {
+    expect(utf8Command("C:\\Windows\\System32\\cmd.exe", "echo áéíóú ñ", false, "win32")).toBe("echo áéíóú ñ")
   })
   test("PowerShell: fija la codificación de salida a UTF-8 sin BOM", () => {
     const out = utf8Command("C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe", "Write-Output 'ñ'", true, "win32")
