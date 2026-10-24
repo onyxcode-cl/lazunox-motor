@@ -22,6 +22,7 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { ShellBackground, type Job } from "./shell/background"
+import { LazunoxWake } from "./lazunox-wake"
 
 export { Parameters } from "./shell/prompt"
 
@@ -362,6 +363,8 @@ const settle = Effect.fn("ShellTool.settle")(function* (
     interrupted = outcome === "aborted"
   }
   const fresh = ShellBackground.readNew(job, limits.maxBytes)
+  // Lazunox: el modelo ya vio el resultado final; no hace falta despertarlo después.
+  if (!job.running) job.consumed = true
   const parts: string[] = []
   if (fresh.skipped > 0) parts.push(`...${fresh.skipped} bytes de salida nueva omitidos (se muestra el final)...`)
   parts.push(fresh.text || (job.running ? "(sin salida nueva)" : "(sin salida nueva)"))
@@ -697,6 +700,8 @@ export const ShellTool = Tool.define(
       env: NodeJS.ProcessEnv
       sessionID: string
       directory: string
+      /** Lazunox: aviso al terminar (ver lazunox-wake.ts). Opcional: sin promptOps no hay aviso. */
+      onFinish?: (job: Job) => Effect.Effect<void>
     }) {
       yield* InstanceState.get(bgState)
       ShellBackground.prune()
@@ -738,7 +743,8 @@ export const ShellTool = Tool.define(
             process.kill(-handle.pid, "SIGTERM")
           } catch {}
         }
-        return Scope.close(scope, Exit.void).pipe(Effect.forkDetach, Effect.asVoid)
+        const wake = input.onFinish ? input.onFinish(job).pipe(Effect.ignore, Effect.forkDetach, Effect.asVoid) : Effect.void
+        return Effect.andThen(wake, Scope.close(scope, Exit.void).pipe(Effect.forkDetach, Effect.asVoid))
       }
       const stop = (reason: "terminated" | "lifetime") =>
         Effect.gen(function* () {
@@ -812,7 +818,29 @@ export const ShellTool = Tool.define(
                 }
                 const refused = ShellBackground.quota(ctx.sessionID)
                 if (refused) throw new Error(refused)
+                // Lazunox: despertar a la conversación al terminar (agente actual, nunca más permisos). Sin promptOps no avisa.
+                const wakeOps = LazunoxWake.enabled() ? LazunoxWake.opsFrom(ctx.extra) : undefined
                 const job = yield* startBackground({
+                  onFinish: wakeOps
+                    ? (job) =>
+                        Effect.gen(function* () {
+                          // Margen para que un shell_wait que justo termina marque el resultado como consumido.
+                          yield* Effect.sleep(`${LazunoxWake.SETTLE_DELAY_MS} millis`)
+                          if (job.consumed || job.notified || job.reason === "terminated") return
+                          job.notified = true
+                          yield* LazunoxWake.send(wakeOps, {
+                            sessionID: ctx.sessionID,
+                            agent: ctx.agent,
+                            what: `shell ${job.id}`,
+                            text: LazunoxWake.shellNotice({
+                              id: job.id,
+                              estado: job.reason === "lifetime" ? "tope_de_vida" : "terminado",
+                              codigo: job.code,
+                              output: ShellBackground.peekTail(job, LazunoxWake.MAX_BYTES * 2),
+                            }),
+                          })
+                        })
+                    : undefined,
                   shell,
                   command: params.command,
                   cwd,

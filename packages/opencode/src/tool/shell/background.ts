@@ -39,6 +39,10 @@ export type Job = {
   code: number | null
   reason?: EndReason
   finishedAt?: number
+  /** El modelo ya leyó el resultado final (shell_wait) o lo terminó él: no se avisa. */
+  consumed?: boolean
+  /** Ya se mandó el aviso de fin (uno por trabajo). */
+  notified?: boolean
   finished: Promise<void>
   /** Mata el grupo de procesos y libera el scope. Idempotente. */
   kill: Effect.Effect<void>
@@ -99,6 +103,23 @@ export const readNew = (job: Job, maxBytes: number) => {
   }
   job.readOffset = job.written
   return { text: buf.toString("utf-8"), skipped: total - take }
+}
+
+/** Cola de la salida sin mover el desplazamiento de lectura (para el aviso de fin). */
+export const peekTail = (job: Job, maxBytes: number) => {
+  const take = Math.min(job.written, maxBytes)
+  if (take <= 0) return ""
+  const buf = Buffer.alloc(take)
+  let fd: number | undefined
+  try {
+    fd = fs.openSync(job.file, "r")
+    fs.readSync(fd, buf, 0, take, job.written - take)
+  } catch {
+    return ""
+  } finally {
+    if (fd !== undefined) fs.closeSync(fd)
+  }
+  return buf.toString("utf-8")
 }
 
 export const removeFile = (job: Job) => {

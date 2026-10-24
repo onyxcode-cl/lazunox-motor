@@ -10,6 +10,7 @@ import { SessionID } from "@/session/schema"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { BackgroundJob } from "@/background/job"
+import { LazunoxWake } from "./lazunox-wake"
 
 export const CODE_MODE_TOOL = "execute"
 
@@ -423,6 +424,34 @@ export const CodeModeTool = Tool.define(
         const cellId = `cm_${(ctx.callID ?? "").replace(/[^A-Za-z0-9]/g, "").slice(-8)}${Math.random().toString(36).slice(2, 6)}`
         yield* jobs.start({ id: cellId, type: CELL_JOB_TYPE, title: "Code Mode", metadata: { sessionID: ctx.sessionID }, run: cell })
 
+        // Lazunox: si la celda cede el control y nadie lee su resultado, se despierta a la conversación al terminar.
+        const wakeOps = LazunoxWake.enabled() ? LazunoxWake.opsFrom(ctx.extra) : undefined
+        if (wakeOps) {
+          yield* jobs.wait({ id: cellId, timeout: CODE_MODE_LIMITS.timeoutMs + 60_000 }).pipe(
+            Effect.flatMap((end) =>
+              Effect.gen(function* () {
+                yield* Effect.sleep(`${LazunoxWake.SETTLE_DELAY_MS} millis`)
+                const consumed = LazunoxWake.cellConsumed(cellId)
+                LazunoxWake.forgetCell(cellId)
+                const info = end.info
+                if (consumed || !info || info.status === "running" || info.status === "cancelled") return
+                yield* LazunoxWake.send(wakeOps, {
+                  sessionID: ctx.sessionID,
+                  agent: ctx.agent,
+                  what: `celda ${cellId}`,
+                  text: LazunoxWake.cellNotice({
+                    id: cellId,
+                    estado: info.status === "completed" ? "terminada" : "con_error",
+                    output: info.status === "completed" ? (info.output ?? "") : (info.error ?? ""),
+                  }),
+                })
+              }),
+            ),
+            Effect.ignore,
+            Effect.forkDetach,
+          )
+        }
+
         const yieldMs = clampYield(params.yield_ms)
         const waited = yield* Effect.raceFirst(
           jobs.wait({ id: cellId, timeout: yieldMs }),
@@ -439,6 +468,7 @@ export const CodeModeTool = Tool.define(
         }
 
         const settled = settledResult(waited, cellId, calls)
+        if (settled.kind !== "running") LazunoxWake.markCellConsumed(cellId)
         if (settled.kind === "failed") return yield* Effect.fail(new Error(settled.message))
         return {
           title: CODE_MODE_TOOL,
@@ -473,6 +503,7 @@ export const CodeModeWaitTool = Tool.define(
         }
 
         if (params.terminate && job.status === "running") {
+          LazunoxWake.markCellConsumed(id)
           yield* jobs.cancel(id)
           return {
             title: CODE_MODE_WAIT_TOOL,
@@ -501,6 +532,7 @@ export const CodeModeWaitTool = Tool.define(
         }
 
         const settled = settledResult(waited, id, [])
+        if (settled.kind !== "running") LazunoxWake.markCellConsumed(id)
         if (settled.kind === "failed") return yield* Effect.fail(new Error(settled.message))
         return {
           title: CODE_MODE_WAIT_TOOL,
