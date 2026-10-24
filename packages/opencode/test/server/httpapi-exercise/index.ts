@@ -593,6 +593,27 @@ const scenarios: Scenario[] = [
     .json(200, (body) => {
       check(body === false, "background route should be a no-op without running subagents")
     }),
+  http.protected
+    .get("/experimental/session/{sessionID}/trabajos", "experimental.session.trabajos")
+    .seeded((ctx) => ctx.session({ title: "Trabajos route owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/trabajos", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check(Array.isArray((body as { trabajos?: unknown }).trabajos), "trabajos route should return a trabajos array")
+    }),
+  http.protected
+    .post("/experimental/session/{sessionID}/trabajos/{id}/terminar", "experimental.session.trabajos.terminar")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Trabajos terminar owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/trabajos/{id}/terminar", { sessionID: ctx.state.id, id: "sh_noexiste" }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check((body as { ok?: unknown }).ok === false, "terminar should report ok:false for an unknown job")
+    }),
   http.protected.get("/experimental/resource", "experimental.resource.list").json(),
   http.protected
     .post("/sync/history", "sync.history.list")

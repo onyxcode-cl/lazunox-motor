@@ -2,6 +2,7 @@ import { Effect } from "effect"
 import fs from "node:fs"
 import path from "node:path"
 import { Global } from "@opencode-ai/core/global"
+import { TrabajosDisco } from "./trabajos-disco"
 
 // Lazunox: registro de shells en segundo plano (pausa y espera al estilo Codex, lectura incremental al estilo Claude Code).
 // Vive en el proceso del motor: no es durable. Cada trabajo escribe su salida a un archivo con tope y se lee por desplazamiento.
@@ -142,12 +143,61 @@ export const register = (job: Job) => void jobs.set(job.id, job)
 /** Al terminar la instancia: mata sus trabajos vivos y borra sus archivos. */
 export const disposeDirectory = (directory: string) =>
   Effect.gen(function* () {
+    TrabajosDisco.forgetSwept(directory)
     for (const job of all()) {
       if (job.directory !== directory) continue
-      if (job.running) yield* job.kill
+      if (job.running) {
+        // Lazunox: el motor mata el trabajo al cerrar la instancia; se deja lápida para que la sesión sepa qué pasó.
+        TrabajosDisco.writeTombstone({ id: job.id, tipo: "shell", sessionID: job.sessionID, directory: job.directory, titulo: job.command.slice(0, 200), inicio: job.startedAt })
+        yield* job.kill
+      }
+      TrabajosDisco.removeMarker(job.id)
       removeFile(job)
       jobs.delete(job.id)
     }
+  })
+
+/** Barrido de huérfanos del directorio (una vez por proceso y directorio). */
+export const sweepDirectory = (directory: string) =>
+  TrabajosDisco.ensureSwept(directory, new Set(running().map((job) => job.id)))
+
+/** Vista de un shell para la ruta HTTP de trabajos (contrato motor-app). */
+export type TrabajoVista = {
+  id: string
+  tipo: "shell" | "celda"
+  titulo: string
+  estado: "en_curso" | "terminado" | "terminado_por_ti" | "tope_de_vida" | "perdido"
+  codigo: number | null
+  inicio: number
+  fin: number | null
+}
+
+export const viewsForSession = (sessionID: string): TrabajoVista[] =>
+  all()
+    .filter((job) => job.sessionID === sessionID)
+    .map((job) => ({
+      id: job.id,
+      tipo: "shell" as const,
+      titulo: job.command.slice(0, 200),
+      estado: job.running
+        ? ("en_curso" as const)
+        : job.reason === "terminated"
+          ? ("terminado_por_ti" as const)
+          : job.reason === "lifetime"
+            ? ("tope_de_vida" as const)
+            : ("terminado" as const),
+      codigo: job.running ? null : job.code,
+      inicio: job.startedAt,
+      fin: job.finishedAt ?? null,
+    }))
+
+/** Termina un shell vivo de ESA sesión. false si no existe, ya terminó o es de otra sesión. */
+export const terminateForSession = (sessionID: string, id: string) =>
+  Effect.gen(function* () {
+    const job = get(id)
+    if (!job || job.sessionID !== sessionID || !job.running) return false
+    yield* job.kill
+    return true
   })
 
 export const statusLine = (job: Job) => {

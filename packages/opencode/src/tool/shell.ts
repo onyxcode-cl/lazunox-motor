@@ -23,6 +23,7 @@ import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { ShellBackground, type Job } from "./shell/background"
 import { LazunoxWake } from "./lazunox-wake"
+import { TrabajosDisco } from "./shell/trabajos-disco"
 
 export { Parameters } from "./shell/prompt"
 
@@ -414,7 +415,13 @@ export const ShellWaitTool = Tool.define(
       parameters: WaitParameters,
       execute: (params, ctx) =>
         Effect.gen(function* () {
+          ShellBackground.sweepDirectory(yield* InstanceState.directory)
           const job = ShellBackground.get(params.shell_id)
+          // Lazunox: lápida de ESTA sesión (el motor se reinició y el comando se perdió).
+          if (!job) {
+            const lapida = TrabajosDisco.tombstoneFor(params.shell_id, ctx.sessionID)
+            if (lapida) throw new Error(TrabajosDisco.lostMessage(lapida))
+          }
           // Misma respuesta para «no existe» y «es de otra sesión»: no se revela el trabajo ajeno.
           if (!job || job.sessionID !== ctx.sessionID) {
             throw new Error(
@@ -441,7 +448,9 @@ export const ShellTool = Tool.define(
     const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
     // Lazunox: al terminar la instancia se matan sus shells en segundo plano y se borran sus archivos de salida.
     const bgState = yield* InstanceState.make((instance) =>
-      Effect.addFinalizer(() => ShellBackground.disposeDirectory(instance.directory)),
+      Effect.sync(() => ShellBackground.sweepDirectory(instance.directory)).pipe(
+        Effect.andThen(Effect.addFinalizer(() => ShellBackground.disposeDirectory(instance.directory))),
+      ),
     )
 
     const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
@@ -704,6 +713,7 @@ export const ShellTool = Tool.define(
       onFinish?: (job: Job) => Effect.Effect<void>
     }) {
       yield* InstanceState.get(bgState)
+      ShellBackground.sweepDirectory(input.directory)
       ShellBackground.prune()
       const scope = yield* Scope.make()
       let resolve!: () => void
@@ -729,6 +739,18 @@ export const ShellTool = Tool.define(
         Effect.tapError(() => Scope.close(scope, Exit.void)),
         Effect.orDie,
       )
+      // Lazunox: marcador en disco para detectar el trabajo si el motor muere sin avisar.
+      TrabajosDisco.writeMarker({
+        id: job.id,
+        tipo: "shell",
+        sessionID: input.sessionID,
+        directory: input.directory,
+        pid: handle.pid,
+        enginePid: process.pid,
+        cmdline: TrabajosDisco.cmdlineOf(handle.pid),
+        titulo: input.command,
+        inicio: job.startedAt,
+      })
 
       const finish = (code: number | null) => {
         if (!job.running) return Effect.void
@@ -736,6 +758,7 @@ export const ShellTool = Tool.define(
         job.code = code
         job.reason ??= "exit"
         job.finishedAt = Date.now()
+        TrabajosDisco.removeMarker(job.id)
         resolve()
         // Sin huérfanos: lo que el comando haya dejado vivo en su grupo de procesos se detiene.
         if (process.platform !== "win32") {

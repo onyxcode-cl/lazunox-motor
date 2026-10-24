@@ -12,6 +12,9 @@ import { Plugin } from "@/plugin"
 import { BackgroundJob } from "@/background/job"
 import { LazunoxWake } from "./lazunox-wake"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { InstanceRef } from "@/effect/instance-ref"
+import { TrabajosDisco } from "./shell/trabajos-disco"
+import { ShellBackground } from "./shell/background"
 
 export const CODE_MODE_TOOL = "execute"
 
@@ -222,7 +225,10 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
   return result
 })
 
-const CELL_JOB_TYPE = "code-mode"
+// Lazunox: directorio de la instancia si hay (en pruebas sueltas no la hay).
+const instanceDirectory = Effect.map(InstanceRef, (ctx) => ctx?.directory ?? "")
+
+export const CELL_JOB_TYPE = "code-mode"
 
 // `execute` no debe bloquear la conversación más de ~50 s (la app vigila las ejecuciones largas); `execute_wait` puede esperar más.
 const MAX_YIELD_EXECUTE_MS = 50_000
@@ -505,7 +511,26 @@ export const CodeModeTool = Tool.define(
         }
 
         cellRecords.set(cellId, record)
-        yield* jobs.start({ id: cellId, type: CELL_JOB_TYPE, title: "Code Mode", metadata: { sessionID: ctx.sessionID }, run: cell })
+        // Lazunox: marcador en disco (se borra al terminar la celda); si el motor muere queda como huérfano.
+        const directory = yield* instanceDirectory
+        TrabajosDisco.writeMarker({
+          id: cellId,
+          tipo: "celda",
+          sessionID: ctx.sessionID,
+          directory,
+          pid: process.pid,
+          enginePid: process.pid,
+          cmdline: "",
+          titulo: `Code Mode: ${params.code.trim().split("\n")[0] ?? ""}`,
+          inicio: Date.now(),
+        })
+        yield* jobs.start({
+          id: cellId,
+          type: CELL_JOB_TYPE,
+          title: "Code Mode",
+          metadata: { sessionID: ctx.sessionID, titulo: `Code Mode: ${params.code.trim().split("\n")[0] ?? ""}`.slice(0, 200) },
+          run: cell.pipe(Effect.ensuring(Effect.sync(() => TrabajosDisco.removeMarker(cellId)))),
+        })
 
         // Lazunox: si la celda cede el control y nadie lee su resultado, se despierta a la conversación al terminar.
         const wakeOps = LazunoxWake.enabled() ? LazunoxWake.opsFrom(ctx.extra) : undefined
@@ -581,7 +606,13 @@ export const CodeModeWaitTool = Tool.define(
       parameters: WaitParameters,
       execute: Effect.fn("CodeMode.wait")(function* (params, ctx) {
         const id = params.cell_id
+        ShellBackground.sweepDirectory(yield* instanceDirectory)
         const job = yield* jobs.get(id)
+        // Lazunox: lápida de ESTA sesión (el motor se reinició y el script se perdió).
+        if (!job) {
+          const lapida = TrabajosDisco.tombstoneFor(id, ctx.sessionID)
+          if (lapida) return yield* Effect.fail(new Error(TrabajosDisco.lostMessage(lapida)))
+        }
         // Una celda solo la puede esperar o terminar la sesión que la lanzó (el mensaje es el mismo que si no existiera).
         if (!job || job.type !== CELL_JOB_TYPE || job.metadata?.["sessionID"] !== ctx.sessionID) {
           return yield* Effect.fail(
