@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { activo, archivo, cargar, guardar, olvidar, persistible } from "../../src/permission/siempre-disco"
+import { activo, archivo, cargar, dir, guardar, olvidar, persistible } from "../../src/permission/siempre-disco"
 import { evaluate } from "../../src/permission"
 
 const ON = { LAZUNOX_PERMISSION_PERSIST: "1" } as NodeJS.ProcessEnv
@@ -55,6 +55,14 @@ describe("permisos «siempre» en disco", () => {
       JSON.stringify({ directory: "/p", rules: [{ permission: "bash", pattern: "*" }, { permission: "bash", pattern: "ls *" }, 7, null] }),
     )
     expect(cargar("/p", base, ON)).toEqual([{ permission: "bash", pattern: "ls *" }])
+  })
+  test("la exclusión admite «*» al final y la carpeta se puede fijar con una ruta absoluta", () => {
+    const env = { ...ON, LAZUNOX_PERMISSION_NO_PERSIST: "computer_*,x_secreto" }
+    expect(persistible({ permission: "computer_click", pattern: "*" }, env)).toBe(false)
+    expect(persistible({ permission: "x_secreto", pattern: "a" }, env)).toBe(false)
+    expect(persistible({ permission: "x_otro", pattern: "a" }, env)).toBe(true)
+    expect(dir({ LAZUNOX_PERMISSION_DIR: "/tmp/permisos" } as NodeJS.ProcessEnv)).toBe("/tmp/permisos")
+    expect(dir({ LAZUNOX_PERMISSION_DIR: "relativa" } as NodeJS.ProcessEnv)).not.toBe("relativa")
   })
   test("olvidar revoca todo", () => {
     const base = tmp()

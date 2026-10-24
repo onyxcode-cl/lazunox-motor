@@ -20,8 +20,11 @@ const PROPIAS = new Set([
 
 export const activo = (env: NodeJS.ProcessEnv = process.env) => env.LAZUNOX_PERMISSION_PERSIST === "1"
 
-const excluidos = (env: NodeJS.ProcessEnv = process.env) =>
-  new Set([...SIEMPRE_NO, ...(env.LAZUNOX_PERMISSION_NO_PERSIST ?? "").split(",").map((s) => s.trim()).filter(Boolean)])
+/** Lista de exclusión: nombres exactos o con «*» al final (`computer_*`). */
+const excluidos = (env: NodeJS.ProcessEnv = process.env) => {
+  const lista = [...SIEMPRE_NO, ...(env.LAZUNOX_PERMISSION_NO_PERSIST ?? "").split(",").map((s) => s.trim()).filter(Boolean)]
+  return (permission: string) => lista.some((x) => (x.endsWith("*") ? permission.startsWith(x.slice(0, -1)) : permission === x))
+}
 
 /** ¿Es seguro recordar esta regla entre reinicios? */
 export const persistible = (r: Regla, env: NodeJS.ProcessEnv = process.env) =>
@@ -33,9 +36,11 @@ export const persistible = (r: Regla, env: NodeJS.ProcessEnv = process.env) =>
   r.pattern.length <= 500 &&
   (r.pattern.trim() !== "*" || !PROPIAS.has(r.permission)) &&
   !/[\r\n\0]/.test(r.pattern) &&
-  !excluidos(env).has(r.permission)
+  !excluidos(env)(r.permission)
 
-export const dir = () => path.join(Global.Path.state, "lazunox-permisos")
+/** LAZUNOX_PERMISSION_DIR fija la carpeta (la app la pone dentro de su carpeta de datos); si no, la de estado del motor. */
+export const dir = (env: NodeJS.ProcessEnv = process.env) =>
+  env.LAZUNOX_PERMISSION_DIR && path.isAbsolute(env.LAZUNOX_PERMISSION_DIR) ? env.LAZUNOX_PERMISSION_DIR : path.join(Global.Path.state, "lazunox-permisos")
 const huella = (directory: string) => createHash("sha256").update(directory).digest("hex").slice(0, 24)
 export const archivo = (directory: string, base = dir()) => path.join(base, `${huella(directory)}.json`)
 
