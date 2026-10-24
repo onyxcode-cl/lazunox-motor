@@ -1,11 +1,10 @@
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
-import path from "path"
 import { Config } from "@/config/config"
 import { ShellTool, ShellWaitTool } from "../../src/tool/shell"
 import { ShellBackground } from "../../src/tool/shell/background"
-import { provideInstance, testInstanceStoreLayer } from "../fixture/fixture"
+import { provideInstance, testInstanceStoreLayer, tmpdirScoped } from "../fixture/fixture"
 import { Agent } from "../../src/agent/agent"
 import { Truncate } from "@/tool/truncate"
 import { SessionID, MessageID } from "../../src/session/schema"
@@ -32,7 +31,6 @@ const layer = Layer.mergeAll(
   testInstanceStoreLayer,
 )
 const it = testEffect(layer)
-const root = path.join(__dirname, "../..")
 const posix = process.platform !== "win32"
 
 const session = (id: string) => ({
@@ -53,7 +51,12 @@ const tools = Effect.gen(function* () {
   const wait = yield* (yield* ShellWaitTool).init()
   return { shell, wait }
 })
-const inRoot = <A, E, R>(self: Effect.Effect<A, E, R>) => self.pipe(provideInstance(root))
+// Un directorio de instancia propio por prueba: al cerrar la instancia el motor mata sus shells, y eso no debe pisar a otra prueba.
+const inRoot = <A, E, R>(self: Effect.Effect<A, E, R>) =>
+  Effect.gen(function* () {
+    const dir = yield* tmpdirScoped()
+    return yield* self.pipe(provideInstance(dir))
+  })
 const idOf = (output: string) => /shell_id=(sh_\w+)/.exec(output)?.[1]
 const alive = (pid: number) => {
   try {
@@ -67,7 +70,7 @@ const failure = <A, E, R>(self: Effect.Effect<A, E, R>) =>
   self.pipe(
     Effect.exit,
     Effect.map((exit) => {
-      if (Exit.isSuccess(exit)) throw new Error("se esperaba un fallo; en curso: " + ShellBackground.all().map((j) => j.sessionID + ":" + j.id + ":" + j.running + ":" + j.reason + ":" + j.code + ":" + (Date.now() - j.startedAt)).join(" | "))
+      if (Exit.isSuccess(exit)) throw new Error("se esperaba un fallo")
       const err = Cause.squash(exit.cause)
       return err instanceof Error ? err : new Error(String(err))
     }),
