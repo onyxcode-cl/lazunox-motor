@@ -8,6 +8,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Plugin } from "@/plugin"
 import * as SiempreDisco from "./siempre-disco"
+import * as RutasProtegidas from "./rutas-protegidas"
 
 export const Event = PermissionV1.Event
 
@@ -73,8 +74,20 @@ const layer = Layer.effect(
       const { approved, pending } = yield* InstanceState.get(state)
       const { ruleset, ...request } = input
       let needsAsk = false
+      // Lazunox: ediciones en rutas protegidas (.git, .opencode, .claude, .mcp.json…) siempre se preguntan, salvo `deny`.
+      let protegido = false
 
       for (const pattern of request.patterns) {
+        if (request.permission === "edit" && RutasProtegidas.activo() && RutasProtegidas.esProtegida(pattern)) {
+          if (evaluate(request.permission, pattern, ruleset).action === "deny") {
+            return yield* new PermissionV1.DeniedError({
+              ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
+            })
+          }
+          protegido = true
+          needsAsk = true
+          continue
+        }
         // Lazunox: un «siempre» (de esta sesión o guardado en disco) nunca levanta un `deny` vigente de las reglas de la llamada.
         const rule =
           evaluate(request.permission, pattern, ruleset).action === "deny"
@@ -116,15 +129,16 @@ const layer = Layer.effect(
           ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
         })
       }
-      if (decision.status === "allow") return
+      if (decision.status === "allow" && !protegido) return
 
       const info: PermissionV1.Request = {
         id,
         sessionID: request.sessionID,
         permission: request.permission,
         patterns: request.patterns,
-        metadata: request.metadata,
-        always: request.always,
+        metadata: protegido ? { ...request.metadata, lazunoxProtegido: true } : request.metadata,
+        // Una ruta protegida no se puede aprobar con «siempre» (el «siempre» de un archivo no debe cubrir los demás).
+        always: protegido ? [] : request.always,
         tool: request.tool,
       }
       yield* Effect.logInfo("asking", { id, permission: info.permission, patterns: info.patterns })
@@ -191,6 +205,7 @@ const layer = Layer.effect(
 
       for (const [id, item] of pending.entries()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
+        if (item.info.metadata?.lazunoxProtegido) continue
         const ok = item.info.patterns.every(
           (pattern) => evaluate(item.info.permission, pattern, approved).action === "allow",
         )
