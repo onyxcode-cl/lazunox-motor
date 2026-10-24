@@ -378,7 +378,7 @@ const settle = Effect.fn("ShellTool.settle")(function* (
       truncated: fresh.skipped > 0 || job.capped,
       shellId: job.id,
       running: job.running,
-    },
+    } as BgMetadata,
     output: parts.join("\n\n"),
   }
 })
@@ -684,7 +684,7 @@ export const ShellTool = Tool.define(
           exit: code,
           truncated: cut,
           ...(cut && file ? { outputPath: file } : {}),
-        },
+        } as BgMetadata,
         output,
       }
     })
