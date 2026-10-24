@@ -95,9 +95,22 @@ export const cellNotice = (input: { id: string; estado: string; output: string }
     "</execute_aviso>",
   ].join("\n")
 
-/** Manda el aviso con el agente actual de la sesión. Nunca falla ni bloquea al llamador. */
-export const send = (ops: WakeOps, input: { sessionID: any; agent: string; text: string; what: string }) =>
+// Detener una sesión (botón «Detener», `session.abort`) anula los avisos de lo que se lanzó ANTES de esa parada: un aviso
+// automático no debe reanudar una conversación que la persona acaba de detener. `SessionPrompt.cancel` llama a `markStopped`.
+const stops = new Map<string, number>()
+export const markStopped = (sessionID: string, now = Date.now()) => {
+  stops.set(String(sessionID), now)
+  if (stops.size > 500) for (const [id] of [...stops].slice(0, 100)) stops.delete(id)
+}
+export const stoppedAfter = (sessionID: string, since: number) => (stops.get(String(sessionID)) ?? 0) >= since
+
+/** Manda el aviso con el agente actual de la sesión. Nunca falla ni bloquea al llamador. `since`: cuándo se lanzó el trabajo. */
+export const send = (ops: WakeOps, input: { sessionID: any; agent: string; text: string; what: string; since?: number }) =>
   Effect.gen(function* () {
+    if (input.since !== undefined && stoppedAfter(String(input.sessionID), input.since)) {
+      yield* Effect.logInfo(`lazunox-wake: aviso omitido, la sesión se detuvo después de lanzar el trabajo (${input.what})`)
+      return
+    }
     if (!allow(String(input.sessionID))) {
       yield* Effect.logWarning(`lazunox-wake: aviso omitido por tope de ${MAX_WAKES_PER_HOUR}/hora (${input.what})`)
       return

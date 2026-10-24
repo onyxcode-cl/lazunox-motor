@@ -847,6 +847,7 @@ export const ShellTool = Tool.define(
                           yield* LazunoxWake.send(wakeOps, {
                             sessionID: ctx.sessionID,
                             agent: ctx.agent,
+                            since: job.startedAt,
                             what: `shell ${job.id}`,
                             text: LazunoxWake.shellNotice({
                               id: job.id,

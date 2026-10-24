@@ -546,6 +546,7 @@ export const CodeModeTool = Tool.define(
                 yield* LazunoxWake.send(wakeOps, {
                   sessionID: ctx.sessionID,
                   agent: ctx.agent,
+                  since: record.startedAt,
                   what: `celda ${cellId}`,
                   text: LazunoxWake.cellNotice({
                     id: cellId,

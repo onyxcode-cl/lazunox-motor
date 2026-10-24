@@ -1,4 +1,4 @@
-import { describe, expect } from "bun:test"
+import { describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
 import { Config } from "@/config/config"
@@ -226,5 +226,17 @@ describe.skipIf(!posix)("shell en segundo plano: despertar al terminar", () => {
     expect(t).not.toContain("linea50\n")
     expect(Buffer.byteLength(LazunoxWake.tail("x".repeat(10000)))).toBeLessThan(2200)
     return Effect.void
+  })
+})
+
+// Lazunox: detener la sesión después de lanzar el trabajo anula su aviso.
+describe("aviso tras detener la sesión", () => {
+  test("stoppedAfter solo cuenta paradas posteriores al lanzamiento", async () => {
+    const { LazunoxWake } = await import("../../src/tool/lazunox-wake")
+    const sid = `ses_parada_${Date.now()}`
+    LazunoxWake.markStopped(sid, 1000)
+    expect(LazunoxWake.stoppedAfter(sid, 500)).toBe(true) // trabajo lanzado antes de la parada: no avisar
+    expect(LazunoxWake.stoppedAfter(sid, 1500)).toBe(false) // lanzado después: sí puede avisar
+    expect(LazunoxWake.stoppedAfter("ses_nunca_detenida", 0)).toBe(false)
   })
 })

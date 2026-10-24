@@ -109,6 +109,44 @@ export const cmdlineOf = (pid: number) => {
   }
 }
 
+/** Grupo de procesos de un pid (NaN si no se puede leer). Solo macOS/Linux. */
+export const pgidOf = (pid: number) => {
+  if (process.platform === "win32" || !Number.isInteger(pid) || pid <= 0) return Number.NaN
+  if (process.platform === "linux") {
+    try {
+      // /proc/<pid>/stat: «pid (comm) estado ppid pgrp …»; el nombre puede llevar espacios y paréntesis, se corta tras el último «)».
+      const stat = fs.readFileSync(`/proc/${pid}/stat`, "utf-8")
+      const rest = stat.slice(stat.lastIndexOf(")") + 2).split(" ")
+      const pgrp = Number(rest[2])
+      if (Number.isInteger(pgrp)) return pgrp
+    } catch {}
+  }
+  try {
+    return Number(execFileSync("ps", ["-o", "pgid=", "-p", String(pid)], { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).trim())
+  } catch {
+    return Number.NaN
+  }
+}
+
+/**
+ * ¿Es razonable matar este grupo? Un marcador es un archivo en disco: cualquiera con escritura en esa carpeta (p. ej. un comando dentro
+ * del sandbox) podría forjarlo. Solo se mata un proceso que (1) no es el motor ni su padre ni el proceso 1, (2) es líder de su propio
+ * grupo (así lanzamos los shells), (3) no es una aplicación de escritorio (`.app/Contents/`, Electron) y (4) cuya línea de comandos
+ * coincide con la guardada (lo comprueba el llamador).
+ */
+export const puedeMatarse = (m: Pick<Marcador, "pid" | "enginePid" | "cmdline">) =>
+  Number.isInteger(m.pid) &&
+  m.pid > 1 &&
+  m.pid !== process.pid &&
+  m.pid !== process.ppid &&
+  Number.isInteger(m.enginePid) &&
+  m.enginePid > 1 &&
+  m.enginePid !== m.pid &&
+  typeof m.cmdline === "string" &&
+  m.cmdline.length > 0 &&
+  !/\.app\/Contents\//.test(m.cmdline) &&
+  pgidOf(m.pid) === m.pid
+
 export const writeTombstone = (m: Pick<Marcador, "id" | "tipo" | "sessionID" | "directory" | "titulo" | "inicio">, now = Date.now()) => {
   if (!idValido(m.id)) return
   const l: Lapida = { id: m.id, tipo: m.tipo, sessionID: m.sessionID, directory: m.directory, titulo: m.titulo, inicio: m.inicio, hora: now }
@@ -197,7 +235,7 @@ export const sweepOrphans = (directory: string, liveShellIds: ReadonlySet<string
     if (mine && m.tipo === "celda") continue
     if (m.tipo === "shell" && process.platform !== "win32" && alive(m.pid)) {
       const now_ = cmdlineOf(m.pid)
-      if (m.cmdline && now_ === m.cmdline) {
+      if (m.cmdline && now_ === m.cmdline && puedeMatarse(m)) {
         try {
           process.kill(-m.pid, "SIGKILL")
         } catch {
