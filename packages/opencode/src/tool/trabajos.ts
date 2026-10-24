@@ -1,8 +1,9 @@
 import { Effect } from "effect"
 import { BackgroundJob } from "@/background/job"
-import { CELL_JOB_TYPE } from "./code-mode"
 import { ShellBackground, type TrabajoVista } from "./shell/background"
 import { TrabajosDisco } from "./shell/trabajos-disco"
+
+const CELL_JOB_TYPE = TrabajosDisco.CELL_JOB_TYPE
 
 // Lazunox: vista unificada de los trabajos en segundo plano de una sesión (shells + celdas de Code Mode + perdidos tras reinicio).
 // La usan las rutas HTTP `GET/POST /experimental/session/{sessionID}/trabajos…`.

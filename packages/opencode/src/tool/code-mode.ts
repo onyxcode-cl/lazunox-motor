@@ -228,7 +228,7 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
 // Lazunox: directorio de la instancia si hay (en pruebas sueltas no la hay).
 const instanceDirectory = Effect.map(InstanceRef, (ctx) => ctx?.directory ?? "")
 
-export const CELL_JOB_TYPE = "code-mode"
+export const CELL_JOB_TYPE = TrabajosDisco.CELL_JOB_TYPE
 
 // `execute` no debe bloquear la conversación más de ~50 s (la app vigila las ejecuciones largas); `execute_wait` puede esperar más.
 const MAX_YIELD_EXECUTE_MS = 50_000

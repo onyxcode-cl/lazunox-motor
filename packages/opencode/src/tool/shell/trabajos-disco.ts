@@ -147,6 +147,9 @@ export const puedeMatarse = (m: Pick<Marcador, "pid" | "enginePid" | "cmdline">)
   !/\.app\/Contents\//.test(m.cmdline) &&
   pgidOf(m.pid) === m.pid
 
+/** Tipo de trabajo de las celdas de Code Mode en `BackgroundJob`. Vive aquí (módulo liviano) para que `trabajos.ts` no importe `code-mode.ts`: ese import formaba un ciclo con permisos y complementos. */
+export const CELL_JOB_TYPE = "code-mode"
+
 export const writeTombstone = (m: Pick<Marcador, "id" | "tipo" | "sessionID" | "directory" | "titulo" | "inicio">, now = Date.now()) => {
   if (!idValido(m.id)) return
   const l: Lapida = { id: m.id, tipo: m.tipo, sessionID: m.sessionID, directory: m.directory, titulo: m.titulo, inicio: m.inicio, hora: now }
