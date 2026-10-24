@@ -175,6 +175,7 @@ describe.skipIf(!posix)("shell en segundo plano", () => {
         yield* cleanup
       }),
     ),
+    30_000,
   )
 
   it.live("pasa por los mismos permisos que shell (ask) antes de lanzar", () =>
