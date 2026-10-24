@@ -809,13 +809,6 @@ export const ShellTool = Tool.define(
               )
 
               if (params.background) {
-                // Lazunox: el modo background del shell solo está probado en macOS/Linux/WSL. En Windows nativo se rechaza con un
-                // mensaje claro (la app ya trae su propio shell en segundo plano, `bgshell`) en vez de arriesgar procesos huérfanos.
-                if (process.platform === "win32") {
-                  throw new Error(
-                    "El modo background del shell todavía no está disponible en Windows. Usa el conector bgshell (bgshell_start) para comandos largos, o ejecuta el comando normal con un timeout mayor.",
-                  )
-                }
                 const refused = ShellBackground.quota(ctx.sessionID)
                 if (refused) throw new Error(refused)
                 // Lazunox: despertar a la conversación al terminar (agente actual, nunca más permisos). Sin promptOps no avisa.
