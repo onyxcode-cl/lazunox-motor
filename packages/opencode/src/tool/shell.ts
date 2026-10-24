@@ -384,6 +384,8 @@ const settle = Effect.fn("ShellTool.settle")(function* (
 })
 
 
+type BgMetadata = { output: string; exit: number | null; truncated: boolean; outputPath?: string; shellId?: string; running?: boolean }
+
 const WaitParameters = Schema.Struct({
   shell_id: Schema.String.annotate({ description: "The shell_id returned by shell with background: true." }),
   yield_ms: Schema.optional(Schema.Number).annotate({
@@ -404,7 +406,7 @@ export const ShellWaitTool = Tool.define(
   SHELL_WAIT_TOOL,
   Effect.gen(function* () {
     const trunc = yield* Truncate.Service
-    const init: Tool.DefWithoutID<typeof WaitParameters, Tool.Metadata> = {
+    const init: Tool.DefWithoutID<typeof WaitParameters, BgMetadata> = {
       description: WAIT_DESCRIPTION,
       parameters: WaitParameters,
       execute: (params, ctx) =>

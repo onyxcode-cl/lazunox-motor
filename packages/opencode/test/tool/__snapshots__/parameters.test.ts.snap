@@ -20,6 +20,10 @@ exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "background": {
+      "description": "Optional. true runs the command in the background: the call waits at most yield_ms and, if it has not finished, returns a shell_id to use with shell_wait.",
+      "type": "boolean",
+    },
     "command": {
       "description": "The command to execute",
       "type": "string",
@@ -34,6 +38,10 @@ exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
     "workdir": {
       "description": "The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.",
       "type": "string",
+    },
+    "yield_ms": {
+      "description": "Optional, only with background: milliseconds to wait before returning while the command keeps running (default 10000, minimum 1000).",
+      "type": "number",
     },
   },
   "required": [
