@@ -3,8 +3,9 @@ import { aplica, ejecutar, leerConfig } from "../../src/plugin/lazunox-ganchos"
 
 describe("ganchos de usuario", () => {
   test("leerConfig descarta lo inválido y acota tiempos y cantidad", () => {
-    expect(leerConfig("no json")).toEqual({ PreToolUse: [], PostToolUse: [] })
-    expect(leerConfig('{"hooks":7}')).toEqual({ PreToolUse: [], PostToolUse: [] })
+    expect(leerConfig("no json")).toEqual({ PreToolUse: [], PostToolUse: [], PreCompact: [], Stop: [] })
+    expect(leerConfig('{"hooks":7}')).toEqual({ PreToolUse: [], PostToolUse: [], PreCompact: [], Stop: [] })
+    expect(leerConfig('{"hooks":{"PreCompact":[{"command":"x"}],"Stop":[{"command":"y"}]}}')).toMatchObject({ PreCompact: [{ command: "x" }], Stop: [{ command: "y" }] })
     const c = leerConfig(
       JSON.stringify({
         hooks: {

@@ -6,12 +6,13 @@ import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 // Lazunox: ganchos de usuario por comando (como los hooks de Claude Code), solo del archivo que la APP fija en LAZUNOX_HOOKS_FILE.
 // Un proyecto NO puede traer sus propios ganchos (sería ejecución de código de un repositorio ajeno): el archivo vive en la carpeta de datos de
 // la app, lo escribe la persona. Formato:
-//   { "hooks": { "PreToolUse": [{ "matcher": "bash|edit", "command": "./revisar.sh", "timeout": 10 }], "PostToolUse": [ … ] } }
+//   { "hooks": { "PreToolUse": [{ "matcher": "bash|edit", "command": "./revisar.sh", "timeout": 10 }], "PostToolUse": [ … ], "PreCompact": [ … ], "Stop": [ … ] } }
 // El comando recibe por stdin un JSON { event, tool, args, sessionID, cwd[, output] }. PreToolUse: código de salida 2 = BLOQUEA la herramienta y el
 // modelo recibe el stderr; cualquier otro código (o un fallo, o pasarse del tiempo) no bloquea. PostToolUse: código 2 añade el stderr al resultado.
 
 export type Gancho = { matcher?: string; command: string; timeout?: number }
-export type Config = { PreToolUse: Gancho[]; PostToolUse: Gancho[] }
+export type Config = { PreToolUse: Gancho[]; PostToolUse: Gancho[]; PreCompact: Gancho[]; Stop: Gancho[] }
+const VACIO = (): Config => ({ PreToolUse: [], PostToolUse: [], PreCompact: [], Stop: [] })
 
 const MAX_ARCHIVO = 64 * 1024
 const MAX_GANCHOS = 20
@@ -21,7 +22,7 @@ const TIEMPO_MAX = 60
 
 /** Interpreta el archivo de ganchos; lo inválido se descarta (nunca lanza). */
 export const leerConfig = (text: string): Config => {
-  const vacio: Config = { PreToolUse: [], PostToolUse: [] }
+  const vacio = VACIO()
   let j: unknown
   try {
     j = JSON.parse(text)
@@ -39,7 +40,7 @@ export const leerConfig = (text: string): Config => {
         timeout: typeof g.timeout === "number" && Number.isFinite(g.timeout) ? Math.min(TIEMPO_MAX, Math.max(1, Math.floor(g.timeout))) : undefined,
       }))
       .slice(0, MAX_GANCHOS)
-  return { PreToolUse: lista(hooks.PreToolUse), PostToolUse: lista(hooks.PostToolUse) }
+  return { PreToolUse: lista(hooks.PreToolUse), PostToolUse: lista(hooks.PostToolUse), PreCompact: lista(hooks.PreCompact), Stop: lista(hooks.Stop) }
 }
 
 /** ¿El gancho aplica a esta herramienta? Sin matcher o «*» = todas; si no, expresión regular anclada («bash|edit»). */
@@ -99,13 +100,13 @@ let cache: { file: string; mtime: number; cfg: Config } | undefined
 const config = (file: string): Config => {
   try {
     const st = fs.statSync(file)
-    if (!st.isFile() || st.size > MAX_ARCHIVO) return { PreToolUse: [], PostToolUse: [] }
+    if (!st.isFile() || st.size > MAX_ARCHIVO) return VACIO()
     if (cache && cache.file === file && cache.mtime === st.mtimeMs) return cache.cfg
     const cfg = leerConfig(fs.readFileSync(file, "utf-8"))
     cache = { file, mtime: st.mtimeMs, cfg }
     return cfg
   } catch {
-    return { PreToolUse: [], PostToolUse: [] }
+    return VACIO()
   }
 }
 
@@ -114,6 +115,21 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
   if (!file || !path.isAbsolute(file)) return {}
   const cwd = input.directory
   return {
+    // PreCompact: lo que el comando escriba en stdout (código 0) se suma al contexto del resumen (p. ej. «recuerda el plan y las reglas»).
+    "experimental.session.compacting": async (i, o) => {
+      for (const g of config(file).PreCompact) {
+        const r = await ejecutar(g, { event: "PreCompact", sessionID: i.sessionID, cwd }, cwd)
+        const txt = r.stdout.trim().slice(0, 4000)
+        if (r.code === 0 && txt) o.context.push(txt)
+      }
+    },
+    // Stop: la sesión quedó ociosa (terminó su turno). Solo informativo: no bloquea nada.
+    event: async ({ event }) => {
+      const props = event.properties as { sessionID?: string; status?: { type?: string } } | undefined
+      if (event.type !== "session.status" || props?.status?.type !== "idle") return
+      const sessionID = props.sessionID
+      for (const g of config(file).Stop) await ejecutar(g, { event: "Stop", sessionID, cwd }, cwd)
+    },
     "tool.execute.before": async (i, o) => {
       for (const g of config(file).PreToolUse) {
         if (!aplica(g, i.tool)) continue
