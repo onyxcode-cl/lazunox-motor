@@ -67,7 +67,7 @@ const failure = <A, E, R>(self: Effect.Effect<A, E, R>) =>
   self.pipe(
     Effect.exit,
     Effect.map((exit) => {
-      if (Exit.isSuccess(exit)) throw new Error("se esperaba un fallo; en curso: " + ShellBackground.running().map((j) => j.sessionID + ":" + j.id).join(","))
+      if (Exit.isSuccess(exit)) throw new Error("se esperaba un fallo; en curso: " + ShellBackground.all().map((j) => j.sessionID + ":" + j.id + ":" + j.running + ":" + j.reason + ":" + j.code + ":" + (Date.now() - j.startedAt)).join(" | "))
       const err = Cause.squash(exit.cause)
       return err instanceof Error ? err : new Error(String(err))
     }),
