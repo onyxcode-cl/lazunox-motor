@@ -8,6 +8,7 @@ import { Cause, Deferred, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import * as Stream from "effect/Stream"
 import { Config } from "@/config/config"
 import { LLM } from "../../src/session/llm"
+import { Todo } from "@/session/todo"
 import { SessionCompaction } from "../../src/session/compaction"
 import { Token } from "@/util/token"
 import { Plugin } from "../../src/plugin"
@@ -240,7 +241,7 @@ const env = AppNodeBuilder.build(compactionTestNode, [
 const it = testEffect(env)
 
 const compactionEnv = AppNodeBuilder.build(
-  LayerNode.group([SessionNs.node, SessionProjector.node, Database.node, EventV2Bridge.node, CrossSpawnSpawner.node]),
+  LayerNode.group([SessionNs.node, SessionProjector.node, Database.node, EventV2Bridge.node, CrossSpawnSpawner.node, Todo.node]),
 )
 const itCompaction = testEffect(compactionEnv)
 
@@ -1505,6 +1506,48 @@ describe("session.compaction.process", () => {
           plugin: compactionContext("Prioritize unresolved migration details"),
         }),
       )
+    },
+    { git: true },
+  )
+
+  itCompaction.instance(
+    "Lazunox: la lista de tareas de la sesión viaja en el contexto del resumen",
+    () => {
+      const stub = llm()
+      let captured = ""
+      stub.push(
+        reply("summary", (input) => {
+          captured = JSON.stringify(input.messages)
+        }),
+      )
+
+      return Effect.gen(function* () {
+        const ssn = yield* SessionNs.Service
+        const todo = yield* Todo.Service
+        const session = yield* ssn.create({})
+        yield* todo.update({
+          sessionID: session.id,
+          todos: [
+            { content: "Migrar la tabla de usuarios", status: "in_progress", priority: "high" },
+            { content: "Escribir las pruebas", status: "pending", priority: "medium" },
+          ],
+        })
+        yield* createUserMessage(session.id, "older context")
+        yield* createUserMessage(session.id, "keep this turn")
+        yield* createCompactionMarker(session.id)
+
+        const msgs = yield* ssn.messages({ sessionID: session.id })
+        yield* SessionCompaction.use.process({
+          parentID: msgs.at(-1)!.info.id,
+          messages: msgs,
+          sessionID: session.id,
+          auto: false,
+        })
+
+        expect(captured).toContain("Lista de tareas de la sesión")
+        expect(captured).toContain("[in_progress] Migrar la tabla de usuarios")
+        expect(captured).toContain("[pending] Escribir las pruebas")
+      }).pipe(withCompaction({ llm: stub.llmLayer }))
     },
     { git: true },
   )
