@@ -10,7 +10,7 @@ import { SessionID } from "@/session/schema"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { BackgroundJob } from "@/background/job"
-import { InstanceState } from "@/effect/instance-state"
+import { InstanceRef } from "@/effect/instance-ref"
 import { TrabajosDisco } from "./shell/trabajos-disco"
 import { ShellBackground } from "./shell/background"
 
@@ -223,6 +223,9 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
   return result
 })
 
+// Lazunox: directorio de la instancia si hay (en pruebas sueltas no la hay).
+const instanceDirectory = Effect.map(InstanceRef, (ctx) => ctx?.directory ?? "")
+
 export const CELL_JOB_TYPE = "code-mode"
 
 // `execute` no debe bloquear la conversación más de ~50 s (la app vigila las ejecuciones largas); `execute_wait` puede esperar más.
@@ -425,7 +428,7 @@ export const CodeModeTool = Tool.define(
 
         const cellId = `cm_${(ctx.callID ?? "").replace(/[^A-Za-z0-9]/g, "").slice(-8)}${Math.random().toString(36).slice(2, 6)}`
         // Lazunox: marcador en disco (se borra al terminar la celda); si el motor muere queda como huérfano.
-        const directory = yield* InstanceState.directory
+        const directory = yield* instanceDirectory
         TrabajosDisco.writeMarker({
           id: cellId,
           tipo: "celda",
@@ -486,7 +489,7 @@ export const CodeModeWaitTool = Tool.define(
       parameters: WaitParameters,
       execute: Effect.fn("CodeMode.wait")(function* (params, ctx) {
         const id = params.cell_id
-        ShellBackground.sweepDirectory(yield* InstanceState.directory)
+        ShellBackground.sweepDirectory(yield* instanceDirectory)
         const job = yield* jobs.get(id)
         // Lazunox: lápida de ESTA sesión (el motor se reinició y el script se perdió).
         if (!job) {
