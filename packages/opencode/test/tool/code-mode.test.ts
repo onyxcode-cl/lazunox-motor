@@ -788,6 +788,18 @@ describe("code mode: pausa y espera", () => {
     expect(r.output).not.toContain("Script en curso")
   })
 
+  test("una celda solo la puede esperar o terminar la sesión que la lanzó", async () => {
+    const [exec, wait] = await buildPair(5000)
+    const first = await Effect.runPromise(exec.execute({ code: "return await tools.srv.slow({})", yield_ms: 1000 }, ctx))
+    const cell = cellOf(first.output)!
+    const otra: Tool.Context = { ...ctx, sessionID: SessionID.make("ses_otra") }
+    const err = await failure(wait.execute({ cell_id: cell, terminate: true }, otra))
+    expect(err.message).toContain("No existe la celda")
+    // la dueña sí puede, y la celda seguía viva
+    const stopped = await Effect.runPromise(wait.execute({ cell_id: cell, terminate: true }, ctx))
+    expect(stopped.output).toContain("Script terminado")
+  })
+
   test("tope de celdas vivas a la vez", async () => {
     const [exec] = await buildPair(6000)
     for (let i = 0; i < 3; i++) {

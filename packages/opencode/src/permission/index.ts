@@ -6,6 +6,7 @@ import { Deferred, Effect, Layer, Context } from "effect"
 import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
+import { Plugin } from "@/plugin"
 
 export const Event = PermissionV1.Event
 
@@ -43,6 +44,7 @@ const layer = Layer.effect(
   Service,
   Effect.gen(function* () {
     const events = yield* EventV2Bridge.Service
+    const plugin = yield* Plugin.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
         void ctx
@@ -84,6 +86,31 @@ const layer = Layer.effect(
       if (!needsAsk) return
 
       const id = request.id ?? PermissionV1.ID.ascending()
+
+      // Lazunox: el gancho de plugin `permission.ask` (tipado en OpenCode pero nunca disparado) decide antes de preguntar a la persona:
+      // `deny` rechaza, `allow` aprueba, `ask` (por defecto) sigue el camino normal. Solo lo usan plugins propios de confianza.
+      const decision = yield* plugin.trigger(
+        "permission.ask",
+        {
+          id,
+          type: request.permission,
+          pattern: request.patterns.length === 1 ? request.patterns[0] : request.patterns,
+          sessionID: request.sessionID,
+          messageID: request.tool?.messageID ?? "",
+          ...(request.tool?.callID ? { callID: request.tool.callID } : {}),
+          title: request.permission,
+          metadata: request.metadata ?? {},
+          time: { created: Date.now() },
+        },
+        { status: "ask" as "ask" | "deny" | "allow" },
+      )
+      if (decision.status === "deny") {
+        return yield* new PermissionV1.DeniedError({
+          ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
+        })
+      }
+      if (decision.status === "allow") return
+
       const info: PermissionV1.Request = {
         id,
         sessionID: request.sessionID,
@@ -218,6 +245,6 @@ export function visibleTools<T>(tools: Record<string, T>, ruleset: PermissionV1.
   return Object.fromEntries(Object.entries(tools).filter(([name]) => !hidden.has(name)))
 }
 
-export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node] })
+export const node = LayerNode.make({ service: Service, layer: layer, deps: [EventV2Bridge.node, Plugin.node] })
 
 export * as Permission from "."

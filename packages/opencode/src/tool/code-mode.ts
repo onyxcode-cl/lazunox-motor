@@ -6,6 +6,7 @@ import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
+import { SessionID } from "@/session/schema"
 import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { BackgroundJob } from "@/background/job"
@@ -84,7 +85,7 @@ const limitFromEnv = (name: string, fallback: number) => {
 export const CODE_MODE_YIELD_MS = limitFromEnv("LAZUNOX_CODE_MODE_YIELD_MS", 30_000)
 export const CODE_MODE_MAX_CELLS = limitFromEnv("LAZUNOX_CODE_MODE_MAX_CELLS", 3)
 export const CODE_MODE_LIMITS = {
-  timeoutMs: limitFromEnv("LAZUNOX_CODE_MODE_TIMEOUT_MS", 1_800_000),
+  timeoutMs: limitFromEnv("LAZUNOX_CODE_MODE_TIMEOUT_MS", 600_000),
   maxToolCalls: limitFromEnv("LAZUNOX_CODE_MODE_MAX_TOOL_CALLS", 1000),
   maxOutputBytes: limitFromEnv("LAZUNOX_CODE_MODE_MAX_OUTPUT_BYTES", 5_000_000),
 } as const
@@ -396,17 +397,31 @@ export const CodeModeTool = Tool.define(
           return withLogs(output)
         }).pipe(Effect.onInterrupt(() => Effect.sync(() => cellAbort.abort())))
 
+        // Celdas vivas de sesiones que ya no existen (borradas): se cancelan para que no queden scripts huérfanos.
+        for (const j of (yield* jobs.list()).filter((j) => j.type === CELL_JOB_TYPE && j.status === "running")) {
+          const owner = j.metadata?.["sessionID"]
+          if (typeof owner !== "string" || owner === ctx.sessionID) continue
+          const alive = yield* sessions.get(SessionID.make(owner)).pipe(
+            Effect.map(() => true),
+            Effect.catch(() => Effect.succeed(false)),
+          )
+          if (!alive) yield* jobs.cancel(j.id)
+        }
         const running = (yield* jobs.list()).filter((j) => j.type === CELL_JOB_TYPE && j.status === "running")
         if (running.length >= CODE_MODE_MAX_CELLS) {
+          // Solo se nombran las celdas de ESTA sesión: los ids de otras no se filtran.
+          const own = running.filter((j) => j.metadata?.["sessionID"] === ctx.sessionID)
           return yield* Effect.fail(
             new Error(
-              `Ya hay ${running.length} scripts en curso (${running.map((j) => j.id).join(", ")}). Espera a que terminen con execute_wait o termina alguno con terminate: true.`,
+              `Ya hay ${running.length} scripts en curso en esta carpeta` +
+                (own.length > 0 ? ` (tuyos: ${own.map((j) => j.id).join(", ")})` : "") +
+                `. Espera a que terminen con execute_wait o termina alguno tuyo con terminate: true.`,
             ),
           )
         }
 
         const cellId = `cm_${(ctx.callID ?? "").replace(/[^A-Za-z0-9]/g, "").slice(-8)}${Math.random().toString(36).slice(2, 6)}`
-        yield* jobs.start({ id: cellId, type: CELL_JOB_TYPE, title: "Code Mode", run: cell })
+        yield* jobs.start({ id: cellId, type: CELL_JOB_TYPE, title: "Code Mode", metadata: { sessionID: ctx.sessionID }, run: cell })
 
         const yieldMs = clampYield(params.yield_ms)
         const waited = yield* Effect.raceFirst(
@@ -450,7 +465,8 @@ export const CodeModeWaitTool = Tool.define(
       execute: Effect.fn("CodeMode.wait")(function* (params, ctx) {
         const id = params.cell_id
         const job = yield* jobs.get(id)
-        if (!job || job.type !== CELL_JOB_TYPE) {
+        // Una celda solo la puede esperar o terminar la sesión que la lanzó (el mensaje es el mismo que si no existiera).
+        if (!job || job.type !== CELL_JOB_TYPE || job.metadata?.["sessionID"] !== ctx.sessionID) {
           return yield* Effect.fail(
             new Error(`No existe la celda ${id} (¿ya terminó hace tiempo, no es de Code Mode o se reinició el motor?).`),
           )
