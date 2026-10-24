@@ -11,6 +11,7 @@ import { Permission } from "@/permission"
 import { Plugin } from "@/plugin"
 import { BackgroundJob } from "@/background/job"
 import { LazunoxWake } from "./lazunox-wake"
+import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 
 export const CODE_MODE_TOOL = "execute"
 
@@ -232,6 +233,69 @@ const clampYield = (value: number | undefined, max = MAX_YIELD_EXECUTE_MS) => {
   return Math.min(Math.max(requested, 1_000), Math.min(max, CODE_MODE_LIMITS.timeoutMs))
 }
 
+// Lazunox (celda viva): registro por celda, a nivel de módulo, para que `execute_wait` vea lo mismo que `execute`.
+// La revocación vive aquí (por celda, nunca global). Al terminar, la celda se borra del registro salvo que esté revocada
+// (así `execute_wait` sigue explicando por qué se detuvo); las revocadas se guardan acotadas.
+export const CELL_REVOKED_MESSAGE =
+  "El usuario rechazó un permiso dentro de este programa: no se ejecutan más herramientas."
+const SUMMARY_MAX_CHARS = 1_000
+const SUMMARY_INPUT_MAX = 80
+const REVOKED_KEEP = 50
+
+type CellRecord = {
+  sessionID: string
+  startedAt: number
+  calls: CallEntry[]
+  revoked: boolean
+}
+const cellRecords = new Map<string, CellRecord>()
+
+const finishCell = (cellId: string) => {
+  const rec = cellRecords.get(cellId)
+  if (!rec) return
+  if (!rec.revoked) return void cellRecords.delete(cellId)
+  rec.calls = []
+  // Solo se conservan las últimas REVOKED_KEEP celdas revocadas (el Map conserva el orden de inserción).
+  const revoked = [...cellRecords.entries()].filter(([, r]) => r.revoked)
+  for (const [id] of revoked.slice(0, Math.max(0, revoked.length - REVOKED_KEEP))) cellRecords.delete(id)
+}
+
+const isPermissionRefusal = (error: unknown) =>
+  error instanceof PermissionV1.RejectedError ||
+  error instanceof PermissionV1.CorrectedError ||
+  (typeof error === "object" &&
+    error !== null &&
+    "_tag" in error &&
+    (error._tag === "PermissionRejectedError" || error._tag === "PermissionCorrectedError"))
+
+const shorten = (value: unknown, max: number) => {
+  try {
+    const text = typeof value === "string" ? value : JSON.stringify(value)
+    const flat = (text ?? "").replace(/\s+/g, " ")
+    return flat.length > max ? flat.slice(0, max) + "…" : flat
+  } catch {
+    return "(no se pudo resumir)"
+  }
+}
+
+/** Resumen acotado (≤ 1 KB) de una celda en curso: llamadas completadas, las 3 últimas y segundos transcurridos. */
+export const summarizeCell = (rec: Pick<CellRecord, "calls" | "startedAt">, now = Date.now()) => {
+  const made = rec.calls.filter(Boolean)
+  const completed = made.filter((c) => c.status === "completed").length
+  const seconds = Math.max(0, Math.round((now - rec.startedAt) / 1000))
+  const lines = [`Resumen: ${completed} llamada(s) completada(s), ${seconds} s transcurridos.`]
+  const last = made.slice(-3)
+  if (last.length > 0) {
+    lines.push("Últimas llamadas:")
+    for (const c of last) {
+      const input = c.input === undefined ? "" : shorten(c.input, SUMMARY_INPUT_MAX)
+      lines.push(`- ${c.tool}(${input}) [${c.status}]`)
+    }
+  }
+  const text = lines.join("\n")
+  return text.length > SUMMARY_MAX_CHARS ? text.slice(0, SUMMARY_MAX_CHARS - 1) + "…" : text
+}
+
 type Settled =
   | { kind: "done"; text: string }
   | { kind: "running"; text: string }
@@ -239,15 +303,18 @@ type Settled =
   | { kind: "cancelled"; text: string }
 
 /** Traduce el estado de la celda (trabajo en segundo plano) en lo que ve el modelo. */
-const settledResult = (waited: BackgroundJob.WaitResult, cellId: string, calls: CallEntry[]): Settled => {
+const settledResult = (waited: BackgroundJob.WaitResult, cellId: string): Settled => {
+  const rec = cellRecords.get(cellId)
   const info = waited.info
   if (!info) return { kind: "failed", message: `No existe la celda ${cellId} (¿ya terminó hace tiempo o se reinició el motor?).` }
+  // Una celda revocada nunca entrega su resultado, aunque el script haya alcanzado a terminar atrapando los errores.
+  if (rec?.revoked) return { kind: "cancelled", text: CELL_REVOKED_MESSAGE }
   if (info.status === "running") {
-    const doneCalls = calls.filter((c) => c.status === "completed").length
     return {
       kind: "running",
       text: [
-        `Script en curso (cell_id=${cellId}). Lleva ${doneCalls} llamada(s) completada(s) y sigue ejecutándose.`,
+        `Script en curso (cell_id=${cellId}). Sigue ejecutándose.`,
+        ...(rec ? [summarizeCell(rec)] : []),
         "No lo vuelvas a lanzar. Usa execute_wait con este cell_id para seguir esperando o leer el resultado, o terminate: true para pararlo (lo ya hecho no se deshace).",
       ].join("\n"),
     }
@@ -306,9 +373,21 @@ export const CodeModeTool = Tool.define(
         const cellAbort = new AbortController()
         const cellCtx: Tool.Context = { ...ctx, abort: cellAbort.signal }
 
+        const cellId = `cm_${(ctx.callID ?? "").replace(/[^A-Za-z0-9]/g, "").slice(-8)}${Math.random().toString(36).slice(2, 6)}`
+        const record: CellRecord = { sessionID: ctx.sessionID, startedAt: Date.now(), calls, revoked: false }
+        // Un rechazo de permiso revoca ESTA celda: las llamadas siguientes fallan al instante y la celda se termina.
+        const revoke = Effect.gen(function* () {
+          if (record.revoked) return
+          record.revoked = true
+          cellAbort.abort()
+          // Se cancela desde otra fibra: cancelar el trabajo cierra su ámbito, y esta llamada corre dentro de él.
+          yield* Effect.forkDetach(jobs.cancel(cellId))
+        })
+
         let childCalls = 0
         const callTool = (entry: CatalogEntry) => (input: unknown) =>
           Effect.gen(function* () {
+            if (record.revoked) return yield* Effect.fail(toolError(CELL_REVOKED_MESSAGE))
             childCalls += 1
             const result = yield* invokeChildTool({
               plugin,
@@ -325,6 +404,7 @@ export const CodeModeTool = Tool.define(
             Effect.catchCause((cause) => {
               if (Cause.hasInterruptsOnly(cause)) return Effect.interrupt
               const error = Cause.squash(cause)
+              if (isPermissionRefusal(error)) return revoke.pipe(Effect.andThen(Effect.fail(toolError(CELL_REVOKED_MESSAGE, error))))
               return Effect.fail(toolError(error instanceof Error ? error.message : String(error), error))
             }),
           )
@@ -396,7 +476,10 @@ export const CodeModeTool = Tool.define(
               ? result.value
               : (JSON.stringify(result.value, null, 2) ?? String(result.value))
           return withLogs(output)
-        }).pipe(Effect.onInterrupt(() => Effect.sync(() => cellAbort.abort())))
+        }).pipe(
+          Effect.onInterrupt(() => Effect.sync(() => cellAbort.abort())),
+          Effect.ensuring(Effect.sync(() => finishCell(cellId))),
+        )
 
         // Celdas vivas de sesiones que ya no existen (borradas): se cancelan para que no queden scripts huérfanos.
         for (const j of (yield* jobs.list()).filter((j) => j.type === CELL_JOB_TYPE && j.status === "running")) {
@@ -421,7 +504,7 @@ export const CodeModeTool = Tool.define(
           )
         }
 
-        const cellId = `cm_${(ctx.callID ?? "").replace(/[^A-Za-z0-9]/g, "").slice(-8)}${Math.random().toString(36).slice(2, 6)}`
+        cellRecords.set(cellId, record)
         yield* jobs.start({ id: cellId, type: CELL_JOB_TYPE, title: "Code Mode", metadata: { sessionID: ctx.sessionID }, run: cell })
 
         // Lazunox: si la celda cede el control y nadie lee su resultado, se despierta a la conversación al terminar.
@@ -467,12 +550,16 @@ export const CodeModeTool = Tool.define(
           } satisfies Tool.ExecuteResult<Metadata>
         }
 
-        const settled = settledResult(waited, cellId, calls)
+        const settled = settledResult(waited, cellId)
         if (settled.kind !== "running") LazunoxWake.markCellConsumed(cellId)
         if (settled.kind === "failed") return yield* Effect.fail(new Error(settled.message))
         return {
           title: CODE_MODE_TOOL,
-          metadata: { toolCalls: calls, ...(settled.kind === "running" ? { cellId } : {}) },
+          metadata: {
+            toolCalls: calls,
+            ...(record.revoked ? { error: true } : {}),
+            ...(settled.kind === "running" ? { cellId } : {}),
+          },
           output: settled.text,
           ...(settled.kind === "done" && attachments.length > 0 ? { attachments } : {}),
         } satisfies Tool.ExecuteResult<Metadata>
@@ -531,7 +618,7 @@ export const CodeModeWaitTool = Tool.define(
           } satisfies Tool.ExecuteResult<Metadata>
         }
 
-        const settled = settledResult(waited, id, [])
+        const settled = settledResult(waited, id)
         if (settled.kind !== "running") LazunoxWake.markCellConsumed(id)
         if (settled.kind === "failed") return yield* Effect.fail(new Error(settled.message))
         return {
