@@ -84,9 +84,9 @@ const limitFromEnv = (name: string, fallback: number) => {
 export const CODE_MODE_YIELD_MS = limitFromEnv("LAZUNOX_CODE_MODE_YIELD_MS", 30_000)
 export const CODE_MODE_MAX_CELLS = limitFromEnv("LAZUNOX_CODE_MODE_MAX_CELLS", 3)
 export const CODE_MODE_LIMITS = {
-  timeoutMs: limitFromEnv("LAZUNOX_CODE_MODE_TIMEOUT_MS", 300_000),
-  maxToolCalls: limitFromEnv("LAZUNOX_CODE_MODE_MAX_TOOL_CALLS", 200),
-  maxOutputBytes: limitFromEnv("LAZUNOX_CODE_MODE_MAX_OUTPUT_BYTES", 1_000_000),
+  timeoutMs: limitFromEnv("LAZUNOX_CODE_MODE_TIMEOUT_MS", 1_800_000),
+  maxToolCalls: limitFromEnv("LAZUNOX_CODE_MODE_MAX_TOOL_CALLS", 1000),
+  maxOutputBytes: limitFromEnv("LAZUNOX_CODE_MODE_MAX_OUTPUT_BYTES", 5_000_000),
 } as const
 
 export function describeCatalog(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): string {
@@ -221,9 +221,13 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
 
 const CELL_JOB_TYPE = "code-mode"
 
-const clampYield = (value: number | undefined) => {
+// `execute` no debe bloquear la conversación más de ~50 s (la app vigila las ejecuciones largas); `execute_wait` puede esperar más.
+const MAX_YIELD_EXECUTE_MS = 50_000
+const MAX_YIELD_WAIT_MS = 300_000
+
+const clampYield = (value: number | undefined, max = MAX_YIELD_EXECUTE_MS) => {
   const requested = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : CODE_MODE_YIELD_MS
-  return Math.min(Math.max(requested, 1_000), CODE_MODE_LIMITS.timeoutMs)
+  return Math.min(Math.max(requested, 1_000), Math.min(max, CODE_MODE_LIMITS.timeoutMs))
 }
 
 type Settled =
@@ -468,7 +472,7 @@ export const CodeModeWaitTool = Tool.define(
           return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
         })
         const waited = yield* Effect.raceFirst(
-          jobs.wait({ id, timeout: clampYield(params.yield_ms) }),
+          jobs.wait({ id, timeout: clampYield(params.yield_ms, MAX_YIELD_WAIT_MS) }),
           abort.pipe(Effect.map(() => "aborted" as const)),
         )
         // Interrumpir la espera NO mata el script: sigue vivo y se puede volver a esperar.
