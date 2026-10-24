@@ -22,6 +22,11 @@ export interface TaskPromptOps {
 }
 
 const id = "task"
+
+/** Máximo de ayudantes en segundo plano vivos a la vez (LAZUNOX_MAX_SUBAGENTS, 1-64; por defecto 8). */
+export const limiteSubagentes = (env: NodeJS.ProcessEnv = process.env) =>
+  Math.min(64, Math.max(1, Number.parseInt(env.LAZUNOX_MAX_SUBAGENTS ?? "", 10) || 8))
+export const topeAlcanzado = (vivos: number, max: number) => vivos >= max
 const BACKGROUND_DESCRIPTION = [
   "Background mode: background=true launches the subagent asynchronously and returns immediately.",
   "Foreground is the default; use it when you need the result before continuing.",
@@ -99,6 +104,20 @@ export const TaskTool = Tool.define(
         return yield* Effect.fail(
           new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
         )
+      }
+
+      // Lazunox: tope de ayudantes en segundo plano vivos a la vez (por carpeta). Sin tope, un modelo despistado puede lanzar decenas de
+      // sesiones paralelas (coste, memoria y permisos pendientes). LAZUNOX_MAX_SUBAGENTS (1-64, por defecto 8).
+      if (runInBackground) {
+        const max = limiteSubagentes()
+        const vivos = (yield* background.list()).filter((j) => j.type === id && j.status === "running").length
+        if (topeAlcanzado(vivos, max)) {
+          return yield* Effect.fail(
+            new Error(
+              `Ya hay ${vivos} ayudantes en segundo plano trabajando (máximo ${max}). Espera a que termine alguno (te avisarán) antes de lanzar otro, o hazlo tú mismo.`,
+            ),
+          )
+        }
       }
 
       const parent = yield* sessions.get(ctx.sessionID)
