@@ -7,6 +7,7 @@ import os from "os"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Plugin } from "@/plugin"
+import * as SiempreDisco from "./siempre-disco"
 
 export const Event = PermissionV1.Event
 
@@ -24,6 +25,7 @@ interface PendingEntry {
 interface State {
   pending: Map<PermissionV1.ID, PendingEntry>
   approved: PermissionV1.Rule[]
+  directory: string
 }
 
 export function evaluate(permission: string, pattern: string, ...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule {
@@ -47,10 +49,11 @@ const layer = Layer.effect(
     const plugin = yield* Plugin.Service
     const state = yield* InstanceState.make<State>(
       Effect.fn("Permission.state")(function* (ctx) {
-        void ctx
-        const state = {
+        // Lazunox: los «siempre» guardados de esta carpeta (si la app lo encendió) arrancan ya aprobados.
+        const state: State = {
           pending: new Map<PermissionV1.ID, PendingEntry>(),
-          approved: [],
+          approved: SiempreDisco.cargar(ctx.directory).map((r) => ({ ...r, action: "allow" as const })),
+          directory: ctx.directory,
         }
 
         yield* Effect.addFinalizer(() =>
@@ -72,7 +75,11 @@ const layer = Layer.effect(
       let needsAsk = false
 
       for (const pattern of request.patterns) {
-        const rule = evaluate(request.permission, pattern, ruleset, approved)
+        // Lazunox: un «siempre» (de esta sesión o guardado en disco) nunca levanta un `deny` vigente de las reglas de la llamada.
+        const rule =
+          evaluate(request.permission, pattern, ruleset).action === "deny"
+            ? evaluate(request.permission, pattern, ruleset)
+            : evaluate(request.permission, pattern, ruleset, approved)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
           return yield* new PermissionV1.DeniedError({
@@ -134,7 +141,8 @@ const layer = Layer.effect(
     })
 
     const reply = Effect.fn("Permission.reply")(function* (input: PermissionV1.ReplyInput) {
-      const { approved, pending } = yield* InstanceState.get(state)
+      const state_ = yield* InstanceState.get(state)
+      const { approved, pending } = state_
       const existing = pending.get(input.requestID)
       if (!existing) return yield* new PermissionV1.NotFoundError({ requestID: input.requestID })
 
@@ -176,6 +184,10 @@ const layer = Layer.effect(
           action: "allow",
         })
       }
+      SiempreDisco.guardar(
+        state_.directory,
+        existing.info.always.map((pattern) => ({ permission: existing.info.permission, pattern })),
+      )
 
       for (const [id, item] of pending.entries()) {
         if (item.info.sessionID !== existing.info.sessionID) continue
