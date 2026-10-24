@@ -1,4 +1,4 @@
-import { Effect, Stream } from "effect"
+import { Effect, Exit, Fiber, Schema, Scope, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
 import * as Tool from "./tool"
@@ -21,8 +21,13 @@ import { ChildProcess } from "effect/unstable/process"
 import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner"
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
+import { ShellBackground, type Job } from "./shell/background"
 
 export { Parameters } from "./shell/prompt"
+
+const BACKGROUND_NOTE = `
+
+Background mode (Lazunox): for long-running commands (dev servers, watchers, long builds, tests) pass background: true. The call waits at most yield_ms (default 10000, minimum 1000); if the command has not finished it keeps running and you get a shell_id plus the output so far. Then use the shell_wait tool with that shell_id to keep waiting, read ONLY the new output, or stop it with terminate: true. Never relaunch a command that is still running. Background commands go through the same permission checks and environment as normal ones; the timeout parameter does not apply to them (a lifetime cap does, default 30 minutes), at most 3 per session and 6 in the whole engine. Without background the tool behaves as before.`
 
 const MAX_METADATA_LENGTH = 30_000
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
@@ -335,6 +340,92 @@ const parser = lazy(async () => {
   return { bash, ps }
 })
 
+    /** Espera como mucho yieldMs a que el trabajo termine y arma la respuesta con solo la salida nueva. */
+const settle = Effect.fn("ShellTool.settle")(function* (
+  job: Job,
+  yieldMs: number,
+  ctx: Tool.Context,
+  limits: { maxLines: number; maxBytes: number },
+) {
+      const abort = Effect.callback<void>((resume) => {
+        if (ctx.abort.aborted) return resume(Effect.void)
+    const handler = () => resume(Effect.void)
+    ctx.abort.addEventListener("abort", handler, { once: true })
+    return Effect.sync(() => ctx.abort.removeEventListener("abort", handler))
+  })
+  let interrupted = false
+  if (job.running) {
+    const outcome = yield* Effect.raceFirst(
+      Effect.promise(() => job.finished).pipe(Effect.timeoutOption(`${yieldMs} millis`)),
+      abort.pipe(Effect.map(() => "aborted" as const)),
+    )
+    interrupted = outcome === "aborted"
+  }
+  const fresh = ShellBackground.readNew(job, limits.maxBytes)
+  const parts: string[] = []
+  if (fresh.skipped > 0) parts.push(`...${fresh.skipped} bytes de salida nueva omitidos (se muestra el final)...`)
+  parts.push(fresh.text || (job.running ? "(sin salida nueva)" : "(sin salida nueva)"))
+  if (job.capped) {
+    parts.push(`<aviso>La salida llegó al tope de ${ShellBackground.bgMaxOutput()} bytes; lo que el comando escriba después se descarta.</aviso>`)
+  }
+  const status = interrupted && job.running ? `Espera interrumpida; el comando sigue en curso (shell_id=${job.id}).` : ShellBackground.statusLine(job)
+  parts.push(`<shell_status>\n${status}\n</shell_status>`)
+  return {
+    title: job.command,
+    metadata: {
+      output: fresh.text || preview(status),
+      exit: job.running ? null : job.code,
+      truncated: fresh.skipped > 0 || job.capped,
+      shellId: job.id,
+      running: job.running,
+    } as BgMetadata,
+    output: parts.join("\n\n"),
+  }
+})
+
+
+type BgMetadata = { output: string; exit: number | null; truncated: boolean; outputPath?: string; shellId?: string; running?: boolean }
+
+const WaitParameters = Schema.Struct({
+  shell_id: Schema.String.annotate({ description: "The shell_id returned by shell with background: true." }),
+  yield_ms: Schema.optional(Schema.Number).annotate({
+    description: "Optional. Milliseconds to wait for the command before returning (default 10000, minimum 1000).",
+  }),
+  terminate: Schema.optional(Schema.Boolean).annotate({
+    description: "Optional. true stops the command (kills its whole process group) instead of waiting. What it already did is not undone.",
+  }),
+})
+type WaitParameters = Schema.Schema.Type<typeof WaitParameters>
+
+const WAIT_DESCRIPTION =
+  "Wait for a command started with shell and background: true (use its shell_id), or stop it with terminate: true. Returns ONLY the output produced since the last read plus the status: still running, finished with an exit code, terminated by you, or stopped for exceeding its lifetime cap. Only works on shells started from this same session."
+
+export const SHELL_WAIT_TOOL = "shell_wait"
+
+export const ShellWaitTool = Tool.define(
+  SHELL_WAIT_TOOL,
+  Effect.gen(function* () {
+    const trunc = yield* Truncate.Service
+    const init: Tool.DefWithoutID<typeof WaitParameters, BgMetadata> = {
+      description: WAIT_DESCRIPTION,
+      parameters: WaitParameters,
+      execute: (params, ctx) =>
+        Effect.gen(function* () {
+          const job = ShellBackground.get(params.shell_id)
+          // Misma respuesta para «no existe» y «es de otra sesión»: no se revela el trabajo ajeno.
+          if (!job || job.sessionID !== ctx.sessionID) {
+            throw new Error(
+              `No existe el shell ${params.shell_id} en esta sesión (¿ya se limpió, es de otra sesión o se reinició el motor?).`,
+            )
+          }
+          if (params.terminate && job.running) yield* job.kill
+          return yield* settle(job, ShellBackground.clampYield(params.yield_ms), ctx, yield* trunc.limits())
+        }),
+    }
+    return init
+  }),
+)
+
 export const ShellTool = Tool.define(
   ShellID.ToolID,
   Effect.gen(function* () {
@@ -345,6 +436,10 @@ export const ShellTool = Tool.define(
     const plugin = yield* Plugin.Service
     const flags = yield* RuntimeFlags.Service
     const defaultTimeoutMs = flags.bashDefaultTimeoutMs ?? 2 * 60 * 1000
+    // Lazunox: al terminar la instancia se matan sus shells en segundo plano y se borran sus archivos de salida.
+    const bgState = yield* InstanceState.make((instance) =>
+      Effect.addFinalizer(() => ShellBackground.disposeDirectory(instance.directory)),
+    )
 
     const cygpath = Effect.fn("ShellTool.cygpath")(function* (shell: string, text: string) {
       const lines = yield* spawner
@@ -589,9 +684,88 @@ export const ShellTool = Tool.define(
           exit: code,
           truncated: cut,
           ...(cut && file ? { outputPath: file } : {}),
-        },
+        } as BgMetadata,
         output,
       }
+    })
+
+    /** Lazunox: lanza el comando como trabajo en segundo plano (scope propio, no el de la llamada). */
+    const startBackground = Effect.fn("ShellTool.startBackground")(function* (input: {
+      shell: string
+      command: string
+      cwd: string
+      env: NodeJS.ProcessEnv
+      sessionID: string
+      directory: string
+    }) {
+      yield* InstanceState.get(bgState)
+      ShellBackground.prune()
+      const scope = yield* Scope.make()
+      let resolve!: () => void
+      const finished = new Promise<void>((r) => (resolve = r))
+      const job: Job = {
+        id: ShellBackground.newId(),
+        sessionID: input.sessionID,
+        directory: input.directory,
+        command: input.command,
+        startedAt: Date.now(),
+        file: "",
+        written: 0,
+        capped: false,
+        readOffset: 0,
+        running: true,
+        code: null,
+        finished,
+        kill: Effect.void,
+      }
+      job.file = ShellBackground.fileFor(job.id)
+      const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env)).pipe(
+        Scope.provide(scope),
+        Effect.tapError(() => Scope.close(scope, Exit.void)),
+        Effect.orDie,
+      )
+
+      const finish = (code: number | null) => {
+        if (!job.running) return Effect.void
+        job.running = false
+        job.code = code
+        job.reason ??= "exit"
+        job.finishedAt = Date.now()
+        resolve()
+        // Sin huérfanos: lo que el comando haya dejado vivo en su grupo de procesos se detiene.
+        if (process.platform !== "win32") {
+          try {
+            process.kill(-handle.pid, "SIGTERM")
+          } catch {}
+        }
+        return Scope.close(scope, Exit.void).pipe(Effect.forkDetach, Effect.asVoid)
+      }
+      const stop = (reason: "terminated" | "lifetime") =>
+        Effect.gen(function* () {
+          if (!job.running) return
+          job.reason = reason
+          yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.ignore)
+          yield* finish(null)
+        })
+      job.kill = stop("terminated")
+
+      const reader = yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
+        Effect.sync(() => ShellBackground.append(job, chunk)),
+      ).pipe(Effect.ignore, Effect.forkIn(scope))
+      yield* handle.exitCode.pipe(
+        Effect.map((code) => Number(code) as number | null),
+        Effect.catch(() => Effect.succeed(null as number | null)),
+        // Deja drenar la salida pendiente (máx. 2 s por si un hijo mantiene abierta la tubería).
+        Effect.tap(() => Fiber.await(reader).pipe(Effect.timeoutOption("2 seconds"))),
+        Effect.flatMap(finish),
+        Effect.forkIn(scope),
+      )
+      yield* Effect.sleep(`${ShellBackground.bgMaxLifeMs()} millis`).pipe(
+        Effect.andThen(stop("lifetime")),
+        Effect.forkIn(scope),
+      )
+      ShellBackground.register(job)
+      return job
     })
 
     return () =>
@@ -604,7 +778,7 @@ export const ShellTool = Tool.define(
         yield* Effect.logInfo("shell tool using shell", { shell })
 
         return {
-          description: prompt.description,
+          description: prompt.description + BACKGROUND_NOTE,
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
@@ -627,6 +801,20 @@ export const ShellTool = Tool.define(
                   yield* ask(ctx, scan, params)
                 }),
               )
+
+              if (params.background) {
+                const refused = ShellBackground.quota(ctx.sessionID)
+                if (refused) throw new Error(refused)
+                const job = yield* startBackground({
+                  shell,
+                  command: params.command,
+                  cwd,
+                  env: yield* shellEnv(ctx, cwd),
+                  sessionID: ctx.sessionID,
+                  directory: instanceCtx.directory,
+                })
+                return yield* settle(job, ShellBackground.clampYield(params.yield_ms), ctx, limits)
+              }
 
               return yield* run(
                 {

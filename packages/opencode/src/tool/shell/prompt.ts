@@ -16,6 +16,14 @@ export function parameterSchema() {
   return Schema.Struct({
     command: Schema.String.annotate({ description: "The command to execute" }),
     timeout: Schema.optional(PositiveInt).annotate({ description: "Optional timeout in milliseconds" }),
+    background: Schema.optional(Schema.Boolean).annotate({
+      description:
+        "Optional. true runs the command in the background: the call waits at most yield_ms and, if it has not finished, returns a shell_id to use with shell_wait.",
+    }),
+    yield_ms: Schema.optional(Schema.Number).annotate({
+      description:
+        "Optional, only with background: milliseconds to wait before returning while the command keeps running (default 10000, minimum 1000).",
+    }),
     workdir: Schema.optional(Schema.String).annotate({
       description: `The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.`,
     }),
