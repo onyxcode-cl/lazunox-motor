@@ -87,6 +87,29 @@ export const SessionListQuery = Schema.Struct({
   archived: Schema.optional(QueryBoolean),
 })
 
+// Lazunox: trabajos en segundo plano de una sesión (contrato motor-app, plan 1.7).
+export const TrabajoInfo = Schema.Struct({
+  id: Schema.String,
+  tipo: Schema.Union([Schema.Literal("shell"), Schema.Literal("celda")]),
+  titulo: Schema.String,
+  estado: Schema.Union([
+    Schema.Literal("en_curso"),
+    Schema.Literal("terminado"),
+    Schema.Literal("terminado_por_ti"),
+    Schema.Literal("tope_de_vida"),
+    Schema.Literal("perdido"),
+  ]),
+  codigo: Schema.NullOr(Schema.Number),
+  inicio: Schema.Number,
+  fin: Schema.NullOr(Schema.Number),
+}).annotate({ identifier: "TrabajoInfo" })
+export const TrabajosResponse = Schema.Struct({ trabajos: Schema.Array(TrabajoInfo) }).annotate({
+  identifier: "TrabajosResponse",
+})
+export const TrabajoTerminarResponse = Schema.Struct({ ok: Schema.Boolean }).annotate({
+  identifier: "TrabajoTerminarResponse",
+})
+
 export const ExperimentalPaths = {
   capabilities: "/experimental/capabilities",
   console: "/experimental/console",
@@ -98,6 +121,8 @@ export const ExperimentalPaths = {
   worktreeReset: "/experimental/worktree/reset",
   session: "/experimental/session",
   sessionBackground: "/experimental/session/:sessionID/background",
+  sessionTrabajos: "/experimental/session/:sessionID/trabajos",
+  sessionTrabajoTerminar: "/experimental/session/:sessionID/trabajos/:id/terminar",
   resource: "/experimental/resource",
 } as const
 
@@ -243,6 +268,30 @@ export const ExperimentalApi = HttpApi.make("experimental")
             summary: "Background subagents",
             description:
               "Detach any synchronous subagents currently blocking the session and continue them in the background.",
+          }),
+        ),
+        HttpApiEndpoint.get("sessionTrabajos", ExperimentalPaths.sessionTrabajos, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(TrabajosResponse, "Background jobs of the session"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.trabajos",
+            summary: "List background jobs",
+            description:
+              "List the background shells and Code Mode cells of one session (live and recently finished, at most 50, newest first).",
+          }),
+        ),
+        HttpApiEndpoint.post("sessionTrabajoTerminar", ExperimentalPaths.sessionTrabajoTerminar, {
+          params: { sessionID: SessionID, id: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(TrabajoTerminarResponse, "Whether the job was terminated"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.trabajos.terminar",
+            summary: "Terminate a background job",
+            description:
+              "Kill the process group of a background shell or interrupt a Code Mode cell of this session. ok is false if it does not exist, already finished or belongs to another session.",
           }),
         ),
         HttpApiEndpoint.get("resource", ExperimentalPaths.resource, {

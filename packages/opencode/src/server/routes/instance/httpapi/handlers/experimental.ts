@@ -11,6 +11,7 @@ import type { SessionID } from "@/session/schema"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
 import { Worktree } from "@/worktree"
+import { Trabajos } from "@/tool/trabajos"
 import { Effect, Option } from "effect"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
@@ -171,6 +172,19 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       return promoted.some((job) => job !== undefined)
     })
 
+    const sessionTrabajos = Effect.fn("ExperimentalHttpApi.sessionTrabajos")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      const directory = yield* InstanceState.directory
+      return { trabajos: yield* Trabajos.listar(background, ctx.params.sessionID, directory) }
+    })
+
+    const sessionTrabajoTerminar = Effect.fn("ExperimentalHttpApi.sessionTrabajoTerminar")(function* (ctx: {
+      params: { sessionID: SessionID; id: string }
+    }) {
+      return { ok: yield* Trabajos.terminar(background, ctx.params.sessionID, ctx.params.id) }
+    })
+
     const resource = Effect.fn("ExperimentalHttpApi.resource")(function* () {
       return yield* mcp.resources()
     })
@@ -188,6 +202,8 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("worktreeReset", worktreeReset)
       .handle("session", session)
       .handle("sessionBackground", sessionBackground)
+      .handle("sessionTrabajos", sessionTrabajos)
+      .handle("sessionTrabajoTerminar", sessionTrabajoTerminar)
       .handle("resource", resource)
   }),
 )
