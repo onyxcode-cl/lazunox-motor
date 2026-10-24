@@ -102,7 +102,10 @@ export const markStopped = (sessionID: string, now = Date.now()) => {
   stops.set(String(sessionID), now)
   if (stops.size > 500) for (const [id] of [...stops].slice(0, 100)) stops.delete(id)
 }
-export const stoppedAfter = (sessionID: string, since: number) => (stops.get(String(sessionID)) ?? 0) >= since
+export const stoppedAfter = (sessionID: string, since: number) => {
+  const at = stops.get(String(sessionID))
+  return at !== undefined && at >= since
+}
 
 /** Manda el aviso con el agente actual de la sesión. Nunca falla ni bloquea al llamador. `since`: cuándo se lanzó el trabajo. */
 export const send = (ops: WakeOps, input: { sessionID: any; agent: string; text: string; what: string; since?: number }) =>
