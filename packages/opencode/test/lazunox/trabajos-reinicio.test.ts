@@ -1,4 +1,4 @@
-import { afterEach, describe, expect } from "bun:test"
+import { afterEach, describe, expect, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Cause, Effect, Exit, Layer } from "effect"
 import fs from "node:fs"
@@ -204,7 +204,7 @@ describe.skipIf(!posix)("marcadores de trabajos en disco", () => {
     ),
   )
 
-  it("las lápidas caducan a la hora", () => {
+  test("las lápidas caducan a la hora", () => {
     TrabajosDisco.writeTombstone({ id: "sh_vieja", tipo: "celda", sessionID: "ses_a", directory: "/x", titulo: "t", inicio: 1 }, Date.now() - TrabajosDisco.LAPIDA_TTL_MS - 1000)
     TrabajosDisco.writeTombstone({ id: "sh_nueva", tipo: "celda", sessionID: "ses_a", directory: "/x", titulo: "t", inicio: 1 })
     expect(TrabajosDisco.tombstoneFor("sh_vieja", "ses_a")).toBeUndefined()
@@ -217,7 +217,7 @@ describe.skipIf(!posix)("marcadores de trabajos en disco", () => {
     fs.rmSync(tombFile("sh_nueva"), { force: true })
   })
 
-  it("ids con caracteres de ruta se rechazan", () => {
+  test("ids con caracteres de ruta se rechazan", () => {
     expect(TrabajosDisco.idValido("../etc")).toBe(false)
     expect(TrabajosDisco.idValido("sh_ok1")).toBe(true)
     expect(TrabajosDisco.writeMarker(base({ id: "../fuera" }))).toBe(false)

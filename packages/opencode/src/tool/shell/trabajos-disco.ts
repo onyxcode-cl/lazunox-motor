@@ -95,6 +95,13 @@ export const alive = (pid: number) => {
 /** Línea de comandos completa de un pid ("" si no existe o no se puede leer). Solo macOS/Linux. */
 export const cmdlineOf = (pid: number) => {
   if (process.platform === "win32" || !Number.isInteger(pid) || pid <= 0) return ""
+  if (process.platform === "linux") {
+    // /proc no depende de que exista `ps` (contenedores mínimos).
+    try {
+      const raw = fs.readFileSync(`/proc/${pid}/cmdline`, "utf-8").replaceAll("\0", " ").trim()
+      if (raw) return raw
+    } catch {}
+  }
   try {
     return execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).trim()
   } catch {
