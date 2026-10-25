@@ -25,6 +25,18 @@ import { Filesystem } from "@/util/filesystem"
 import { createOpencodeClient, type OpencodeClient, type ToolPart } from "@opencode-ai/sdk/v2"
 import { FormatError, FormatUnknownError } from "../error"
 import { INTERACTIVE_INPUT_ERROR, resolveInteractiveStdin } from "./run/runtime.stdin"
+import {
+  CODIGO_SALIDA,
+  MENSAJE_PERMISO_NEGADO,
+  comprobarSalida,
+  crearMedidor,
+  enteroPositivo,
+  leerEsquema,
+  ultimoTexto,
+  type Informe,
+  type Motivo,
+  type ResultadoEsquema,
+} from "./run-banderas"
 
 type ModelInput = Parameters<OpencodeClient["session"]["prompt"]>[0]["model"]
 
@@ -259,6 +271,28 @@ export const RunCommand = effectCmd({
         default: false,
         hidden: true,
         describe: "enable direct interactive demo slash commands; pass one as the message to run it immediately",
+      })
+      // Lazunox: banderas para ejecuciones sin supervisión (banco de tareas, automatización). Ver LAZUNOX.md «run».
+      .option("json-schema", {
+        type: "string",
+        describe: "archivo con un esquema JSON: la respuesta final debe validar contra él (si no, sale con código 3)",
+      })
+      .option("max-steps", {
+        type: "number",
+        describe: "corta el bucle del agente tras N pasos (código de salida 4)",
+      })
+      .option("presupuesto-tokens", {
+        type: "number",
+        describe: "corta al superar N tokens (entrada + salida) acumulados (código de salida 5)",
+      })
+      .option("permisos", {
+        type: "string",
+        choices: ["ninguno"],
+        describe: "ninguno: lo que preguntaría se NIEGA (nunca espera una aprobación)",
+      })
+      .option("informe", {
+        type: "string",
+        describe: "archivo donde dejar el informe JSON final (tokens, pasos, herramientas, tiempo y motivo del fin)",
       }),
   handler: Effect.fn("Cli.run")(function* (args) {
     const { Agent } = yield* Effect.promise(() => import("@/agent/agent"))
@@ -319,6 +353,53 @@ export const RunCommand = effectCmd({
       if (interactive && !process.stdout.isTTY) {
         die("--mini requires a TTY stdout")
       }
+
+      // Lazunox: validación de las banderas de ejecución sin supervisión.
+      const sinSupervision =
+        args["json-schema"] !== undefined ||
+        args["max-steps"] !== undefined ||
+        args["presupuesto-tokens"] !== undefined ||
+        args.permisos !== undefined ||
+        args.informe !== undefined
+      if (sinSupervision && interactive) {
+        die("--json-schema, --max-steps, --presupuesto-tokens, --permisos e --informe no se pueden usar con --mini")
+      }
+      if (args.permisos === "ninguno" && auto) {
+        die("--permisos ninguno no se puede combinar con --auto")
+      }
+      if (args["json-schema"] !== undefined && args.command) {
+        die("--json-schema no se puede usar con --command")
+      }
+      const maxPasos = (() => {
+        try {
+          return enteroPositivo("--max-steps", args["max-steps"])
+        } catch (e) {
+          return die(e instanceof Error ? e.message : String(e))
+        }
+      })()
+      const presupuestoTokens = (() => {
+        try {
+          return enteroPositivo("--presupuesto-tokens", args["presupuesto-tokens"])
+        } catch (e) {
+          return die(e instanceof Error ? e.message : String(e))
+        }
+      })()
+      const esquema = await (async () => {
+        const archivo = args["json-schema"]
+        if (archivo === undefined) return undefined
+        const ruta = path.resolve(archivo)
+        const texto = await Bun.file(ruta)
+          .text()
+          .catch(() => undefined)
+        if (texto === undefined) return die(`--json-schema: no se pudo leer ${archivo}`)
+        const leido = leerEsquema(texto)
+        if (!leido.ok) return die(`--json-schema: ${archivo}: ${leido.error}`)
+        return leido.schema
+      })()
+      // Ruta del informe resuelta ya (antes de que `--dir` cambie la carpeta de trabajo).
+      const rutaInforme = args.informe ? path.resolve(args.informe) : undefined
+      const permisosNinguno = args.permisos === "ninguno"
+      const medidor = crearMedidor({ maxPasos, presupuestoTokens })
 
       if (interactive) {
         try {
@@ -698,10 +779,24 @@ export const RunCommand = effectCmd({
           const toggles = new Map<string, boolean>()
           const sessions = new Set([sessionID])
           let error: string | undefined
+          let cortado = false
 
           for await (const event of events.stream) {
             if (event.type === "session.created" && event.properties.info.parentID) {
               if (sessions.has(event.properties.info.parentID)) sessions.add(event.properties.info.id)
+            }
+
+            // Lazunox: contabilidad de pasos/tokens/herramientas (también de los ayudantes) y cortes por tope.
+            if (event.type === "message.part.updated" && sessions.has(event.properties.part.sessionID)) {
+              const part = event.properties.part
+              if (part.type === "tool") medidor.herramienta(part)
+              if (part.type === "step-finish") {
+                const motivo = medidor.paso(part, part.sessionID === sessionID)
+                if (motivo && !cortado) {
+                  cortado = true
+                  void client.session.abort({ sessionID }).catch(() => {})
+                }
+              }
             }
 
             if (
@@ -781,6 +876,8 @@ export const RunCommand = effectCmd({
             if (event.type === "session.error") {
               const props = event.properties
               if (props.sessionID !== sessionID || !props.error) continue
+              // Lazunox: el aborto lo provocamos nosotros al cortar por pasos o presupuesto; no es un error del motor.
+              if (cortado && props.error.name === "MessageAbortedError") continue
               let err = String(props.error.name)
               if ("data" in props.error && props.error.data && "message" in props.error.data) {
                 err = String(props.error.data.message)
@@ -806,6 +903,21 @@ export const RunCommand = effectCmd({
                 await client.permission.reply({
                   requestID: permission.id,
                   reply: "once",
+                })
+              } else if (permisosNinguno) {
+                // Lazunox: `--permisos ninguno` = `dontAsk`. Se niega CON mensaje: el modelo lo recibe como corrección y sigue
+                // (un rechazo sin mensaje detiene el bucle) y nada queda esperando una aprobación.
+                medidor.permisoNegado()
+                if (!emit("permiso_negado", { permission: permission.permission, patterns: permission.patterns }))
+                  UI.println(
+                    UI.Style.TEXT_WARNING_BOLD + "!",
+                    UI.Style.TEXT_NORMAL +
+                      `permission requested: ${permission.permission} (${permission.patterns.join(", ")}); denied (--permisos ninguno)`,
+                  )
+                await client.permission.reply({
+                  requestID: permission.id,
+                  reply: "reject",
+                  message: MENSAJE_PERMISO_NEGADO,
                 })
               } else {
                 UI.println(
@@ -836,10 +948,38 @@ export const RunCommand = effectCmd({
             console.error(e)
             process.exitCode = 1
           })
-          async function finish() {
-            if (args.attach) return
+          async function finish(): Promise<string | undefined> {
+            if (args.attach && !sinSupervision) return undefined
             const error = await completed
             if (error) process.exitCode = 1
+            return typeof error === "string" ? error : undefined
+          }
+
+          // Lazunox: informe final (tokens, pasos, herramientas, tiempo y motivo del fin) y código de salida por motivo.
+          async function informar(input: { error?: string; esquema?: ResultadoEsquema; fallo?: string }) {
+            if (!sinSupervision) return
+            const corte = medidor.corte()
+            const motivo: Motivo =
+              corte ??
+              (input.esquema && !input.esquema.valido
+                ? "esquema_invalido"
+                : input.error || input.fallo
+                  ? "error"
+                  : "completado")
+            const informe: Informe = medidor.informe(motivo, {
+              detalle: input.fallo ?? input.error,
+              esquema: input.esquema,
+            })
+            if (motivo === "esquema_invalido" && input.esquema)
+              UI.error(
+                `La respuesta no cumple el esquema (${args["json-schema"]}):\n- ` + input.esquema.errores.join("\n- "),
+              )
+            if (motivo !== "completado" && motivo !== "esquema_invalido" && motivo !== "error")
+              UI.println(UI.Style.TEXT_WARNING_BOLD + "!", UI.Style.TEXT_NORMAL + `ejecución cortada: ${motivo}`)
+            if (!emit("informe", informe as unknown as Record<string, unknown>))
+              process.stderr.write(JSON.stringify({ type: "informe", ...informe }) + EOL)
+            if (rutaInforme) await Bun.write(rutaInforme, JSON.stringify(informe, null, 2) + EOL)
+            if (CODIGO_SALIDA[motivo] !== 0) process.exitCode = CODIGO_SALIDA[motivo]
           }
 
           if (args.command) {
@@ -854,9 +994,11 @@ export const RunCommand = effectCmd({
             if (result.error) {
               if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
               process.exitCode = 1
+              await informar({ fallo: formatRunError(result.error) })
               return
             }
-            await finish()
+            const error = await finish()
+            await informar({ error })
             return
           }
 
@@ -867,13 +1009,31 @@ export const RunCommand = effectCmd({
             model,
             variant: args.variant,
             parts: [...files, { type: "text", text: message }],
+            ...(esquema ? { format: { type: "json_schema" as const, schema: esquema, retryCount: 0 } } : {}),
           })
-          if (result.error) {
+          // Un corte por pasos o presupuesto aborta la sesión: el error de «abortado» que devuelve el prompt es esperado.
+          if (result.error && !medidor.corte()) {
             if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             process.exitCode = 1
+            await informar({ fallo: formatRunError(result.error) })
             return
           }
-          await finish()
+          const error = await finish()
+          let comprobado: ResultadoEsquema | undefined
+          if (esquema && !medidor.corte()) {
+            const info = result.data?.info
+            const estructurada = info && info.role === "assistant" ? info.structured : undefined
+            comprobado = comprobarSalida(
+              esquema,
+              estructurada,
+              ultimoTexto((result.data?.parts ?? []) as { type: string; text?: string }[]),
+            )
+            if (comprobado.valido) {
+              if (!emit("salida_estructurada", { salida: comprobado.salida }))
+                process.stdout.write(JSON.stringify(comprobado.salida) + EOL)
+            }
+          }
+          await informar({ error, esquema: comprobado })
           return
         }
 
@@ -1012,5 +1172,13 @@ export async function runMini(input: MiniCommandInput) {
     "dangerously-skip-permissions": false,
     dangerouslySkipPermissions: false,
     demo: input.demo ?? false,
+    "json-schema": undefined,
+    jsonSchema: undefined,
+    "max-steps": undefined,
+    maxSteps: undefined,
+    "presupuesto-tokens": undefined,
+    presupuestoTokens: undefined,
+    permisos: undefined,
+    informe: undefined,
   })
 }
