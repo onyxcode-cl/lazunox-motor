@@ -6,13 +6,13 @@ import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 // Lazunox: ganchos de usuario por comando (como los hooks de Claude Code), solo del archivo que la APP fija en LAZUNOX_HOOKS_FILE.
 // Un proyecto NO puede traer sus propios ganchos (sería ejecución de código de un repositorio ajeno): el archivo vive en la carpeta de datos de
 // la app, lo escribe la persona. Formato:
-//   { "hooks": { "PreToolUse": [{ "matcher": "bash|edit", "command": "./revisar.sh", "timeout": 10 }], "PostToolUse": [ … ], "PreCompact": [ … ], "Stop": [ … ] } }
+//   { "hooks": { "PreToolUse": [{ "matcher": "bash|edit", "command": "./revisar.sh", "timeout": 10 }], "PostToolUse": [ … ], "PreCompact": [ … ], "PostCompact": [ … ], "Stop": [ … ] } }
 // El comando recibe por stdin un JSON { event, tool, args, sessionID, cwd[, output] }. PreToolUse: código de salida 2 = BLOQUEA la herramienta y el
 // modelo recibe el stderr; cualquier otro código (o un fallo, o pasarse del tiempo) no bloquea. PostToolUse: código 2 añade el stderr al resultado.
 
 export type Gancho = { matcher?: string; command: string; timeout?: number }
-export type Config = { PreToolUse: Gancho[]; PostToolUse: Gancho[]; PreCompact: Gancho[]; Stop: Gancho[] }
-const VACIO = (): Config => ({ PreToolUse: [], PostToolUse: [], PreCompact: [], Stop: [] })
+export type Config = { PreToolUse: Gancho[]; PostToolUse: Gancho[]; PreCompact: Gancho[]; PostCompact: Gancho[]; Stop: Gancho[] }
+const VACIO = (): Config => ({ PreToolUse: [], PostToolUse: [], PreCompact: [], PostCompact: [], Stop: [] })
 
 const MAX_ARCHIVO = 64 * 1024
 const MAX_GANCHOS = 20
@@ -40,7 +40,7 @@ export const leerConfig = (text: string): Config => {
         timeout: typeof g.timeout === "number" && Number.isFinite(g.timeout) ? Math.min(TIEMPO_MAX, Math.max(1, Math.floor(g.timeout))) : undefined,
       }))
       .slice(0, MAX_GANCHOS)
-  return { PreToolUse: lista(hooks.PreToolUse), PostToolUse: lista(hooks.PostToolUse), PreCompact: lista(hooks.PreCompact), Stop: lista(hooks.Stop) }
+  return { PreToolUse: lista(hooks.PreToolUse), PostToolUse: lista(hooks.PostToolUse), PreCompact: lista(hooks.PreCompact), PostCompact: lista(hooks.PostCompact), Stop: lista(hooks.Stop) }
 }
 
 /** ¿El gancho aplica a esta herramienta? Sin matcher o «*» = todas; si no, expresión regular anclada («bash|edit»). */
@@ -121,6 +121,15 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
         const r = await ejecutar(g, { event: "PreCompact", sessionID: i.sessionID, cwd }, cwd)
         const txt = r.stdout.trim().slice(0, 4000)
         if (r.code === 0 && txt) o.context.push(txt)
+      }
+    },
+    // PostCompact: el resumen salió bien. El comando recibe { event, sessionID, cwd, trigger, parcial, tokensAntes, tokensDespues } por stdin;
+    // su stdout (código 0, hasta 4000 caracteres) se suma al bloque `<contexto-vigente>` marcado «[Gancho PostCompact]».
+    "experimental.session.compacted": async (i, o) => {
+      for (const g of config(file).PostCompact) {
+        const r = await ejecutar(g, { event: "PostCompact", ...i, cwd }, cwd)
+        const txt = r.stdout.trim().slice(0, 4000)
+        if (r.code === 0 && txt) o.context.push(`[Gancho PostCompact]\n${txt}`)
       }
     },
     // Stop: la sesión quedó ociosa (terminó su turno). Solo informativo: no bloquea nada.
