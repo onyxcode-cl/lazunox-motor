@@ -131,7 +131,7 @@ describe("lazunox no-releer", () => {
     Effect.gen(function* () {
       const dir = yield* tmpdirScoped()
       const f = path.join(dir, "a.txt")
-      yield* put(f, "uno\ndos\ntres\n")
+      yield* put(f, "uno\ndos\ntres\n" + "relleno de la línea\n".repeat(200))
       const sid = sesion()
       const r1 = yield* leer(dir, { filePath: f }, sid, "c1", ["c1"])
       expect(r1.output).toContain("1: uno")
@@ -139,7 +139,7 @@ describe("lazunox no-releer", () => {
       expect(r2.output).toContain("Sin cambios")
       expect(r2.output).toContain("n.º 1")
       expect(r2.output).not.toContain("1: uno")
-      expect(r2.output.length).toBeLessThan(r1.output.length + 50)
+      expect(r2.output.length).toBeLessThan(r1.output.length / 5)
       yield* put(f, "uno\ndos\ncuatro\n")
       const r3 = yield* leer(dir, { filePath: f }, sid, "c3", ["c1", "c2", "c3"])
       expect(r3.output).toContain("3: cuatro")

@@ -346,14 +346,15 @@ export const ReadTool = Tool.define<
 
       // No releer: solo para lecturas completas (sin rango, sin corte). Los permisos y la lectura ya se hicieron arriba.
       const completa = !params.offset && params.limit === undefined && !file.more && !file.cut
-      const claveLectura = LecturasSesion.activo() && completa && ctx.callID ? yield* lecturaClave(filepath) : undefined
+      const callID = ctx.callID
+      const claveLectura = LecturasSesion.activo() && completa && callID ? yield* lecturaClave(filepath) : undefined
       if (claveLectura) {
         const h = LecturasSesion.hash(file.raw.join("\n") + "\n" + file.count)
         const previa = LecturasSesion.anterior(ctx.sessionID, claveLectura)
         if (
           previa &&
           previa.hash === h &&
-          previa.callID !== ctx.callID &&
+          previa.callID !== callID &&
           LecturasSesion.visible(ctx.messages, previa.callID)
         ) {
           const msg = `Sin cambios: ${filepath} es idéntico a la lectura n.º ${previa.numero} de esta sesión (${file.count} líneas), cuyo contenido completo sigue arriba en la conversación. Usa offset/limit si necesitas ver un rango otra vez.`
@@ -363,7 +364,7 @@ export const ReadTool = Tool.define<
             metadata: { preview: msg, truncated: false, loaded: [] as string[], repetida: previa.numero },
           }
         }
-        LecturasSesion.registrar(ctx.sessionID, claveLectura, h, ctx.callID)
+        LecturasSesion.registrar(ctx.sessionID, claveLectura, h, callID)
       }
 
       let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
