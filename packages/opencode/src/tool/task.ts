@@ -8,6 +8,7 @@ import { SessionID, MessageID } from "../session/schema"
 import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
+import { esParcial, marcarParcial } from "../agent/parcial"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Effect, Exit, Schema, Scope } from "effect"
@@ -154,27 +155,6 @@ export const TaskTool = Tool.define(
       ctx: Tool.Context,
     ) {
       const cfg = yield* config.get()
-      const runInBackground = params.background === true
-      if (runInBackground && !flags.experimentalBackgroundSubagents) {
-        return yield* Effect.fail(
-          new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
-        )
-      }
-
-      // Lazunox: tope de ayudantes en segundo plano vivos a la vez (por carpeta). Sin tope, un modelo despistado puede lanzar decenas de
-      // sesiones paralelas (coste, memoria y permisos pendientes). LAZUNOX_MAX_SUBAGENTS (1-64, por defecto 8).
-      if (runInBackground) {
-        const max = limiteSubagentes()
-        const vivos = (yield* background.list()).filter((j) => j.type === id && j.status === "running").length
-        if (topeAlcanzado(vivos, max)) {
-          return yield* Effect.fail(
-            new Error(
-              `Ya hay ${vivos} ayudantes en segundo plano trabajando (máximo ${max}). Espera a que termine alguno (te avisarán) antes de lanzar otro, o hazlo tú mismo.`,
-            ),
-          )
-        }
-      }
-
       const parent = yield* sessions.get(ctx.sessionID)
       let current = parent
       let depth = 0
@@ -207,11 +187,33 @@ export const TaskTool = Tool.define(
         return yield* Effect.fail(new Error(`Unknown agent type: ${params.subagent_type} is not a valid agent type`))
       }
 
+      // Lazunox (2A): `background: true` en la definición del agente lo lanza en segundo plano si el modelo no dice otra cosa.
+      const runInBackground = params.background ?? next.background === true
+      if (runInBackground && !flags.experimentalBackgroundSubagents) {
+        return yield* Effect.fail(
+          new Error("Background subagents require OPENCODE_EXPERIMENTAL_BACKGROUND_SUBAGENTS=true"),
+        )
+      }
+      // Lazunox: tope de ayudantes en segundo plano vivos a la vez (por carpeta). Sin tope, un modelo despistado puede lanzar decenas de
+      // sesiones paralelas (coste, memoria y permisos pendientes). LAZUNOX_MAX_SUBAGENTS (1-64, por defecto 8).
+      if (runInBackground) {
+        const max = limiteSubagentes()
+        const vivos = (yield* background.list()).filter((j) => j.type === id && j.status === "running").length
+        if (topeAlcanzado(vivos, max)) {
+          return yield* Effect.fail(
+            new Error(
+              `Ya hay ${vivos} ayudantes en segundo plano trabajando (máximo ${max}). Espera a que termine alguno (te avisarán) antes de lanzar otro, o hazlo tú mismo.`,
+            ),
+          )
+        }
+      }
+      const parentAgent = yield* agent.get(ctx.agent)
       const session = params.task_id
         ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
         : undefined
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
+        parentAgentPermission: parentAgent?.permission,
         subagent: next,
       })
       const childToolDenies = [
@@ -300,11 +302,21 @@ export const TaskTool = Tool.define(
           return yield* Effect.fail(new Error(`Subagent failed (task_id: ${nextSession.id}): ${failed.state.error}`))
         }
         // Lazunox: el informe del ayudante no pasa de LAZUNOX_SUBAGENT_RESULT_MAX bytes; el resto, a un archivo de truncado.
-        return yield* acotarResultado(
+        const informe = yield* acotarResultado(
           result.parts.findLast((item) => item.type === "text")?.text ?? "",
           resultadoMaximo(),
           truncate.write,
         )
+        // Lazunox (2A): si llegó a su `max_turns`, el informe lo dice.
+        if (next.steps !== undefined) {
+          const turnosDados = (yield* sessions
+            .messages({ sessionID: nextSession.id })
+            .pipe(Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])))).filter(
+            (m) => m.info.role === "assistant",
+          ).length
+          if (esParcial({ maxTurns: next.steps, turnosDados })) return marcarParcial(informe, next.steps)
+        }
+        return informe
       })
 
       const inject = Effect.fn("TaskTool.injectBackgroundResult")(function* (
