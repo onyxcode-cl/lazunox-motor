@@ -134,6 +134,15 @@ Plan: Ola 1 → 1C de `docs/PLAN-MAESTRO-MOTOR-PARIDAD.md` de la app. Pruebas: `
 - **Modelo pequeño**: nuevo campo opcional `modelSmall` en `Agent.Info`. Se activa con `model: "small"` en la configuración del agente (un `model: "proveedor/modelo"` posterior lo apaga) y viene puesto en el agente nativo `explore`. `modeloDelAyudante` elige `Provider.getSmallModel(providerID del padre)` **solo si es del mismo proveedor que el padre** (un `small_model` de la configuración de otro proveedor se descarta); si no hay pequeño, hereda el modelo del padre. Con modelo pequeño no se pasa la `variant` del padre. La metadata de la herramienta (`metadata.model`) muestra el modelo real usado.
 - Sin cambios: tope de simultáneos `LAZUNOX_MAX_SUBAGENTS` y profundidad.
 
+## No releer (P22, ola 1D)
+
+Pruebas: `packages/opencode/test/lazunox/no-releer.test.ts`. Interruptor de emergencia: **`LAZUNOX_NO_RELEER=0`** (la herramienta `read` vuelve a comportarse como antes).
+
+- `session/lecturas.ts` (`LecturasSesion`): mapa en memoria por sesión `{ruta canónica (realpath) -> { hash sha256 del contenido leído, callID, número de lectura }}` (tope 500 rutas por sesión, 64 sesiones).
+- `tool/read.ts`: DESPUÉS de las comprobaciones de siempre (`assertExternalDirectoryEffect`, `ctx.ask({permission:"read"})`, que incluye `.env`) y de leer el archivo, si la lectura es **completa** (sin `offset` ni `limit`, sin corte por tamaño o líneas) y su contenido es idéntico al de la lectura anterior de esa ruta **y esa lectura sigue visible** (la parte `read` existe en `ctx.messages`, está completada y no tiene `time.compacted`), devuelve una línea `Sin cambios: <ruta> es idéntico a la lectura n.º N de esta sesión...` con `metadata.repetida = N`. Si el archivo cambió (persona, shell, edición) el contenido difiere y se lee completo. Rangos, directorios, imágenes y PDF no entran.
+- Compactar y rebobinar: la comprobación de visibilidad ya cubre ambos casos (tras compactar o limpiar el revert, la parte anterior no está en `ctx.messages` o está podada), sin tocar `compaction.ts`. Además se exporta **`LecturasSesion.vaciar(sessionID)`** para que el integrador lo conecte (p. ej. en `session.compacted` y al rebobinar) si quiere vaciar el mapa de forma explícita; no es imprescindible.
+- Sin `callID` en el contexto no se registra nada (no hay a qué apuntar).
+
 ## Estado
 
 - Paso 2 hecho: compila desde el código fuente, repetible, pasa el contrato de Lazunox.

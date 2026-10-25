@@ -8,6 +8,7 @@ import DESCRIPTION from "./read.txt"
 import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
+import { LecturasSesion } from "../session/lecturas"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 
 const DEFAULT_READ_LIMIT = 2000
@@ -59,6 +60,8 @@ type Metadata = {
   truncated: boolean
   loaded: string[]
   display?: Display
+  // No releer: esta lectura fue idéntica a la n.º `repetida` y se respondió con una línea corta.
+  repetida?: number
 }
 
 export const ReadTool = Tool.define<
@@ -226,6 +229,12 @@ export const ReadTool = Tool.define<
       return nonPrintableCount / bytes.length > 0.3
     }
 
+    // Ruta canónica (enlaces resueltos) como clave del mapa de lecturas; si falla, la ruta normalizada.
+    const lecturaClave = (filepath: string) =>
+      Effect.promise(() => import("fs/promises").then((m) => m.realpath(filepath))).pipe(
+        Effect.catchCause(() => Effect.succeed(filepath)),
+      )
+
     const run = Effect.fn("ReadTool.execute")(function* (
       params: Schema.Schema.Type<typeof Parameters>,
       ctx: Tool.Context<Metadata>,
@@ -333,6 +342,29 @@ export const ReadTool = Tool.define<
         return yield* Effect.fail(
           new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`),
         )
+      }
+
+      // No releer: solo para lecturas completas (sin rango, sin corte). Los permisos y la lectura ya se hicieron arriba.
+      const completa = !params.offset && params.limit === undefined && !file.more && !file.cut
+      const callID = ctx.callID ?? ""
+      const claveLectura = LecturasSesion.activo() && completa && callID ? yield* lecturaClave(filepath) : undefined
+      if (claveLectura) {
+        const h = LecturasSesion.hash(file.raw.join("\n") + "\n" + file.count)
+        const previa = LecturasSesion.anterior(ctx.sessionID, claveLectura)
+        if (
+          previa &&
+          previa.hash === h &&
+          previa.callID !== callID &&
+          LecturasSesion.visible(ctx.messages, previa.callID)
+        ) {
+          const msg = `Sin cambios: ${filepath} es idéntico a la lectura n.º ${previa.numero} de esta sesión (${file.count} líneas), cuyo contenido completo sigue arriba en la conversación. Usa offset/limit si necesitas ver un rango otra vez.`
+          return {
+            title,
+            output: msg,
+            metadata: { preview: msg, truncated: false, loaded: [] as string[], repetida: previa.numero },
+          }
+        }
+        LecturasSesion.registrar(ctx.sessionID, claveLectura, h, callID)
       }
 
       let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")
