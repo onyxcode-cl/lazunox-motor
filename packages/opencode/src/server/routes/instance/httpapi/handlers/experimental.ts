@@ -7,6 +7,8 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
 import { Project } from "@/project/project"
 import { Session } from "@/session/session"
+import { SessionTurnos } from "@/session/turnos"
+import * as ApiError from "../errors"
 import type { SessionID } from "@/session/schema"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
@@ -16,7 +18,16 @@ import { Effect, Option } from "effect"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { ConsoleSwitchPayload, SessionListQuery, ToolListQuery, WorktreeApiError } from "../groups/experimental"
+import {
+  ConsoleSwitchPayload,
+  RebobinarConflictoError,
+  SessionListQuery,
+  ToolListQuery,
+  TurnoDiffQuery,
+  TurnosQuery,
+  WorktreeApiError,
+} from "../groups/experimental"
+import type { MessageID } from "@/session/schema"
 
 function mapWorktreeError<A, R>(self: Effect.Effect<A, Worktree.Error, R>) {
   return self.pipe(
@@ -185,6 +196,39 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       return { ok: yield* Trabajos.terminar(background, ctx.params.sessionID, ctx.params.id) }
     })
 
+    const turnosSvc = yield* SessionTurnos.Service
+
+    const apagado = () => ApiError.notFound("Rebobinar por turno está desactivado (LAZUNOX_REBOBINAR=0)")
+
+    const sessionTurnos = Effect.fn("ExperimentalHttpApi.sessionTurnos")(function* (ctx: {
+      params: { sessionID: SessionID }
+      query: typeof TurnosQuery.Type
+    }) {
+      if (!SessionTurnos.activo()) return yield* Effect.fail(apagado())
+      return yield* turnosSvc
+        .listar({ sessionID: ctx.params.sessionID, antesDe: ctx.query.antesDe, limite: ctx.query.limite })
+        .pipe(
+          Effect.catchTag("TurnoNoEncontrado", (error) => Effect.fail(ApiError.notFound(error.message))),
+          Effect.catchTag("NotFoundError", (error) => Effect.fail(ApiError.notFound(error.message))),
+        )
+    })
+
+    const sessionTurnoDiff = Effect.fn("ExperimentalHttpApi.sessionTurnoDiff")(function* (ctx: {
+      params: { sessionID: SessionID; messageID: MessageID }
+      query: typeof TurnoDiffQuery.Type
+    }) {
+      if (!SessionTurnos.activo()) return yield* Effect.fail(apagado())
+      return yield* turnosSvc
+        .diff({ sessionID: ctx.params.sessionID, messageID: ctx.params.messageID, file: ctx.query.file })
+        .pipe(
+          Effect.catchTag("TurnoNoEncontrado", (error) => Effect.fail(ApiError.notFound(error.message))),
+          Effect.catchTag("NotFoundError", (error) => Effect.fail(ApiError.notFound(error.message))),
+          Effect.catchTag("SnapshotExpiredError", (error) =>
+            Effect.fail(new RebobinarConflictoError({ motivo: "caducado", message: error.message })),
+          ),
+        )
+    })
+
     const resource = Effect.fn("ExperimentalHttpApi.resource")(function* () {
       return yield* mcp.resources()
     })
@@ -204,6 +248,8 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("sessionBackground", sessionBackground)
       .handle("sessionTrabajos", sessionTrabajos)
       .handle("sessionTrabajoTerminar", sessionTrabajoTerminar)
+      .handle("sessionTurnos", sessionTurnos)
+      .handle("sessionTurnoDiff", sessionTurnoDiff)
       .handle("resource", resource)
   }),
 )

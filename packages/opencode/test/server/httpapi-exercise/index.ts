@@ -623,6 +623,26 @@ const scenarios: Scenario[] = [
     .json(200, (body) => {
       check((body as { ok?: unknown }).ok === false, "terminar should report ok:false for an unknown job")
     }),
+  http.protected
+    .get("/experimental/session/{sessionID}/turnos", "experimental.session.turnos")
+    .seeded((ctx) => ctx.session({ title: "Turnos route owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/turnos", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, array),
+  http.protected
+    .get("/experimental/session/{sessionID}/turnos/{messageID}/diff", "experimental.session.turnos.diff")
+    .seeded((ctx) => ctx.session({ title: "Turnos diff owner" }))
+    .at((ctx) => ({
+      path:
+        route("/experimental/session/{sessionID}/turnos/{messageID}/diff", {
+          sessionID: ctx.state.id,
+          messageID: "msg_noexiste",
+        }) + "?file=a.txt",
+      headers: ctx.headers(),
+    }))
+    .status(404),
   http.protected.get("/experimental/resource", "experimental.resource.list").json(),
   http.protected
     .post("/sync/history", "sync.history.list")

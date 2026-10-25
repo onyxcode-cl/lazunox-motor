@@ -2,7 +2,7 @@ import { AccountID, OrgID } from "@/account/schema"
 import { MCP } from "@/mcp"
 
 import { Session } from "@/session/session"
-import { SessionID } from "@/session/schema"
+import { MessageID, SessionID } from "@/session/schema"
 import { Worktree } from "@/worktree"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { Schema } from "effect"
@@ -16,6 +16,7 @@ import {
 } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
+import { ApiNotFoundError } from "../errors"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
@@ -110,6 +111,48 @@ export const TrabajoTerminarResponse = Schema.Struct({ ok: Schema.Boolean }).ann
   identifier: "TrabajoTerminarResponse",
 })
 
+// Lazunox: rebobinar por turno (plan PLAN-REBOBINAR-Y-COMPACTACION.md, 2.A). Solo rutas y cifras, nunca contenido salvo el diff bajo demanda.
+export const TurnoArchivo = Schema.Struct({
+  file: Schema.String,
+  status: Schema.Union([Schema.Literal("added"), Schema.Literal("deleted"), Schema.Literal("modified")]),
+  additions: Schema.Number,
+  deletions: Schema.Number,
+  origen: Schema.Union([Schema.Literal("herramienta"), Schema.Literal("comando"), Schema.Literal("otro")]),
+}).annotate({ identifier: "TurnoArchivo" })
+export const TurnoInfo = Schema.Struct({
+  messageID: Schema.String,
+  time: Schema.Number,
+  files: Schema.Array(TurnoArchivo),
+  truncated: Schema.Boolean,
+  restaurable: Schema.Boolean,
+  motivo: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "TurnoInfo" })
+export const TurnosResponse = Schema.Array(TurnoInfo).annotate({ identifier: "TurnosResponse" })
+export const TurnosQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  antesDe: Schema.optional(MessageID),
+  limite: Schema.optional(Schema.NumberFromString),
+})
+export const TurnoDiffQuery = Schema.Struct({
+  ...WorkspaceRoutingQueryFields,
+  file: Schema.String,
+})
+export const TurnoDiffResponse = Schema.Struct({
+  file: Schema.String,
+  status: Schema.Union([Schema.Literal("added"), Schema.Literal("deleted"), Schema.Literal("modified")]),
+  additions: Schema.Number,
+  deletions: Schema.Number,
+  patch: Schema.String,
+  binary: Schema.Boolean,
+  truncated: Schema.Boolean,
+}).annotate({ identifier: "TurnoDiffResponse" })
+/** 409 de rebobinar: `motivo` dice por qué (ocupada, hija-ocupada, trabajo-vivo, pendiente, caducado, sin-git…). */
+export class RebobinarConflictoError extends Schema.TaggedErrorClass<RebobinarConflictoError>()(
+  "RebobinarConflicto",
+  { motivo: Schema.String, message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
 export const ExperimentalPaths = {
   capabilities: "/experimental/capabilities",
   console: "/experimental/console",
@@ -123,6 +166,8 @@ export const ExperimentalPaths = {
   sessionBackground: "/experimental/session/:sessionID/background",
   sessionTrabajos: "/experimental/session/:sessionID/trabajos",
   sessionTrabajoTerminar: "/experimental/session/:sessionID/trabajos/:id/terminar",
+  sessionTurnos: "/experimental/session/:sessionID/turnos",
+  sessionTurnoDiff: "/experimental/session/:sessionID/turnos/:messageID/diff",
   resource: "/experimental/resource",
 } as const
 
@@ -292,6 +337,31 @@ export const ExperimentalApi = HttpApi.make("experimental")
             summary: "Terminate a background job",
             description:
               "Kill the process group of a background shell or interrupt a Code Mode cell of this session. ok is false if it does not exist, already finished or belongs to another session.",
+          }),
+        ),
+        HttpApiEndpoint.get("sessionTurnos", ExperimentalPaths.sessionTurnos, {
+          params: { sessionID: SessionID },
+          query: TurnosQuery,
+          success: described(TurnosResponse, "Turns of the session with the files each one changed"),
+          error: [ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.turnos",
+            summary: "List turns with their changed files",
+            description:
+              "Lightweight per-turn summary (paths, +/- counts and origin; never contents): the last 100 turns before antesDe (oldest first), at most 500 files per turn. restaurable tells whether the code of that turn can still be restored.",
+          }),
+        ),
+        HttpApiEndpoint.get("sessionTurnoDiff", ExperimentalPaths.sessionTurnoDiff, {
+          params: { sessionID: SessionID, messageID: MessageID },
+          query: TurnoDiffQuery,
+          success: described(TurnoDiffResponse, "Patch of one file changed by the turn"),
+          error: [ApiNotFoundError, RebobinarConflictoError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.turnos.diff",
+            summary: "Get the patch of one file of a turn",
+            description: "Patch with 3 lines of context, cut at 1 MB. 409 caducado if the checkpoint no longer exists.",
           }),
         ),
         HttpApiEndpoint.get("resource", ExperimentalPaths.resource, {

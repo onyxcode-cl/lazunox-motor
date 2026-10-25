@@ -31,6 +31,15 @@ export class ExpiredError extends Schema.TaggedErrorClass<ExpiredError>()(
   { httpApiStatus: 409 },
 ) {}
 
+/** Lazunox: una fila del resumen de cambios entre dos árboles (rutas relativas a la carpeta del proyecto). */
+export interface FilaNumstat {
+  readonly file: string
+  readonly status: "added" | "deleted" | "modified"
+  readonly additions: number
+  readonly deletions: number
+  readonly binary: boolean
+}
+
 /** Lazunox: resultado de restaurar archivos concretos. `file` siempre relativo a la carpeta del proyecto. */
 export interface RestoreReport {
   readonly restaurados: string[]
@@ -62,6 +71,25 @@ export interface Interface {
   readonly restoreFiles: (tree: string, files: string[]) => Effect.Effect<RestoreReport, ExpiredError>
   /** Lazunox: ¿existe el árbol en el repositorio de instantáneas? */
   readonly has: (hash: string) => Effect.Effect<boolean>
+  /** Lazunox: de estos árboles, cuáles existen (una sola llamada a git). */
+  readonly hasMany: (hashes: string[]) => Effect.Effect<Set<string>>
+  /** Lazunox: crea/actualiza una ref que apunta al árbol, para que `git gc` no lo pode. Falla en silencio (false). */
+  readonly keep: (ref: string, tree: string) => Effect.Effect<boolean>
+  /** Lazunox: refs bajo un prefijo (p. ej. `refs/lazunox/<sesión>/`), con el árbol al que apuntan. */
+  readonly refs: (prefix: string) => Effect.Effect<{ ref: string; tree: string }[]>
+  /** Lazunox: borra todas las refs bajo un prefijo. Devuelve cuántas. */
+  readonly forget: (prefix: string) => Effect.Effect<number>
+  /** Lazunox: resumen ligero (sin parches) de lo que cambió entre dos árboles, solo bajo la carpeta abierta. */
+  readonly numstat: (from: string, to: string) => Effect.Effect<FilaNumstat[]>
+  /** Lazunox: parche de UN archivo entre dos árboles, contexto 3, recortado a `maxBytes`. */
+  readonly fileDiff: (
+    from: string,
+    to: string,
+    file: string,
+    maxBytes: number,
+  ) => Effect.Effect<{ patch: string; binary: boolean; truncated: boolean }>
+  /** Lazunox: commits del repo de la persona con fecha posterior a `sinceMs` (solo lectura). */
+  readonly commitsSince: (sinceMs: number) => Effect.Effect<{ hash: string; asunto: string }[]>
   readonly diff: (hash: string) => Effect.Effect<string>
   readonly diffFull: (from: string, to: string) => Effect.Effect<FileDiff[]>
 }
@@ -635,6 +663,151 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
+        const refOk = (ref: string) => /^refs\/lazunox\/[A-Za-z0-9_.\/-]+$/.test(ref) && !ref.includes("..") && !ref.endsWith("/") && !ref.endsWith(".lock")
+
+        const hasMany = Effect.fnUntraced(function* (hashes: string[]) {
+          const found = new Set<string>()
+          const valid = Array.from(new Set(hashes.filter(validHash)))
+          if (!valid.length || !(yield* exists(state.gitdir))) return found
+          const result = yield* git([...core, ...args(["cat-file", "--batch-check=%(objectname) %(objecttype)"])], {
+            cwd: state.worktree,
+            stdin: valid.map((hash) => `${hash}^{tree}`).join("\n") + "\n",
+          })
+          if (result.code !== 0) return found
+          const lines = result.text.split("\n").filter(Boolean)
+          // Una línea por entrada, en el mismo orden. «missing» = no existe.
+          lines.forEach((line, index) => {
+            const hash = valid[index]
+            if (hash && !line.endsWith(" missing") && line.endsWith(" tree")) found.add(hash)
+          })
+          return found
+        })
+
+        const keep = Effect.fnUntraced(function* (ref: string, tree: string) {
+          if (!refOk(ref) || !validHash(tree)) return false
+          return yield* locked(
+            Effect.gen(function* () {
+              if (!(yield* has(tree))) return false
+              const result = yield* git([...core, ...args(["update-ref", ref, tree])], { cwd: state.worktree })
+              if (result.code !== 0) {
+                yield* Effect.logWarning("failed to keep snapshot ref", { ref, stderr: result.stderr })
+                return false
+              }
+              return true
+            }),
+          )
+        })
+
+        const refs = Effect.fnUntraced(function* (prefix: string) {
+          if (!refOk(prefix.endsWith("/") ? prefix + "x" : prefix) || !(yield* exists(state.gitdir))) return []
+          const result = yield* git(
+            [...core, ...args(["for-each-ref", "--format=%(refname) %(objectname)", prefix])],
+            { cwd: state.worktree },
+          )
+          if (result.code !== 0) return []
+          return result.text
+            .split("\n")
+            .filter(Boolean)
+            .flatMap((line) => {
+              const [ref, tree] = line.split(" ")
+              return ref && tree ? [{ ref, tree }] : []
+            })
+        })
+
+        const forget = Effect.fnUntraced(function* (prefix: string) {
+          return yield* locked(
+            Effect.gen(function* () {
+              const list = yield* refs(prefix)
+              if (!list.length) return 0
+              const result = yield* git([...core, ...args(["update-ref", "--stdin", "-z"])], {
+                cwd: state.worktree,
+                stdin: list.map((item) => `delete ${item.ref}\0\0`).join(""),
+              })
+              if (result.code !== 0) {
+                yield* Effect.logWarning("failed to delete snapshot refs", { prefix, stderr: result.stderr })
+                return 0
+              }
+              return list.length
+            }),
+          )
+        })
+
+        const numstat = Effect.fnUntraced(function* (from: string, to: string) {
+          if (!validHash(from) || !validHash(to)) return []
+          const [names, nums] = yield* Effect.all(
+            [
+              git([...quote, ...args(["diff", "--no-ext-diff", "--name-status", "--no-renames", "-z", from, to, "--", "."])], {
+                cwd: state.directory,
+              }),
+              git([...quote, ...args(["diff", "--no-ext-diff", "--no-renames", "--numstat", "-z", from, to, "--", "."])], {
+                cwd: state.directory,
+              }),
+            ],
+            { concurrency: 2 },
+          )
+          if (names.code !== 0 || nums.code !== 0) return []
+          const status = new Map<string, FilaNumstat["status"]>()
+          const tokens = names.text.split("\0").filter(Boolean)
+          for (let i = 0; i + 1 < tokens.length; i += 2) {
+            const code = tokens[i]!
+            status.set(tokens[i + 1]!, code.startsWith("A") ? "added" : code.startsWith("D") ? "deleted" : "modified")
+          }
+          const rows: FilaNumstat[] = []
+          for (const entry of nums.text.split("\0").filter(Boolean)) {
+            const [adds, dels, ...rest] = entry.split("\t")
+            const file = rest.join("\t")
+            if (!file) continue
+            const binary = adds === "-" && dels === "-"
+            const additions = binary ? 0 : parseInt(adds ?? "0")
+            const deletions = binary ? 0 : parseInt(dels ?? "0")
+            rows.push({
+              file,
+              status: status.get(file) ?? "modified",
+              additions: Number.isFinite(additions) ? additions : 0,
+              deletions: Number.isFinite(deletions) ? deletions : 0,
+              binary,
+            })
+          }
+          const ignored = yield* ignore(rows.map((row) => row.file))
+          return ignored.size ? rows.filter((row) => !ignored.has(row.file)) : rows
+        })
+
+        const fileDiff = Effect.fnUntraced(function* (from: string, to: string, file: string, maxBytes: number) {
+          if (!validHash(from) || !validHash(to)) return { patch: "", binary: false, truncated: false }
+          const result = yield* git(
+            [
+              ...quote,
+              ...args(["diff", "--no-ext-diff", "--no-renames", "--no-color", "-U3", from, to, "--", `:(top,literal)${file}`]),
+            ],
+            { cwd: state.directory },
+          )
+          if (result.code !== 0) return { patch: "", binary: false, truncated: false }
+          if (/^Binary files .* differ$/m.test(result.text) || result.text.includes("GIT binary patch")) {
+            return { patch: "", binary: true, truncated: false }
+          }
+          const bytes = Buffer.from(result.text, "utf8")
+          if (bytes.length <= maxBytes) return { patch: result.text, binary: false, truncated: false }
+          return { patch: bytes.subarray(0, maxBytes).toString("utf8"), binary: false, truncated: true }
+        })
+
+        const commitsSince = Effect.fnUntraced(function* (sinceMs: number) {
+          const iso = new Date(sinceMs).toISOString()
+          // Lectura pura del repositorio de la persona (sin tocar nada).
+          const result = yield* git(
+            [...core, "log", `--since=${iso}`, "--max-count=50", "--format=%H%x1f%s%x1e", "HEAD"],
+            { cwd: state.worktree },
+          )
+          if (result.code !== 0) return []
+          return result.text
+            .split("\x1e")
+            .map((item) => item.trim())
+            .filter(Boolean)
+            .flatMap((item) => {
+              const [hash, asunto] = item.split("\x1f")
+              return hash ? [{ hash, asunto: asunto ?? "" }] : []
+            })
+        })
+
         const diff = Effect.fnUntraced(function* (hash: string) {
           return yield* locked(
             Effect.gen(function* () {
@@ -877,7 +1050,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           Effect.forkScoped,
         )
 
-        return { cleanup, track, patch, restore, restoreFiles, has, revert, diff, diffFull }
+        return { cleanup, track, patch, restore, restoreFiles, has, hasMany, keep, refs, forget, numstat, fileDiff, commitsSince, revert, diff, diffFull }
       }),
     )
 
@@ -899,6 +1072,27 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
       }),
       restoreFiles: Effect.fn("Snapshot.restoreFiles")(function* (tree: string, files: string[]) {
         return yield* InstanceState.useEffect(state, (s) => s.restoreFiles(tree, files))
+      }),
+      hasMany: Effect.fn("Snapshot.hasMany")(function* (hashes: string[]) {
+        return yield* InstanceState.useEffect(state, (s) => s.hasMany(hashes))
+      }),
+      keep: Effect.fn("Snapshot.keep")(function* (ref: string, tree: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.keep(ref, tree))
+      }),
+      refs: Effect.fn("Snapshot.refs")(function* (prefix: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.refs(prefix))
+      }),
+      forget: Effect.fn("Snapshot.forget")(function* (prefix: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.forget(prefix))
+      }),
+      numstat: Effect.fn("Snapshot.numstat")(function* (from: string, to: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.numstat(from, to))
+      }),
+      fileDiff: Effect.fn("Snapshot.fileDiff")(function* (from: string, to: string, file: string, maxBytes: number) {
+        return yield* InstanceState.useEffect(state, (s) => s.fileDiff(from, to, file, maxBytes))
+      }),
+      commitsSince: Effect.fn("Snapshot.commitsSince")(function* (sinceMs: number) {
+        return yield* InstanceState.useEffect(state, (s) => s.commitsSince(sinceMs))
       }),
       has: Effect.fn("Snapshot.has")(function* (hash: string) {
         return yield* InstanceState.useEffect(state, (s) => s.has(hash))
