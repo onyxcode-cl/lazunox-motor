@@ -10,6 +10,7 @@ import { GlobTool } from "./glob"
 import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
+import { TaskWaitTool, TaskListTool, TaskCancelTool } from "./task-gestion"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -100,6 +101,9 @@ const layer = Layer.effect(
 
     const invalid = yield* InvalidTool
     const task = yield* TaskTool
+    const taskWait = yield* TaskWaitTool
+    const taskList = yield* TaskListTool
+    const taskCancel = yield* TaskCancelTool
     const read = yield* ReadTool
     const question = yield* QuestionTool
     const todo = yield* TodoWriteTool
@@ -218,6 +222,9 @@ const layer = Layer.effect(
           edit: Tool.init(edit),
           write: Tool.init(writetool),
           task: Tool.init(task),
+          task_wait: Tool.init(taskWait),
+          task_list: Tool.init(taskList),
+          task_cancel: Tool.init(taskCancel),
           fetch: Tool.init(webfetch),
           todo: Tool.init(todo),
           search: Tool.init(websearch),
@@ -243,6 +250,8 @@ const layer = Layer.effect(
             tool.edit,
             tool.write,
             tool.task,
+            // Lazunox (2B): esperar y gestionar ayudantes de fondo; solo tienen sentido con los ayudantes de fondo encendidos.
+            ...(flags.experimentalBackgroundSubagents ? [tool.task_wait, tool.task_list, tool.task_cancel] : []),
             tool.fetch,
             tool.todo,
             tool.search,

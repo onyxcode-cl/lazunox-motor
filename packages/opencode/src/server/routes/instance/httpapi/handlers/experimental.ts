@@ -16,7 +16,9 @@ import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
 import { Worktree } from "@/worktree"
 import { Trabajos } from "@/tool/trabajos"
-import { Effect, Option } from "effect"
+import { TaskGestion } from "@/tool/task-gestion"
+import { SessionPrompt } from "@/session/prompt"
+import { Effect, Option, Scope } from "effect"
 import * as HttpServerResponse from "effect/unstable/http/HttpServerResponse"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
@@ -51,6 +53,8 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
     const sessions = yield* Session.Service
     const background = yield* BackgroundJob.Service
     const flags = yield* RuntimeFlags.Service
+    const promptSvc = yield* SessionPrompt.Service
+    const scope = yield* Scope.Scope
 
     const capabilities = Effect.fn("ExperimentalHttpApi.capabilities")(function* () {
       return { backgroundSubagents: flags.experimentalBackgroundSubagents }
@@ -200,6 +204,17 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       return { ok: yield* Trabajos.terminar(background, ctx.params.sessionID, ctx.params.id) }
     })
 
+    const sessionTrabajoReanudar = Effect.fn("ExperimentalHttpApi.sessionTrabajoReanudar")(function* (ctx: {
+      params: { sessionID: SessionID; id: string }
+    }) {
+      return yield* TaskGestion.reanudarAyudante({
+        sessionID: ctx.params.sessionID,
+        id: ctx.params.id,
+        prompt: promptSvc,
+        scope,
+      })
+    })
+
     const turnosSvc = yield* SessionTurnos.Service
 
     const apagado = () => ApiError.notFound("Rebobinar por turno está desactivado (LAZUNOX_REBOBINAR=0)")
@@ -310,6 +325,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("sessionBackground", sessionBackground)
       .handle("sessionTrabajos", sessionTrabajos)
       .handle("sessionTrabajoTerminar", sessionTrabajoTerminar)
+      .handle("sessionTrabajoReanudar", sessionTrabajoReanudar)
       .handle("sessionTurnos", sessionTurnos)
       .handle("sessionTurnoDiff", sessionTurnoDiff)
       .handle("sessionRebobinarRevision", sessionRebobinarRevision)

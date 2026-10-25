@@ -164,7 +164,7 @@ export const sweepDirectory = (directory: string) =>
 /** Vista de un shell para la ruta HTTP de trabajos (contrato motor-app). */
 export type TrabajoVista = {
   id: string
-  tipo: "shell" | "celda"
+  tipo: "shell" | "celda" | "ayudante"
   titulo: string
   estado: "en_curso" | "terminado" | "terminado_por_ti" | "tope_de_vida" | "perdido"
   codigo: number | null

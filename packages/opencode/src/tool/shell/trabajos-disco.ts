@@ -7,7 +7,7 @@ import { Global } from "@opencode-ai/core/global"
 // Si el motor muere sin avisar, el marcador queda; al arrancar la instancia se limpian los huérfanos y se deja una «lápida»
 // (`<id>.perdido.json`) para que shell_wait/execute_wait puedan decir «el motor se reinició» en vez de un error genérico.
 
-export type Tipo = "shell" | "celda"
+export type Tipo = "shell" | "celda" | "ayudante"
 
 export type Marcador = {
   id: string
@@ -35,6 +35,9 @@ export type Lapida = {
 }
 
 export const LAPIDA_TTL_MS = 60 * 60 * 1000
+/** Un ayudante perdido se puede reanudar (su sesión sigue en la base de datos): su lápida dura un día. */
+export const LAPIDA_AYUDANTE_TTL_MS = 24 * 60 * 60 * 1000
+const ttl = (l: Pick<Lapida, "tipo">) => (l.tipo === "ayudante" ? LAPIDA_AYUDANTE_TTL_MS : LAPIDA_TTL_MS)
 
 /** Solo ids que sean un nombre de archivo seguro: el id puede venir del modelo o de la URL. */
 export const idValido = (id: string) => /^[A-Za-z0-9_]{1,64}$/.test(id)
@@ -156,7 +159,13 @@ export const writeTombstone = (m: Pick<Marcador, "id" | "tipo" | "sessionID" | "
   writeAtomic(lapidaPath(m.id), l)
 }
 
-/** Borra las lápidas con más de una hora. */
+/** Borra una lápida (p. ej. al reanudar el ayudante). */
+export const removeTombstone = (id: string) => {
+  if (!idValido(id)) return
+  rm(lapidaPath(id))
+}
+
+/** Borra las lápidas caducadas (una hora; un día las de ayudantes). */
 export const pruneTombstones = (now = Date.now()) => {
   let names: string[] = []
   try {
@@ -168,7 +177,7 @@ export const pruneTombstones = (now = Date.now()) => {
     if (!name.endsWith(".perdido.json")) continue
     const file = path.join(dir(), name)
     const l = readJson<Lapida>(file)
-    if (!l || typeof l.hora !== "number" || now - l.hora >= LAPIDA_TTL_MS) rm(file)
+    if (!l || typeof l.hora !== "number" || now - l.hora >= ttl(l)) rm(file)
   }
 }
 
@@ -178,7 +187,7 @@ export const tombstoneFor = (id: string, sessionID: string, now = Date.now()): L
   const file = lapidaPath(id)
   const l = readJson<Lapida>(file)
   if (!l) return
-  if (typeof l.hora !== "number" || now - l.hora >= LAPIDA_TTL_MS) {
+  if (typeof l.hora !== "number" || now - l.hora >= ttl(l)) {
     rm(file)
     return
   }
@@ -197,13 +206,15 @@ export const tombstonesOf = (sessionID: string, now = Date.now()): Lapida[] => {
   for (const name of names) {
     if (!name.endsWith(".perdido.json")) continue
     const l = readJson<Lapida>(path.join(dir(), name))
-    if (l && l.sessionID === sessionID && typeof l.hora === "number" && now - l.hora < LAPIDA_TTL_MS) out.push(l)
+    if (l && l.sessionID === sessionID && typeof l.hora === "number" && now - l.hora < ttl(l)) out.push(l)
   }
   return out
 }
 
 export const lostMessage = (l: Pick<Lapida, "id" | "tipo">) =>
-  `El motor se reinició: el ${l.tipo === "shell" ? "comando" : "script"} ${l.id} se perdió (lo que ya había hecho no se deshizo).`
+  l.tipo === "ayudante"
+    ? `El motor se reinició: el ayudante ${l.id} se perdió (lo que ya había hecho no se deshizo). Se puede reanudar con «Reanudar» en Trabajos en segundo plano, o lanzarlo de nuevo con la herramienta task y task_id=${l.id}.`
+    : `El motor se reinició: el ${l.tipo === "shell" ? "comando" : "script"} ${l.id} se perdió (lo que ya había hecho no se deshizo).`
 
 /**
  * Recorre los marcadores del `directory` cuyo motor ya no existe (o que ya no están en el registro de este proceso),
@@ -235,7 +246,7 @@ export const sweepOrphans = (directory: string, liveShellIds: ReadonlySet<string
     const mine = m.enginePid === process.pid
     // Un motor distinto que sigue vivo es dueño de su trabajo. Celdas de este mismo proceso: las gestiona su propio ciclo de vida.
     if (!mine && alive(m.enginePid)) continue
-    if (mine && m.tipo === "celda") continue
+    if (mine && (m.tipo === "celda" || m.tipo === "ayudante")) continue
     if (m.tipo === "shell" && process.platform !== "win32" && alive(m.pid)) {
       const now_ = cmdlineOf(m.pid)
       if (m.cmdline && now_ === m.cmdline && puedeMatarse(m)) {
