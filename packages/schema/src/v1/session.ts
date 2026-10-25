@@ -198,6 +198,19 @@ export const CompactionPart = Schema.Struct({
   auto: Schema.Boolean,
   overflow: Schema.optional(Schema.Boolean),
   tail_start_id: Schema.optional(MessageID),
+  // Lazunox: "compactar hasta aquí": la cola la eligió la persona (no el presupuesto automático).
+  manual_tail: Schema.optional(Schema.Boolean),
+  // Lazunox: métricas del resumen para verlas al recargar (solo cifras y etiquetas, nunca contenido).
+  lazunox: Schema.optional(
+    Schema.Struct({
+      auto: Schema.optional(Schema.Boolean),
+      parcial: Schema.optional(Schema.Boolean),
+      mensajes: Schema.optional(Schema.Number),
+      tokensAntes: Schema.optional(Schema.Number),
+      tokensDespues: Schema.optional(Schema.Number),
+      reinyectado: Schema.optional(Schema.Array(Schema.String)),
+    }),
+  ),
 }).annotate({ identifier: "CompactionPart" })
 export type CompactionPart = Types.DeepMutable<Schema.Schema.Type<typeof CompactionPart>>
 

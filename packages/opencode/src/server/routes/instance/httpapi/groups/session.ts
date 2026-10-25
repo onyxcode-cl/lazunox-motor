@@ -20,7 +20,7 @@ import {
   WorkspaceRoutingQuery,
   WorkspaceRoutingQueryFields,
 } from "../middleware/workspace-routing"
-import { ApiNotFoundError, PermissionNotFoundError, SessionBusyError } from "../errors"
+import { ApiNotFoundError, CompactionConflictError, InvalidRequestError, PermissionNotFoundError, SessionBusyError } from "../errors"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
 import { ProviderV2 } from "@opencode-ai/core/provider"
@@ -62,10 +62,13 @@ export const InitPayload = Schema.Struct({
   providerID: ProviderV2.ID,
   messageID: MessageID,
 })
+// Lazunox: providerID/modelID ahora son opcionales (sin ellos se usa el modelo de la sesión: la app llamaba sin modelo y recibía 400).
+// `upTo` = «compactar hasta aquí»: id de un mensaje de la persona; todo lo anterior se resume y desde él se conserva íntegro.
 export const SummarizePayload = Schema.Struct({
-  providerID: ProviderV2.ID,
-  modelID: ModelV2.ID,
+  providerID: Schema.optional(ProviderV2.ID),
+  modelID: Schema.optional(ModelV2.ID),
   auto: Schema.optional(Schema.Boolean),
+  upTo: Schema.optional(MessageID),
 })
 export const PromptPayload = Schema.Struct(Struct.omit(SessionPrompt.PromptInput.fields, ["sessionID"]))
 export const CommandPayload = Schema.Struct(Struct.omit(SessionPrompt.CommandInput.fields, ["sessionID"]))
@@ -305,7 +308,7 @@ export const SessionApi = HttpApi.make("session")
           query: WorkspaceRoutingQuery,
           payload: SummarizePayload,
           success: described(Schema.Boolean, "Summarized session"),
-          error: [HttpApiError.BadRequest, ApiNotFoundError],
+          error: [HttpApiError.BadRequest, InvalidRequestError, CompactionConflictError, ApiNotFoundError],
         }).annotateMerge(
           OpenApi.annotations({
             identifier: "session.summarize",
