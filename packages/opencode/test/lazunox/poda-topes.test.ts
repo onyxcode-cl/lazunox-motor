@@ -129,7 +129,7 @@ describe("P04: tope de 25k tokens por resultado MCP", () => {
   it.live("200 KB en una línea → ≤ 25k tokens, con ruta del archivo completo", () =>
     Effect.gen(function* () {
       const svc = yield* Truncate.Service
-      const texto = JSON.stringify({ filas: Array.from({ length: 6000 }, (_, i) => ({ i, v: "abcdefghij" })) }) // una línea
+      const texto = JSON.stringify({ filas: Array.from({ length: 8000 }, (_, i) => ({ i, v: "abcdefghij" })) }) // una línea
       expect(texto.length).toBeGreaterThan(200_000)
       expect(texto.includes("\n")).toBe(false)
       const out = yield* montar(texto, svc)
@@ -149,7 +149,7 @@ describe("P04: tope de 25k tokens por resultado MCP", () => {
       const texto = Array.from({ length: 5000 }, (_, i) => `fila ${i} ${"y".repeat(35)}`).join("\n")
       const out = yield* montar(texto, svc)
       expect(Token.estimate(out.output)).toBeLessThanOrEqual(25_000)
-      expect(out.output).toContain("fila 2500") // más de 2000 líneas caben si entran en los 25k tokens
+      expect(out.output.split("\n").length).toBeGreaterThan(2000) // más de 2000 líneas caben si entran en los 25k tokens
       expect(out.metadata.truncated).toBe(true)
     }),
   )
