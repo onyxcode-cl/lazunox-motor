@@ -185,13 +185,31 @@ export const pruneTombstones = (now = Date.now()) => {
 export const tombstoneFor = (id: string, sessionID: string, now = Date.now()): Lapida | undefined => {
   if (!idValido(id)) return
   const file = lapidaPath(id)
-  const l = readJson<Lapida>(file)
-  if (!l) return
+  const l = readJson<unknown>(file)
+  if (!lapidaValida(l, `${id}.perdido.json`)) return
   if (typeof l.hora !== "number" || now - l.hora >= ttl(l)) {
     rm(file)
     return
   }
   return l.sessionID === sessionID ? l : undefined
+}
+
+/** El JSON del disco es dato no confiable: el id debe ser válido y coincidir con el nombre del archivo, y los campos del tipo correcto. */
+export const lapidaValida = (l: unknown, nombre?: string): l is Lapida => {
+  if (!l || typeof l !== "object") return false
+  const x = l as Record<string, unknown>
+  if (typeof x.id !== "string" || !idValido(x.id)) return false
+  if (nombre !== undefined && nombre !== `${x.id}.perdido.json`) return false
+  if (x.tipo !== "shell" && x.tipo !== "celda" && x.tipo !== "ayudante") return false
+  return (
+    typeof x.sessionID === "string" &&
+    typeof x.directory === "string" &&
+    typeof x.titulo === "string" &&
+    typeof x.inicio === "number" &&
+    Number.isFinite(x.inicio) &&
+    typeof x.hora === "number" &&
+    Number.isFinite(x.hora)
+  )
 }
 
 /** Lápidas vigentes de una sesión. */
@@ -205,8 +223,8 @@ export const tombstonesOf = (sessionID: string, now = Date.now()): Lapida[] => {
   const out: Lapida[] = []
   for (const name of names) {
     if (!name.endsWith(".perdido.json")) continue
-    const l = readJson<Lapida>(path.join(dir(), name))
-    if (l && l.sessionID === sessionID && typeof l.hora === "number" && now - l.hora < ttl(l)) out.push(l)
+    const l = readJson<unknown>(path.join(dir(), name))
+    if (lapidaValida(l, name) && l.sessionID === sessionID && now - l.hora < ttl(l)) out.push(l)
   }
   return out
 }

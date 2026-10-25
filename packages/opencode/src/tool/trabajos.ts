@@ -74,11 +74,18 @@ export const listar = (jobs: BackgroundJob.Interface, sessionID: string, directo
   })
 
 /** Mata el shell, interrumpe la celda o cancela el ayudante de fondo. false si no existe, ya terminó o es de otra sesión. */
-export const terminar = (jobs: BackgroundJob.Interface, sessionID: string, id: string) =>
+export const terminar = (
+  jobs: BackgroundJob.Interface,
+  sessionID: string,
+  id: string,
+  /** Detiene la sesión hija del ayudante (un ayudante ampliado con `extend` no se interrumpe solo al cancelar el trabajo). */
+  cancelarSesion?: (id: string) => Effect.Effect<void>,
+) =>
   Effect.gen(function* () {
     if (id.startsWith("sh_")) return yield* ShellBackground.terminateForSession(sessionID, id)
     const job = yield* jobs.get(id)
     if (job && esAyudanteDe(job, sessionID) && job.status === "running") {
+      if (cancelarSesion) yield* cancelarSesion(id).pipe(Effect.ignore)
       yield* jobs.cancel(id)
       return true
     }

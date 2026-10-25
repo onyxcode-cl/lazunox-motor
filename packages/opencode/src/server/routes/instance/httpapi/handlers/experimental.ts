@@ -11,7 +11,7 @@ import type { Snapshot } from "@/snapshot"
 import { SessionRebobinar } from "@/session/rebobinar"
 import { SessionTurnos } from "@/session/turnos"
 import * as ApiError from "../errors"
-import type { SessionID } from "@/session/schema"
+import { SessionID } from "@/session/schema"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
 import { Worktree } from "@/worktree"
@@ -201,7 +201,9 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
     const sessionTrabajoTerminar = Effect.fn("ExperimentalHttpApi.sessionTrabajoTerminar")(function* (ctx: {
       params: { sessionID: SessionID; id: string }
     }) {
-      return { ok: yield* Trabajos.terminar(background, ctx.params.sessionID, ctx.params.id) }
+      return { ok: yield* Trabajos.terminar(background, ctx.params.sessionID, ctx.params.id, (id) =>
+          promptSvc.cancel(SessionID.make(id)),
+        ) }
     })
 
     const sessionTrabajoReanudar = Effect.fn("ExperimentalHttpApi.sessionTrabajoReanudar")(function* (ctx: {
