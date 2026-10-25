@@ -209,8 +209,13 @@ export const TaskTool = Tool.define(
         }
       }
       const parentAgent = yield* agent.get(ctx.agent)
+      // Lazunox (revisión de seguridad H2): solo se reanuda una sesión que CUELGA de esta conversación. Una sesión ajena (otra
+      // conversación, otra carpeta de la misma base) se trata como inexistente: nunca se reutiliza ni se filtra su contenido.
       const session = params.task_id
-        ? yield* sessions.get(SessionID.make(params.task_id)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+        ? yield* sessions.get(SessionID.make(params.task_id)).pipe(
+            Effect.map((existing) => (existing.parentID === ctx.sessionID ? existing : undefined)),
+            Effect.catchCause(() => Effect.succeed(undefined)),
+          )
         : undefined
       const childPermission = deriveSubagentSessionPermission({
         parentSessionPermission: parent.permission ?? [],
@@ -230,22 +235,26 @@ export const TaskTool = Tool.define(
           action: "deny" as const,
         })) ?? []),
       ]
+      const permisoHijo = [
+        ...childPermission,
+        ...childToolDenies.filter(
+          (deny) =>
+            !childPermission.some(
+              (rule) =>
+                rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action,
+            ),
+        ),
+      ]
+      // Al reanudar se vuelve a imponer el tope ACTUAL (modo plan, 2A, marca) sobre la sesión existente: si se creó cuando el padre
+      // podía escribir, no conserva esos permisos antiguos.
+      if (session) yield* sessions.setPermission({ sessionID: session.id, permission: permisoHijo })
       const nextSession =
         session ??
         (yield* sessions.create({
           parentID: ctx.sessionID,
           title: params.description + ` (@${next.name} subagent)`,
           agent: next.name,
-          permission: [
-            ...childPermission,
-            ...childToolDenies.filter(
-              (deny) =>
-                !childPermission.some(
-                  (rule) =>
-                    rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action,
-                ),
-            ),
-          ],
+          permission: permisoHijo,
         }))
 
       const msg = yield* MessageV2.get({ sessionID: ctx.sessionID, messageID: ctx.messageID }).pipe(

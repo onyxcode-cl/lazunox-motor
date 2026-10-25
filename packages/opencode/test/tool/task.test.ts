@@ -16,6 +16,7 @@ import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 
+import { marcaModoPlan } from "../../src/session/plan-modo"
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { Provider } from "@/provider/provider"
@@ -466,6 +467,72 @@ describe("tool.task", () => {
 
       const exit = yield* Fiber.await(fiber)
       expect(Exit.isSuccess(exit)).toBe(true)
+    }),
+  )
+
+  // Revisión de seguridad H2: task_id solo reanuda hijas de ESTA conversación y vuelve a imponer el tope actual.
+  it.instance("H2: un padre en modo plan que reanuda una hija creada en build no la deja con permisos libres", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      // hija creada cuando el padre era `build`: permiso abierto, sin marca de plan
+      const child = yield* sessions.create({
+        parentID: chat.id,
+        title: "Creada en build",
+        permission: [{ permission: "bash", pattern: "*", action: "allow" }],
+      })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      const promptOps = stubOps({ text: "reanudada" })
+      const result = yield* def.execute(
+        { description: "x", prompt: "y", subagent_type: "explore", task_id: child.id },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "plan",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      expect(result.metadata.sessionId).toBe(child.id)
+      const after = yield* sessions.get(child.id)
+      // la marca de modo plan y el `edit` del padre quedan impuestos sobre la sesión existente
+      expect(marcaModoPlan(after.permission ?? [])).toBe(true)
+      expect((after.permission ?? []).some((r) => r.permission === "edit" && r.pattern === "*" && r.action === "deny")).toBe(true)
+    }),
+  )
+
+  it.instance("H2: un task_id de otra conversación se trata como inexistente (no se reutiliza ni se reanuda)", () =>
+    Effect.gen(function* () {
+      const sessions = yield* Session.Service
+      const { chat, assistant } = yield* seed()
+      const otra = yield* sessions.create({ title: "Otra conversación" })
+      const ajena = yield* sessions.create({ parentID: otra.id, title: "Hija ajena" })
+      const tool = yield* TaskTool
+      const def = yield* tool.init()
+      let seen: SessionPrompt.PromptInput | undefined
+      const promptOps = stubOps({ text: "nueva", onPrompt: (input) => (seen = input) })
+      const result = yield* def.execute(
+        { description: "x", prompt: "y", subagent_type: "general", task_id: ajena.id },
+        {
+          sessionID: chat.id,
+          messageID: assistant.id,
+          agent: "build",
+          abort: new AbortController().signal,
+          extra: { promptOps },
+          messages: [],
+          metadata: () => Effect.void,
+          ask: () => Effect.void,
+        },
+      )
+      expect(result.metadata.sessionId).not.toBe(ajena.id)
+      expect(seen?.sessionID).not.toBe(ajena.id)
+      expect(result.output).not.toContain(ajena.id)
+      expect((yield* sessions.children(otra.id)).map((c) => c.id)).toEqual([ajena.id])
+      expect(yield* sessions.children(chat.id)).toHaveLength(1)
     }),
   )
 

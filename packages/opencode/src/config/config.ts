@@ -449,9 +449,8 @@ const layer = Layer.effect(
         }
         let agentesClaude: Record<string, any> = {}
         for (const root of raicesClaude)
-          agentesClaude = mergeDeep(agentesClaude, yield* Effect.promise(() => ConfigAgent.loadClaude(root)))
-        // Debajo de lo que ya había: nada de la carpeta de Claude pisa la configuración propia.
-        result.agent = mergeDeep(agentesClaude, result.agent ?? {})
+          // El más cercano reemplaza al más lejano del mismo nombre (sin mezclar campos entre archivos).
+          agentesClaude = { ...agentesClaude, ...(yield* Effect.promise(() => ConfigAgent.loadClaude(root))) }
 
         for (const dir of directories) {
           if (dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR) {
@@ -572,6 +571,17 @@ const layer = Layer.effect(
               mode: "primary" as const,
             },
           })
+        }
+
+        // Lazunox (revisión de seguridad H3): los agentes de `.claude/agents` y `~/.claude/agents` se añaden AL FINAL y SOLO con nombres que
+        // no existen (ni nativos, ni reservados, ni de la app o de .opencode). Nunca se fusionan con un agente existente: un archivo de la
+        // carpeta del proyecto no puede ampliar los permisos de `chat`, `tasks`, `computer`, `lazunox-helper`...
+        {
+          const agentes = (result.agent ??= {})
+          for (const [name, def] of Object.entries(agentesClaude)) {
+            if (name in agentes || ConfigAgent.esNombreReservado(name)) continue
+            agentes[name] = def
+          }
         }
 
         if (Flag.OPENCODE_PERMISSION) {

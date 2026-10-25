@@ -7,7 +7,8 @@ import { ConfigAgentV1 } from "@opencode-ai/core/v1/config/agent"
 import { configEntryNameFromPath } from "./entry-name"
 import * as ConfigMarkdown from "./markdown"
 import { ConfigParse } from "./parse"
-import { NOMBRES_RESERVADOS, pareceClaude, traducirClaude } from "./agent-claude"
+import { esNombreReservado, pareceClaude, traducirClaude } from "./agent-claude"
+export { esNombreReservado }
 
 export async function load(dir: string) {
   const result: Record<string, ConfigAgentV1.Info> = {}
@@ -51,7 +52,7 @@ export async function loadClaude(root: string, env: NodeJS.ProcessEnv = process.
     const name = typeof data.name === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(data.name)
       ? data.name
       : configEntryNameFromPath(path.relative(cwd, item), [])
-    if (NOMBRES_RESERVADOS.has(name)) continue
+    if (esNombreReservado(name)) continue
     try {
       result[name] = ConfigParse.schema(
         ConfigAgentV1.Info,

@@ -7,6 +7,8 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Effect, Fiber, Layer } from "effect"
 import path from "path"
+import fsSync from "fs"
+import osm from "os"
 import { Agent as AgentSvc } from "../../src/agent/agent"
 import { deriveSubagentSessionPermission } from "../../src/agent/subagent-permissions"
 import { BackgroundJob } from "@/background/job"
@@ -89,10 +91,15 @@ describe("shell de solo lectura (modo plan)", () => {
     "cat x > /dev/null",
     "cd src && ls",
     "pwd; ls; echo hola",
-    "sort -u lista.txt | uniq -c",
-    "Get-ChildItem -Recurse",
     "jq '.name' package.json",
-    "test -f a && echo si",
+    "head -n 5 a.txt && tail -20 b.txt",
+    "grep -rn --include='*.ts' foo ./src",
+    "rg -n --hidden -g '*.ts' foo src",
+    "git log --oneline --graph -n 10",
+    "git diff --stat --cached",
+    "git grep -n -e foo -- src",
+    "git branch --list 'feat/*'",
+    "ls ./*.ts",
     "echo 'a;b|c&d'",
   ]
   for (const orden of acepta) {
@@ -174,6 +181,102 @@ describe("shell de solo lectura (modo plan)", () => {
     test(`rechaza: ${JSON.stringify(orden)}`, () => expect(comandoDeSoloLectura(orden).ok).toBe(false))
   }
 
+  // Revisión de seguridad H1: familias de evasión. SOLO se prueba la función de decisión; nada se ejecuta.
+  const evasiones: Record<string, string[]> = {
+    "sort y uniq ya no están (escriben con -o abreviado o con «-»)": [
+      "sort --out=x a",
+      "sort --outp=x a",
+      "sort --output=x a",
+      "sort -o x a",
+      "sort a",
+      "uniq - archivo",
+      "uniq a b",
+    ],
+    "tree -H / -o": ["tree -H http://x .", "tree -o x", "tree"],
+    "builtins que evalúan subíndices (printf -v, test -v, [ -v)": [
+      "printf -v 'a[$(touch x)]' %s 1",
+      "printf '%s' hola",
+      "test -v 'a[$(touch x)]'",
+      "[ -v 'a[$(touch x)]' ]",
+      "test -f a",
+    ],
+    "git grep -O / --open-files-in-pager y abreviaturas": [
+      "git grep -O foo",
+      "git grep -Osh foo",
+      "git grep --open-files-in-pager=sh foo",
+      "git grep --open-files foo",
+      "git grep --open foo",
+    ],
+    "rg que ejecuta programas": [
+      "rg --hostname-bin=./x foo",
+      "rg --hostname-bin ./x foo",
+      "rg --hostname foo",
+      "rg --pre=./x foo",
+      "rg --pre ./x foo",
+      "rg --pre-g=x foo",
+      "rg -z foo",
+      "rg --search-zip foo",
+    ],
+    "abreviaturas de opciones largas (GNU acepta prefijos)": [
+      "grep --incl=x foo",
+      "ls --al",
+      "git log --out=x",
+      "git diff --ext foo",
+      "git log --no-ext foo",
+      "cat --num a",
+      "head --lin=3 a",
+    ],
+    "opciones de git globales y subcomandos": [
+      "git -c core.pager=x log",
+      "git -C . status",
+      "git --exec-path=x status",
+      "git log --output=x",
+      "git diff --output x",
+      "git show --ext-diff HEAD",
+      "git diff --textconv",
+      "git branch -m a b",
+      "git branch nueva",
+      "git branch -c a b",
+      "git tag nuevo",
+      "git config core.pager x",
+    ],
+    "opciones cortas desconocidas en un grupo": ["ls -lZ", "cat -nX a", "head -q -f a", "tail -f a", "wc -z a", "grep -rnO foo"],
+    "otras formas de burlar el análisis": [
+      "rg x $IFS--pre=cmd",
+      "rg x a$IFS--pre=cmd",
+      "ls $'\\x2do'",
+      "ls $HOME",
+      "rg x \\\n--pre=cmd",
+      "rg x \"\\\n--pre=cmd\"",
+      "rg foo *",
+      "rg foo ?x",
+      "cat <>archivo",
+      "date 010100002030",
+      "stat -f x",
+    ],
+  }
+  for (const [familia, ordenes] of Object.entries(evasiones)) {
+    for (const orden of ordenes) {
+      test(`H1 rechaza (${familia}): ${JSON.stringify(orden)}`, () => expect(comandoDeSoloLectura(orden).ok).toBe(false))
+    }
+  }
+  for (const shell of ["powershell", "pwsh", "cmd", "fish", "nu"]) {
+    test(`H1 niega el shell ${shell} por completo (incluida una orden inocua y «\\»)`, () => {
+      expect(comandoDeSoloLectura("ls", { shell }).ok).toBe(false)
+      expect(comandoDeSoloLectura("Get-Content a.txt", { shell }).ok).toBe(false)
+      expect(comandoDeSoloLectura("rg x a\\--pre=cmd", { shell }).ok).toBe(false)
+    })
+  }
+  for (const shell of ["bash", "zsh", "sh"]) {
+    test(`H1 el shell ${shell} sí se analiza`, () => {
+      expect(comandoDeSoloLectura("ls -la", { shell })).toEqual({ ok: true })
+      expect(comandoDeSoloLectura("ls --al", { shell }).ok).toBe(false)
+    })
+  }
+  test("H1 en bash, «\\» sí escapa (el análisis coincide con el shell)", () => {
+    expect(comandoDeSoloLectura("cat a\\ b", { shell: "bash" })).toEqual({ ok: true })
+  })
+
   test("una orden enorme no se analiza", () => {
     expect(comandoDeSoloLectura("ls " + "a".repeat(5000)).ok).toBe(false)
   })
@@ -243,18 +346,87 @@ describe("tope del modo plan para ayudantes", () => {
 
 describe("rutas protegidas y archivo del plan", () => {
   const on = { LAZUNOX_PLAN: "1" } as NodeJS.ProcessEnv
-  test("con LAZUNOX_PLAN=1 el plan no es ruta protegida, pero el resto de .opencode sí", () => {
-    expect(RutasProtegidas.esProtegida(".opencode/plans/1-abc.md", on)).toBe(false)
-    expect(RutasProtegidas.esProtegida(".opencode\\plans\\1-abc.md", on)).toBe(false)
-    expect(RutasProtegidas.esProtegida(".opencode/agents/x.md", on)).toBe(true)
-    expect(RutasProtegidas.esProtegida(".opencode/plans/x.ts", on)).toBe(true)
-    expect(RutasProtegidas.esProtegida(".opencode/plans/sub/x.md", on)).toBe(true)
-    expect(RutasProtegidas.esProtegida(".opencode/plans/.md", on)).toBe(true)
-    expect(RutasProtegidas.esProtegida(".opencode/opencode.json", on)).toBe(true)
-    expect(RutasProtegidas.esProtegida("/otro/.opencode/plans/x.md", on)).toBe(true)
+  const pathm = path
+  const crear = () => {
+    const raiz = fsSync.mkdtempSync(pathm.join(osm.tmpdir(), "lzx-h4-"))
+    fsSync.mkdirSync(pathm.join(raiz, ".opencode", "plans"), { recursive: true })
+    return raiz
+  }
+  const limpiar = (r: string) => fsSync.rmSync(r, { recursive: true, force: true })
+  test("con LAZUNOX_PLAN=1 y el agente plan, el plan no es ruta protegida, pero el resto de .opencode sí", () => {
+    const raiz = crear()
+    try {
+      const o = { agente: "plan", raiz }
+      expect(RutasProtegidas.esProtegida(".opencode/plans/1-abc.md", on, o)).toBe(false)
+      // con «\\» solo es separador en Windows; en POSIX es un nombre raro y se pregunta
+      expect(RutasProtegidas.esProtegida(".opencode\\plans\\1-abc.md", on, o)).toBe(path.sep === "/")
+      expect(RutasProtegidas.esProtegida(".opencode/agents/x.md", on, o)).toBe(true)
+      expect(RutasProtegidas.esProtegida(".opencode/plans/x.ts", on, o)).toBe(true)
+      expect(RutasProtegidas.esProtegida(".opencode/plans/sub/x.md", on, o)).toBe(true)
+      expect(RutasProtegidas.esProtegida(".opencode/plans/.md", on, o)).toBe(true)
+      expect(RutasProtegidas.esProtegida(".opencode/opencode.json", on, o)).toBe(true)
+      expect(RutasProtegidas.esProtegida("/otro/.opencode/plans/x.md", on, o)).toBe(true)
+    } finally {
+      limpiar(raiz)
+    }
   })
   test("sin la bandera todo sigue protegido", () => {
-    expect(RutasProtegidas.esProtegida(".opencode/plans/1-abc.md", {} as NodeJS.ProcessEnv)).toBe(true)
+    const raiz = crear()
+    try {
+      expect(RutasProtegidas.esProtegida(".opencode/plans/1-abc.md", {} as NodeJS.ProcessEnv, { agente: "plan", raiz })).toBe(true)
+    } finally {
+      limpiar(raiz)
+    }
+  })
+  test("H4: otro agente (build, un ayudante) o sin contexto NO obtiene la excepción", () => {
+    const raiz = crear()
+    try {
+      for (const agente of ["build", "explore", "general", "chat", "Plan", undefined])
+        expect(RutasProtegidas.esProtegida(".opencode/plans/1-abc.md", on, { agente, raiz })).toBe(true)
+      expect(RutasProtegidas.esProtegida(".opencode/plans/1-abc.md", on)).toBe(true)
+      expect(RutasProtegidas.esProtegida(".opencode/plans/1-abc.md", on, { agente: "plan" })).toBe(true)
+    } finally {
+      limpiar(raiz)
+    }
+  })
+  test("H4: .opencode/plans que es un enlace simbólico a otra carpeta pregunta como antes", () => {
+    const raiz = fsSync.mkdtempSync(pathm.join(osm.tmpdir(), "lzx-h4-"))
+    const fuera = fsSync.mkdtempSync(pathm.join(osm.tmpdir(), "lzx-h4-fuera-"))
+    try {
+      fsSync.mkdirSync(pathm.join(raiz, ".opencode"))
+      fsSync.symlinkSync(fuera, pathm.join(raiz, ".opencode", "plans"), "dir")
+      expect(RutasProtegidas.esProtegida(".opencode/plans/x.md", on, { agente: "plan", raiz })).toBe(true)
+    } finally {
+      limpiar(raiz)
+      limpiar(fuera)
+    }
+  })
+  test("H4: .opencode enlazado, plans enlazado a otra carpeta del proyecto o el .md enlazado hacia fuera: protegidos", () => {
+    const raiz = crear()
+    const fuera = fsSync.mkdtempSync(pathm.join(osm.tmpdir(), "lzx-h4-fuera-"))
+    try {
+      // el propio archivo del plan es un enlace a un archivo fuera
+      fsSync.writeFileSync(pathm.join(fuera, "secreto.md"), "x")
+      fsSync.symlinkSync(pathm.join(fuera, "secreto.md"), pathm.join(raiz, ".opencode", "plans", "enlace.md"))
+      expect(RutasProtegidas.esProtegida(".opencode/plans/enlace.md", on, { agente: "plan", raiz })).toBe(true)
+      // enlace roto
+      fsSync.symlinkSync(pathm.join(fuera, "no-existe.md"), pathm.join(raiz, ".opencode", "plans", "roto.md"))
+      expect(RutasProtegidas.esProtegida(".opencode/plans/roto.md", on, { agente: "plan", raiz })).toBe(true)
+      // un archivo normal (aunque aún no exista) sigue exento
+      expect(RutasProtegidas.esProtegida(".opencode/plans/nuevo.md", on, { agente: "plan", raiz })).toBe(false)
+    } finally {
+      limpiar(raiz)
+      limpiar(fuera)
+    }
+    const raiz2 = fsSync.mkdtempSync(pathm.join(osm.tmpdir(), "lzx-h4-"))
+    try {
+      fsSync.mkdirSync(pathm.join(raiz2, "src"))
+      fsSync.mkdirSync(pathm.join(raiz2, ".opencode"))
+      fsSync.symlinkSync(pathm.join(raiz2, "src"), pathm.join(raiz2, ".opencode", "plans"), "dir")
+      expect(RutasProtegidas.esProtegida(".opencode/plans/x.md", on, { agente: "plan", raiz: raiz2 })).toBe(true)
+    } finally {
+      limpiar(raiz2)
+    }
   })
 })
 

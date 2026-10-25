@@ -91,6 +91,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       permission
         .ask({
           ...req,
+          // Lazunox (H4): el motor (no la herramienta) dice qué agente pide el permiso; lo lee `rutas-protegidas`.
+          metadata: { ...req.metadata, lazunox_agente: input.agent.name },
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
           ruleset: Permission.merge(
