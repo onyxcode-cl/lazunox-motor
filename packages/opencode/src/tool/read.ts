@@ -355,6 +355,8 @@ export const ReadTool = Tool.define<
           previa &&
           previa.hash === h &&
           previa.callID !== callID &&
+          // Si esta lectura reclamó AGENTS.md nuevos (`loaded`), la respuesta corta no los llevaría: se lee completo.
+          loaded.length === 0 &&
           LecturasSesion.visible(ctx.messages, previa.callID)
         ) {
           const msg = `Sin cambios: ${filepath} es idéntico a la lectura n.º ${previa.numero} de esta sesión (${file.count} líneas), cuyo contenido completo sigue arriba en la conversación. Usa offset/limit si necesitas ver un rango otra vez.`

@@ -249,4 +249,33 @@ describe("lazunox no-releer", () => {
       }
     }),
   )
+
+  it.live("si apareció un AGENTS.md de la subcarpeta, la repetida NO es la línea corta (no se pierde su contenido)", () =>
+    Effect.gen(function* () {
+      const dir = yield* tmpdirScoped()
+      const f = path.join(dir, "sub", "a.txt")
+      yield* put(f, "uno\ndos\n")
+      const sid = sesion()
+      yield* leer(dir, { filePath: f }, sid, "c1", ["c1"])
+      yield* put(path.join(dir, "sub", "AGENTS.md"), "REGLA-NUEVA-DE-SUBCARPETA")
+      const r = yield* exec(dir, { filePath: f }, {
+        ...ctx,
+        messageID: MessageID.make("msg_otro_turno"),
+        sessionID: sid,
+        callID: "c2",
+        messages: mensajes(["c1", "c2"]),
+      } as Tool.Context)
+      expect(r.output).not.toContain("Sin cambios")
+      expect(r.output).toContain("REGLA-NUEVA-DE-SUBCARPETA")
+      // Y cuando ya no hay AGENTS.md nuevo por reclamar (mismo mensaje), la repetida vuelve a ser corta.
+      const r3 = yield* exec(dir, { filePath: f }, {
+        ...ctx,
+        messageID: MessageID.make("msg_otro_turno"),
+        sessionID: sid,
+        callID: "c3",
+        messages: mensajes(["c2", "c3"]),
+      } as Tool.Context)
+      expect(r3.output).toContain("Sin cambios")
+    }),
+  )
 })
