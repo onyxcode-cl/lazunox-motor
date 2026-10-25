@@ -9,7 +9,7 @@ import { Effect } from "effect"
 import type { Agent } from "@/agent/agent"
 import type { Plugin } from "@/plugin"
 import type { Tool } from "@/tool/tool"
-import type { Truncate } from "@/tool/truncate"
+import { opcionesMcp, type Truncate } from "@/tool/truncate"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { PartID } from "@/session/schema"
 import { McpCatalog } from "./catalog"
@@ -145,7 +145,8 @@ export const run = Effect.fn("McpInvocar.run")(function* (input: RunInput) {
     }
   }
 
-  const truncated = yield* input.truncate.output(textParts.join("\n\n"), {}, input.agent)
+  // Lazunox (P04): tope de 25k tokens por resultado MCP; el resto queda en un archivo de `Truncate.DIR` y el aviso da la ruta.
+  const truncated = yield* input.truncate.output(textParts.join("\n\n"), opcionesMcp(), input.agent)
   const metadata = {
     ...result.metadata,
     truncated: truncated.truncated,

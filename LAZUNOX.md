@@ -111,6 +111,20 @@ Plan: `docs/PLAN-REBOBINAR-Y-COMPACTACION.md` de la app (sección 2.B y fases C1
 - Gancho de usuario **`PostCompact`** en `plugin/lazunox-ganchos.ts` (mismo archivo de la app que `PreCompact`, `LAZUNOX_HOOKS_FILE`; un proyecto no puede traer el suyo): el comando recibe por stdin `{ event: "PostCompact", sessionID, cwd, trigger, parcial, tokensAntes, tokensDespues }`; su stdout con código 0 (hasta 4000 caracteres) va al bloque marcado `[Gancho PostCompact]`.
 - Ni la reinyección ni las métricas pueden hacer fallar una compactación que ya salió bien (se registra un aviso y se sigue).
 
+## Poda y topes (1B del plan maestro: P03 + P04)
+
+Pruebas: `test/lazunox/poda-topes.test.ts`. Archivos: `session/compaction.ts`, `tool/truncate.ts`, `mcp/invocar.ts` (y dos líneas en `tool/tool.ts` y `tool/shell.ts` para pasar el id de la herramienta).
+
+**P03 - poda y recorte**
+- **La poda de salidas viejas de herramientas está encendida por defecto** (antes solo con `compaction.prune: true`). Se apaga con `compaction.prune: false` o `OPENCODE_DISABLE_PRUNE`. Reglas heredadas: nunca poda `skill`, respeta los últimos 40k tokens de salidas y los dos últimos turnos de la persona, y se detiene en un resumen o en una salida ya podada.
+- **Recorte de la petición de resumen** (`ajustarConversacion`): la conversación a resumir se mide con caracteres/4 contra el 85 % de lo usable del modelo. Si no cabe: (1) salidas de herramientas a 500 caracteres, (2) a una marca `[Tool result trimmed...]`, (3) se descartan los mensajes más viejos (el resumen previo cubre lo anterior; siempre queda el último). Antes se mandaba todo con 2000 caracteres por salida y un modelo pequeño respondía desbordamiento. Se registra `compaction request trimmed {nivel, descartados}`. `<contexto-vigente>` no cambia.
+
+**P04 - topes**
+- `Truncate.limits(tool?)` y `output(text, { tool })`: `bash` 30 000 bytes (el tool `bash` es el shell), `webfetch` 50 KB; el resto, el global (2000 líneas / 50 KB). Un `tool_output` de la configuración gana siempre. `LAZUNOX_TOPES_HERRAMIENTA=0` apaga los topes por herramienta. `grep` y `glob` ya se acotan a 100 resultados dentro de la herramienta (sin cambios).
+- **Resultados MCP: máximo 25 000 tokens** (≈ 100 000 caracteres, reservando 1 KB para el aviso; sin tope de líneas). Lo que sobra queda entero en un archivo de `Truncate.DIR` y el aviso del resultado trae su ruta (`metadata.truncated` y `metadata.outputPath`). `LAZUNOX_MCP_TOPE_TOKENS` (o `MAX_MCP_OUTPUT_TOKENS`, mínimo 1000) cambia el tope.
+- Arreglo de paso: si la primera línea sola superaba el tope (JSON en una línea, archivo minificado), la vista previa quedaba vacía; ahora muestra el principio de esa línea.
+- Comprobación con motor real (`engine-probe`, `PROBE_ONLY=topes`): un MCP de prueba con una herramienta que devuelve 200 KB (una línea de JSON y otra con 5000 líneas); la salida que ve el modelo en la siguiente petición debe tener ≤ 25 000 tokens estimados (≤ 100 000 caracteres), contener una ruta bajo `Truncate.DIR` y el archivo debe tener los 200 KB completos. Con `LAZUNOX_MCP_TOPE_TOKENS=4000` el tope baja.
+
 ## Estado
 
 - Paso 2 hecho: compila desde el código fuente, repetible, pasa el contrato de Lazunox.

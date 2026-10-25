@@ -431,7 +431,7 @@ export const ShellWaitTool = Tool.define(
             )
           }
           if (params.terminate && job.running) yield* job.kill
-          return yield* settle(job, ShellBackground.clampYield(params.yield_ms), ctx, yield* trunc.limits())
+          return yield* settle(job, ShellBackground.clampYield(params.yield_ms), ctx, yield* trunc.limits(ShellID.ToolID))
         }),
     }
     return init
@@ -544,7 +544,7 @@ export const ShellTool = Tool.define(
       },
       ctx: Tool.Context,
     ) {
-      const limits = yield* trunc.limits()
+      const limits = yield* trunc.limits(ShellID.ToolID)
       const keep = limits.maxBytes * 2
       let full = ""
       let last = ""
@@ -804,7 +804,7 @@ export const ShellTool = Tool.define(
         const cfg = yield* config.get()
         const shell = Shell.acceptable(cfg.shell)
         const name = Shell.name(shell)
-        const limits = yield* trunc.limits()
+        const limits = yield* trunc.limits(ShellID.ToolID)
         const prompt = ShellPrompt.render(name, process.platform, limits, defaultTimeoutMs)
         yield* Effect.logInfo("shell tool using shell", { shell })
 

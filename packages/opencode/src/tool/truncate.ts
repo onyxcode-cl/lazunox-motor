@@ -13,6 +13,31 @@ const RETENTION = Duration.days(7)
 
 export const MAX_LINES = 2000
 export const MAX_BYTES = 50 * 1024
+/**
+ * Lazunox (P04): topes por herramienta, en bytes (≈ caracteres; tokens ≈ caracteres/4). Valen solo si la configuración
+ * (`tool_output`) no fija un tope propio; `LAZUNOX_TOPES_HERRAMIENTA=0` los apaga y queda el tope global. grep y glob ya
+ * se acotan a 100 resultados dentro de la herramienta; la API pública del resto queda igual.
+ */
+export const TOPES_HERRAMIENTA: Readonly<Record<string, { maxBytes: number }>> = {
+  bash: { maxBytes: 30_000 },
+  webfetch: { maxBytes: 50 * 1024 },
+}
+/** Tope de tokens de un resultado MCP (modo `Claude Code`: 25k). `LAZUNOX_MCP_TOPE_TOKENS` (o `MAX_MCP_OUTPUT_TOKENS`) lo cambia. */
+export const MCP_TOPE_TOKENS = 25_000
+/** Bytes que se reservan dentro del tope para el aviso «salida truncada…» que se añade al final. */
+const RESERVA_AVISO_BYTES = 1024
+
+export function topeTokensMcp(env: Record<string, string | undefined> = process.env) {
+  const raw = env.LAZUNOX_MCP_TOPE_TOKENS ?? env.MAX_MCP_OUTPUT_TOKENS
+  const n = raw === undefined ? NaN : Number(raw)
+  return Number.isFinite(n) && n >= 1000 ? Math.floor(n) : MCP_TOPE_TOKENS
+}
+
+/** Opciones de `output()` para un resultado MCP: ≤ tope de tokens (preview + aviso), sin tope de líneas. */
+export function opcionesMcp(env: Record<string, string | undefined> = process.env): Options {
+  return { maxBytes: Math.max(RESERVA_AVISO_BYTES, topeTokensMcp(env) * 4 - RESERVA_AVISO_BYTES), maxLines: Number.MAX_SAFE_INTEGER }
+}
+
 export const DIR = TRUNCATION_DIR
 export const GLOB = path.join(TRUNCATION_DIR, "*")
 
@@ -21,6 +46,8 @@ export type Result = { content: string; truncated: false } | { content: string; 
 export interface Options {
   maxLines?: number
   maxBytes?: number
+  /** Lazunox (P04): id de la herramienta, para aplicar su tope propio (ver `TOPES_HERRAMIENTA`). */
+  tool?: string
   direction?: "head" | "tail"
 }
 
@@ -40,7 +67,7 @@ export interface Interface {
   /**
    * Resolved truncation limits: values from `tool_output` in opencode config, or MAX_LINES / MAX_BYTES if unset.
    */
-  readonly limits: () => Effect.Effect<{ maxLines: number; maxBytes: number }>
+  readonly limits: (tool?: string) => Effect.Effect<{ maxLines: number; maxBytes: number }>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Truncate") {}
@@ -72,18 +99,20 @@ const layer = Layer.effect(
       return file
     })
 
-    const limits = Effect.fn("Truncate.limits")(function* () {
+    const limits = Effect.fn("Truncate.limits")(function* (tool?: string) {
+      const propio = tool && process.env.LAZUNOX_TOPES_HERRAMIENTA !== "0" ? TOPES_HERRAMIENTA[tool] : undefined
+      const base = propio?.maxBytes ?? MAX_BYTES
       const configSvc = yield* Effect.serviceOption(Config.Service)
-      if (Option.isNone(configSvc)) return { maxLines: MAX_LINES, maxBytes: MAX_BYTES }
+      if (Option.isNone(configSvc)) return { maxLines: MAX_LINES, maxBytes: base }
       const cfg = yield* configSvc.value.get().pipe(Effect.catch(() => Effect.succeed(undefined)))
       return {
         maxLines: cfg?.tool_output?.max_lines ?? MAX_LINES,
-        maxBytes: cfg?.tool_output?.max_bytes ?? MAX_BYTES,
+        maxBytes: cfg?.tool_output?.max_bytes ?? base,
       }
     })
 
     const output = Effect.fn("Truncate.output")(function* (text: string, options: Options = {}, agent?: Agent.Info) {
-      const resolved = yield* limits()
+      const resolved = yield* limits(options.tool)
       const maxLines = options.maxLines ?? resolved.maxLines
       const maxBytes = options.maxBytes ?? resolved.maxBytes
       const direction = options.direction ?? "head"
@@ -119,6 +148,16 @@ const layer = Layer.effect(
           out.unshift(lines[i])
           bytes += size
         }
+      }
+
+      // Lazunox: si la primera línea sola ya pasa el tope (JSON en una línea, archivos minificados), antes la vista previa
+      // quedaba vacía; ahora se muestra el principio (o el final) de esa línea cortado en un límite de carácter.
+      if (out.length === 0 && lines.length > 0 && maxBytes > 0) {
+        const buf = Buffer.from(direction === "head" ? lines[0] : lines[lines.length - 1], "utf-8")
+        const trozo = direction === "head" ? buf.subarray(0, maxBytes) : buf.subarray(buf.length - maxBytes)
+        const texto = trozo.toString("utf-8").replaceAll("\uFFFD", "")
+        out.push(texto)
+        bytes = Buffer.byteLength(texto, "utf-8")
       }
 
       const removed = hitBytes ? totalBytes - bytes : lines.length - out.length

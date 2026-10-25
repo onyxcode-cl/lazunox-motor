@@ -58,10 +58,18 @@ type CompletedCompaction = {
   summary: string | undefined
 }
 
-const truncate = (value: string) =>
-  value.length <= TOOL_OUTPUT_MAX_CHARS ? value : `${value.slice(0, TOOL_OUTPUT_MAX_CHARS)}\n[truncated]`
+const truncate = (value: string, max = TOOL_OUTPUT_MAX_CHARS) =>
+  value.length <= max ? value : `${value.slice(0, max)}\n[truncated]`
 
-const serialize = (message: SessionV1.WithParts) => {
+// Lazunox (P03): niveles de recorte de la conversación que se manda a resumir. Cada nivel acorta más las salidas de
+// herramientas (y los argumentos de sus llamadas); el último nivel las deja en una marca. Si ni así cabe, se descartan los
+// mensajes más viejos (el resumen previo ya cubre lo anterior).
+export const NIVELES_RECORTE_SALIDAS = [TOOL_OUTPUT_MAX_CHARS, 500, 0] as const
+const MARCA_SALIDA_RECORTADA = "[Tool result trimmed to fit the summary request]"
+/** Fracción de lo usable que puede ocupar la petición de resumen (el resto es margen de la estimación caracteres/4). */
+export const RESUMEN_FRACCION_USABLE = 0.85
+
+const serialize = (message: SessionV1.WithParts, max = TOOL_OUTPUT_MAX_CHARS) => {
   if (message.info.role === "user") {
     const text = message.parts
       .filter((part): part is SessionV1.TextPart => part.type === "text" && !part.ignored)
@@ -78,20 +86,56 @@ const serialize = (message: SessionV1.WithParts) => {
       if (part.type === "text") return part.text ? [`[Assistant]: ${part.text}`] : []
       if (part.type === "reasoning") return part.text ? [`[Assistant reasoning]: ${part.text}`] : []
       if (part.type !== "tool") return []
-      const call = `[Assistant tool call]: ${part.tool}(${JSON.stringify(part.state.input)})`
+      const inputText = JSON.stringify(part.state.input)
+      const call = `[Assistant tool call]: ${part.tool}(${max < TOOL_OUTPUT_MAX_CHARS ? truncate(inputText, Math.max(max, 200)) : inputText})`
       if (part.state.status === "completed") {
         const attachments = (part.state.attachments ?? []).map(
           (item) => `[Attached ${item.mime}: ${item.filename ?? "file"}]`,
         )
         const output = part.state.time.compacted
           ? "[Old tool result content cleared]"
-          : truncate([part.state.output, ...attachments].join("\n"))
+          : max === 0
+            ? MARCA_SALIDA_RECORTADA
+            : truncate([part.state.output, ...attachments].join("\n"), max)
         return [call, `[Tool result]: ${output}`]
       }
       if (part.state.status === "error") return [call, `[Tool error]: ${part.state.error}`]
       return [call]
     })
     .join("\n")
+}
+
+/**
+ * Lazunox (P03): serializa la conversación a resumir y, si la petición no cabe en `presupuesto` tokens (estimación
+ * caracteres/4), recorta primero las salidas viejas de herramientas y luego descarta los mensajes más antiguos.
+ * `armar` devuelve el texto completo de la petición para un `conversation` dado. Puro: sin servicios.
+ */
+export function ajustarConversacion(input: {
+  messages: SessionV1.WithParts[]
+  presupuesto: number
+  armar: (conversation: string) => string
+}) {
+  const serializar = (list: SessionV1.WithParts[], max: number) =>
+    list
+      .map((m) => serialize(m, max))
+      .filter(Boolean)
+      .join("\n\n")
+  const cabe = (conversation: string) =>
+    input.presupuesto <= 0 || Token.estimate(input.armar(conversation)) <= input.presupuesto
+  let conversation = serializar(input.messages, NIVELES_RECORTE_SALIDAS[0])
+  if (cabe(conversation)) return { conversation, nivel: 0, descartados: 0 }
+  for (let nivel = 1; nivel < NIVELES_RECORTE_SALIDAS.length; nivel++) {
+    conversation = serializar(input.messages, NIVELES_RECORTE_SALIDAS[nivel])
+    if (cabe(conversation)) return { conversation, nivel, descartados: 0 }
+  }
+  const ultimo = NIVELES_RECORTE_SALIDAS.length - 1
+  let descartados = 0
+  while (descartados < input.messages.length - 1) {
+    descartados++
+    conversation = serializar(input.messages.slice(descartados), NIVELES_RECORTE_SALIDAS[ultimo])
+    if (cabe(conversation)) break
+  }
+  return { conversation, nivel: ultimo, descartados }
 }
 
 function summaryText(message: SessionV1.WithParts) {
@@ -364,7 +408,8 @@ const layer = Layer.effect(
     // calls, then erases output of older tool calls to free context space
     const prune = Effect.fn("SessionCompaction.prune")(function* (input: { sessionID: SessionID }) {
       const cfg = yield* config.get()
-      if (!cfg.compaction?.prune) return
+      // Lazunox (P03): la poda está encendida salvo `compaction.prune: false` (o OPENCODE_DISABLE_PRUNE).
+      if (cfg.compaction?.prune === false) return
       yield* Effect.logInfo("pruning")
 
       const msgs = yield* session
@@ -643,8 +688,7 @@ const layer = Layer.effect(
       }
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
-      const conversation = msgs.map(serialize).filter(Boolean).join("\n\n")
-      const nextPrompt =
+      const armar = (conversation: string) =>
         compacting.prompt ??
         [
           buildPrompt({
@@ -656,6 +700,19 @@ const layer = Layer.effect(
         ]
           .filter(Boolean)
           .join("\n\n")
+      // Lazunox (P03): si la petición de resumen no cabe en el modelo, se recortan las salidas viejas (y, al final, los mensajes
+      // más antiguos) en vez de fallar con desbordamiento.
+      const usableTokens = usable({ cfg, model, outputTokenMax: flags.outputTokenMax })
+      const ajuste = ajustarConversacion({
+        messages: msgs,
+        presupuesto: Math.floor(usableTokens * RESUMEN_FRACCION_USABLE),
+        armar: (conversation) => [armar(conversation), ...(compacting.prompt ? [conversation] : [])].join("\n\n"),
+      })
+      if (ajuste.nivel > 0 || ajuste.descartados > 0) {
+        yield* Effect.logInfo("compaction request trimmed", { nivel: ajuste.nivel, descartados: ajuste.descartados })
+      }
+      const conversation = ajuste.conversation
+      const nextPrompt = armar(conversation)
       const ctx = yield* InstanceState.context
       const msg: SessionV1.Assistant = {
         id: MessageID.ascending(),
