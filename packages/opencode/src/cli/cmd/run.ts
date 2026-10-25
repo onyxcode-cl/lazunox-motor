@@ -760,6 +760,8 @@ export const RunCommand = effectCmd({
         // supervisión no se queda esperando: se corta y el informe lleva el motivo.
         let detalleCorte: string | undefined
         const REINTENTOS_MAX = 3
+        // Un límite de cuota (con `action`) o una espera larga (cabecera retry-after) no se esperan en una ejecución sin supervisión.
+        const ESPERA_MAX_MS = 60_000
 
         function emit(type: string, data: Record<string, unknown>) {
           if (args.format === "json") {
@@ -897,11 +899,13 @@ export const RunCommand = effectCmd({
               event.type === "session.status" &&
               event.properties.sessionID === sessionID &&
               event.properties.status.type === "retry" &&
-              event.properties.status.attempt >= REINTENTOS_MAX &&
+              (event.properties.status.attempt >= REINTENTOS_MAX ||
+                event.properties.status.action !== undefined ||
+                event.properties.status.next - Date.now() > ESPERA_MAX_MS) &&
               !cortado
             ) {
               cortado = true
-              detalleCorte = `El proveedor sigue fallando tras ${event.properties.status.attempt} reintentos: ${event.properties.status.message}`
+              detalleCorte = `El proveedor no responde (reintento ${event.properties.status.attempt}, próximo en ${Math.max(0, Math.round((event.properties.status.next - Date.now()) / 1000))} s): ${event.properties.status.message}`
               error = error ? error + EOL + detalleCorte : detalleCorte
               if (!emit("error", { error: { name: "ReintentosAgotados", data: { message: detalleCorte } } }))
                 UI.error(detalleCorte)

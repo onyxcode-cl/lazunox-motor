@@ -314,7 +314,7 @@ describe("opencode run con banderas (proceso)", () => {
         expect(r.exitCode).toBe(CODIGO_SALIDA.error)
         const inf = informeDe(r.stdout, opencode.parseJsonEvents)
         expect(inf?.motivo).toBe("error")
-        expect(inf?.detalle).toContain("reintentos")
+        expect(inf?.detalle).toContain("no responde")
         expect(r.durationMs).toBeLessThan(75_000)
       }),
     90_000,
