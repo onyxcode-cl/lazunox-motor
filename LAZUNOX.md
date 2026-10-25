@@ -38,6 +38,15 @@ los comandos de la CLI que el motor embebido nunca ejecuta (`github`, `account`,
 - **Pausa y espera** (idea de Codex): `execute` acepta `yield_ms` (30 s por defecto, máximo 50 s; `execute_wait` hasta 5 min). Si el script tarda más, sigue vivo en segundo plano y `execute` devuelve un `cell_id`; la herramienta nueva `execute_wait` espera más, lee el resultado o lo termina (`terminate: true`). Hasta 3 celdas vivas a la vez (`LAZUNOX_CODE_MODE_MAX_CELLS`). Las llamadas internas usan una señal de cancelación propia (la del turno se dispara al terminar la respuesta del modelo).
 - Pruebas: `packages/codemode/test/lazunox-limites.test.ts`, `packages/opencode/test/tool/code-mode.test.ts` (sección «pausa y espera») y las del `engine-probe` de Lazunox.
 
+## Formularios MCP (`elicitation/create`, modo formulario) - fase B1
+
+Base interna, **todavía sin conectar** al cliente MCP (no hay cambio observable; la conexión es la fase B2, tras `mcp/invocar.ts`). Plan: `docs/PLAN-HERRAMIENTAS-DIFERIDAS-Y-FORMULARIOS-MCP.md` de la app.
+
+- `mcp/elicitation-esquema.ts` (funciones puras): valida el esquema pedido por el servidor (subconjunto plano: texto con `format` email/uri/date/date-time, número, entero, booleano, `enum`/`oneOf`; <= 20 campos, título 120, descripción 500, mensaje 2000, solicitud 16 KB, <= 50 opciones, texto <= 4000), detecta campos secretos (contraseña, clave, token, API key, PIN, CVV, tarjeta, IBAN, OTP, 2FA, código de verificación; español e inglés; `format: password`) y valida la respuesta. Los errores solo llevan nombres de campo, nunca valores. Variables: `LAZUNOX_MCP_ELICITATION=1` (`elicitacionActiva`) y `LAZUNOX_ELICITATION_TIMEOUT_MS` (defecto 600000, tope 3600000).
+- `mcp/elicitation.ts` (`McpElicitation`): `ask` (nunca falla; devuelve `accept`/`decline`/`cancel` para el servidor), `reply`, `cancelSession`, `finishCall`, `list`. A diferencia de `Question`, **todo cierre que no es una respuesta publica `mcp.elicitation.rejected`** (tiempo, aborto de la llamada, cancelación del servidor, fibra interrumpida, cierre de la instancia, esquema o secreto rechazados). Un pendiente por servidor y sesión; 5 formularios por llamada. Ni registros ni eventos llevan valores.
+- Eventos en `packages/schema/src/mcp-event.ts`: `mcp.elicitation.asked|replied|rejected` (3 más en el inventario público; `event-manifest.test.ts` pasa de 88 a 91). Los archivos generados del SDK (`packages/sdk`) no se regeneraron: la app usa `fetch` crudo.
+- Pruebas: `packages/opencode/test/lazunox/mcp-elicitation.test.ts`.
+
 ## Estado
 
 - Paso 2 hecho: compila desde el código fuente, repetible, pasa el contrato de Lazunox.
