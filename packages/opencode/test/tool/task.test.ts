@@ -618,7 +618,9 @@ describe("tool.task", () => {
         const child = yield* sessions.get(result.metadata.sessionId)
         expect(child.parentID).toBe(chat.id)
         expect(child.agent).toBe("reviewer")
-        expect(child.permission).toEqual([
+        // Lazunox (2A): un agente definido en la carpeta lleva además el tope del padre (cola de restricciones) al inicio;
+        // los denies de todowrite y de las herramientas primarias siguen al final, como antes.
+        expect(child.permission.slice(-3)).toEqual([
           {
             permission: "todowrite",
             pattern: "*",
