@@ -255,11 +255,20 @@ export function merge(...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule[] 
   return rulesets.flat()
 }
 
+// Nombres reservados de la búsqueda diferida (ver tool/tool-search.ts; se repiten aquí para no importar la herramienta).
+const DEFERRED_TOOL_NAMES = ["tool_search", "mcp_call"]
+
 export function disabled(tools: string[], ruleset: PermissionV1.Ruleset): Set<string> {
   const edits = ["edit", "write", "apply_patch"]
   const reads = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
   return new Set(
     tools.filter((tool) => {
+      // Lazunox: tool_search y mcp_call no se ocultan por un `*: deny` genérico (su contenido ya viene filtrado por
+      // permisos), solo por una regla que los nombre exactamente.
+      if (DEFERRED_TOOL_NAMES.includes(tool)) {
+        const exact = ruleset.findLast((rule) => rule.permission === tool)
+        return exact?.pattern === "*" && exact.action === "deny"
+      }
       const permission = edits.includes(tool) ? "edit" : reads.includes(tool) ? "read" : tool
       const rule = ruleset.findLast((rule) => Wildcard.match(permission, rule.permission))
       return rule?.pattern === "*" && rule.action === "deny"

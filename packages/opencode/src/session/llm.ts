@@ -17,6 +17,7 @@ import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "./message-v2"
 import { Plugin } from "@/plugin"
 import { Permission } from "@/permission"
+import { ToolSearch } from "@/tool/tool-search"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { EventV2 } from "@opencode-ai/core/event"
 import { Wildcard } from "@/util/wildcard"
@@ -301,6 +302,14 @@ const live: Layer.Layer<
                 toolName: lower,
               }
             }
+            // Lazunox: si el modelo llama directo a una herramienta MCP diferida (tras leer su esquema con
+            // tool_search), se reescribe a mcp_call, que vuelve a comprobar catálogo y permisos y usa el mismo camino.
+            const rewritten = ToolSearch.rewriteDirectCall(
+              failed.toolCall.toolName,
+              failed.toolCall.input,
+              (name) => !!prepared.tools[name],
+            )
+            if (rewritten) return { ...failed.toolCall, ...rewritten }
             return {
               ...failed.toolCall,
               input: JSON.stringify({

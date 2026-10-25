@@ -16,6 +16,7 @@ import { Tool } from "@/tool/tool"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { ToolRegistry } from "@/tool/registry"
 import { Truncate } from "@/tool/truncate"
+import { ToolSearch } from "@/tool/tool-search"
 
 import { Plugin } from "@/plugin"
 import type { TaskPromptOps } from "@/tool/task"
@@ -45,6 +46,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   bypassAgentCheck: boolean
   messages: SessionV1.WithParts[]
   promptOps: TaskPromptOps
+  /** `tools` del último mensaje del usuario: `false` oculta una herramienta (también a tool_search/mcp_call). */
+  userTools?: Record<string, boolean>
 }) {
   const tools: Record<string, AITool> = {}
   const run = yield* EffectBridge.make()
@@ -386,7 +389,25 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
 
   if (flags.experimentalCodeMode) return tools
 
-  for (const [key, entry] of Object.entries(yield* mcp.tools())) {
+  // Lazunox: búsqueda diferida (ver tool/tool-search.ts). Las herramientas MCP diferibles salen de la lista y se
+  // alcanzan con tool_search + mcp_call; todo pasa por McpInvocar.run, igual que la llamada directa.
+  const searchConfig = ToolSearch.config()
+  const ruleset = Permission.merge(input.agent.permission, input.session.permission ?? [])
+  const catalog = Effect.fn("SessionTools.catalog")(function* () {
+    const [mcpTools, clients] = yield* Effect.all([mcp.tools(), mcp.clients()])
+    const entries: ToolSearch.Entry<MCP.McpTool>[] = Object.entries(mcpTools).map(([key, source]) => ({
+      key,
+      server: Object.entries(clients).find(([, client]) => client === source.client)?.[0] ?? key.split("_")[0],
+      def: source.def,
+      source,
+    }))
+    const visibleByRules = Permission.visibleTools(Object.fromEntries(entries.map((entry) => [entry.key, entry])), ruleset)
+    const visible = new Set(Object.keys(visibleByRules).filter((key) => input.userTools?.[key] !== false))
+    return { entries, visible, decision: ToolSearch.decide(entries, visible, searchConfig, false) }
+  })
+  const { decision } = yield* catalog()
+
+  for (const { key, source: entry } of decision.direct) {
     const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
     const execute = item.execute
     if (!execute) continue
@@ -410,6 +431,107 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         }),
       )
     tools[key] = item
+  }
+
+  if (decision.deferred.length > 0) {
+    const fail = (message: string): never => {
+      throw new Error(message)
+    }
+    tools[ToolSearch.TOOL_SEARCH] = tool({
+      description: ToolSearch.describeSearch(decision.deferred),
+      inputSchema: jsonSchema(
+        ProviderTransform.schema(input.model, {
+          type: "object",
+          properties: {
+            query: { type: "string", description: "Texto libre o `select:nombre1,nombre2` (nombres exactos)." },
+            limit: { type: "integer", minimum: 1, maximum: ToolSearch.MAX_LIMIT, description: "Máximo de resultados (5 por defecto)." },
+          },
+          required: ["query"],
+        }),
+      ),
+      execute(args, options) {
+        return run.promise(
+          Effect.gen(function* () {
+            const params = toRecord(args)
+            const ctx = context(params, options)
+            yield* plugin.trigger(
+              "tool.execute.before",
+              { tool: ToolSearch.TOOL_SEARCH, sessionID: ctx.sessionID, callID: ctx.callID },
+              { args: params },
+            )
+            if (typeof params.query !== "string" || params.query.trim() === "") fail("query is required (string)")
+            const query = String(params.query)
+            const now = (yield* catalog()).decision.deferred
+            const found = ToolSearch.search(now, query, params.limit)
+            const output = {
+              title: `${ToolSearch.TOOL_SEARCH}: ${query}`,
+              metadata: { query, matches: found.matches.map((entry) => entry.key), total: found.total },
+              output: ToolSearch.formatResult(found, query),
+            }
+            yield* plugin.trigger(
+              "tool.execute.after",
+              { tool: ToolSearch.TOOL_SEARCH, sessionID: ctx.sessionID, callID: ctx.callID, args: params },
+              output,
+            )
+            return output
+          }),
+        )
+      },
+    })
+    tools[ToolSearch.MCP_CALL] = tool({
+      description: ToolSearch.describeCall(),
+      inputSchema: jsonSchema(
+        ProviderTransform.schema(input.model, {
+          type: "object",
+          properties: {
+            tool: { type: "string", description: "Nombre exacto de la herramienta (del índice de tool_search)." },
+            arguments: { type: "object", description: "Argumentos según el esquema devuelto por tool_search.", additionalProperties: true },
+          },
+          required: ["tool"],
+        }),
+      ),
+      execute(args, options) {
+        return run.promise(
+          Effect.gen(function* () {
+            const params = toRecord(args)
+            const name = params.tool
+            if (typeof name !== "string" || name === "") fail("tool is required (string)")
+            const callArgs = params.arguments === undefined || params.arguments === null ? {} : params.arguments
+            if (!isRecord(callArgs)) fail("arguments must be an object")
+            // Se recalcula el catálogo AHORA con las reglas del agente y la sesión y user.tools del mensaje:
+            // lo que no esté visible o no sea diferido no se ejecuta (coincidencia exacta, sin comodines).
+            const now = yield* catalog()
+            const found = now.decision.deferred.find((entry) => entry.key === name)
+            if (!found) {
+              const direct = now.decision.direct.some((entry) => entry.key === name && now.visible.has(entry.key))
+              const hint = ToolSearch.suggest(now.decision.deferred, String(name))
+              fail(
+                direct
+                  ? `\`${name}\` no es una herramienta diferida: llámala directamente.`
+                  : `No existe la herramienta \`${name}\` entre las disponibles.${hint.length ? ` ¿Quisiste decir: ${hint.join(", ")}?` : ""} Usa tool_search.`,
+              )
+            }
+            const entry = found!
+            const invalid = ToolSearch.validateArguments(entry.def, callArgs as Record<string, unknown>)
+            if (invalid) fail(`${invalid} Revisa el esquema con tool_search { query: "select:${name}" }.`)
+            return yield* McpInvocar.run({
+              key: entry.key,
+              entry: entry.source,
+              args: callArgs as Record<string, unknown>,
+              opts: options,
+              ctx: context(callArgs as Record<string, unknown>, options),
+              messageID: input.processor.message.id,
+              plugin,
+              truncate,
+              agent: input.agent,
+              processor: input.processor,
+              title: entry.key,
+              extraMetadata: { lazunoxMcp: { tool: entry.key, server: entry.server } },
+            })
+          }),
+        )
+      },
+    })
   }
 
   return tools
