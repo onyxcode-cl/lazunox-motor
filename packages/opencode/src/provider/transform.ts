@@ -356,7 +356,10 @@ function normalizeMessages(
 }
 
 function applyCaching(msgs: ModelMessage[], model: Provider.Model): ModelMessage[] {
-  const system = msgs.filter((msg) => msg.role === "system").slice(0, 2)
+  // Lazunox (P02): marca en el primer y el último bloque de sistema (el último es el último estable:
+  // lo variable, como el entorno, va al final del sistema pero antes del primer mensaje).
+  const allSystem = msgs.filter((msg) => msg.role === "system")
+  const system = allSystem.length > 2 ? [allSystem[0], allSystem[allSystem.length - 1]] : allSystem
   const final = msgs.filter((msg) => msg.role !== "system").slice(-2)
 
   const providerOptions = {

@@ -181,7 +181,7 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
   return {
     system,
     messages,
-    tools: Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => a.localeCompare(b))),
+    tools: ordenarHerramientas(tools),
     params,
     messageTransformOptions: options,
     headers: {
@@ -206,6 +206,12 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     },
   }
 })
+
+// Lazunox (P02): orden determinista por nombre (puntos de código, sin depender del idioma del sistema)
+// para que la lista de herramientas, también las MCP, serialice igual en pasos consecutivos.
+export function ordenarHerramientas<T>(tools: Record<string, T>): Record<string, T> {
+  return Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
+}
 
 function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user">) {
   const disabled = Permission.disabled(

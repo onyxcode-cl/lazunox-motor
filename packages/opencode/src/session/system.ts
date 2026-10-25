@@ -50,6 +50,28 @@ export function provider(model: Provider.Model) {
   return [PROMPT_DEFAULT]
 }
 
+// Lazunox (P02, caché estable): el prefijo de la petición debe ser idéntico byte a byte entre pasos
+// consecutivos. Orden: instrucciones, MCP, skills y entorno AL FINAL (lo más cambiante, como el día).
+// Solo cambia el orden; el contenido de cada parte no se toca.
+export function assemble(input: {
+  env: string[]
+  instructions: string[]
+  mcp?: string
+  skills?: string
+}): string[] {
+  return [
+    ...input.instructions,
+    ...(input.mcp ? [input.mcp] : []),
+    ...(input.skills ? [input.skills] : []),
+    ...input.env,
+  ]
+}
+
+// Fecha estable: solo el día (sin hora ni segundos); cambia una vez al día, no en cada paso.
+export function stableDate(now: Date = new Date()) {
+  return now.toDateString()
+}
+
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
@@ -80,7 +102,7 @@ const layer = Layer.effect(
             `  Workspace root folder: ${ctx.worktree}`,
             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
             `  Platform: ${process.platform}`,
-            `  Today's date: ${new Date().toDateString()}`,
+            `  Today's date: ${stableDate()}`,
             `</env>`,
           ].join("\n"),
           references.length === 0
