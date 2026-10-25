@@ -42,7 +42,9 @@ export function colaDeLaBase(base: readonly Regla[], declarado: readonly Regla[]
   const cola: Regla[] = []
   base.forEach((r, i) => {
     if (r.action !== "allow") {
-      cola.push(r)
+      // Un «preguntar» de la base no reabre lo que el agente niega (lista blanca `"*": deny`): sigue negado y la herramienta
+      // no se le ofrece. Un «denegar» de la base se conserva siempre.
+      cola.push(r.action === "ask" && accionLiteral(r.permission, r.pattern, declarado) === "deny" ? { ...r, action: "deny" } : r)
       return
     }
     const pisa = base.slice(0, i).some((previa) => previa.action !== "allow" && cubre(previa, r))

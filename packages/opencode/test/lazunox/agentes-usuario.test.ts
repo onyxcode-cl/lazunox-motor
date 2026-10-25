@@ -254,6 +254,14 @@ describe("intersección con el padre (derive)", () => {
     return { name: "u", mode: "subagent", options: {}, permission: r.permission, estricto: r.estricto, usuario: true }
   }
 
+  test("lista blanca: un «preguntar» de la base no reabre lo que el agente niega (la herramienta no se le ofrece)", () => {
+    const baseAsk = Permission.fromConfig({ "*": "allow", bash: "ask" })
+    const r = restringir(baseAsk, Permission.fromConfig({ "*": "deny", read: "allow", grep: "allow" }))
+    expect(Permission.evaluate("bash", "ls", r.permission).action).toBe("deny")
+    expect(Permission.evaluate("read", "a.ts", r.permission).action).toBe("allow")
+    expect(Permission.evaluate("grep", "x", r.permission).action).toBe("allow")
+  })
+
   test("el padre con edit solo en el plan: el hijo con edit: allow solo escribe en el plan", () => {
     const padre = Permission.fromConfig({ edit: { "*": "deny", ".opencode/plans/*.md": "allow" } })
     const hijo = agente({ edit: "allow", bash: "allow" })
