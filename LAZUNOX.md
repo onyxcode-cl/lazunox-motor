@@ -111,6 +111,15 @@ Plan: `docs/PLAN-REBOBINAR-Y-COMPACTACION.md` de la app (sección 2.B y fases C1
 - Gancho de usuario **`PostCompact`** en `plugin/lazunox-ganchos.ts` (mismo archivo de la app que `PreCompact`, `LAZUNOX_HOOKS_FILE`; un proyecto no puede traer el suyo): el comando recibe por stdin `{ event: "PostCompact", sessionID, cwd, trigger, parcial, tokensAntes, tokensDespues }`; su stdout con código 0 (hasta 4000 caracteres) va al bloque marcado `[Gancho PostCompact]`.
 - Ni la reinyección ni las métricas pueden hacer fallar una compactación que ya salió bien (se registra un aviso y se sigue).
 
+## Caché estable (P02, Ola 1E)
+
+- **Orden del sistema** (`session/prompt.ts` + `SystemPrompt.assemble` en `session/system.ts`): instrucciones, MCP, skills y **entorno al final** (antes iba primero). El contenido de cada parte no cambia; solo el orden. Así lo que más cambia (el día) queda al final del bloque de sistema.
+- **Fecha estable** (`SystemPrompt.stableDate`): solo el día (`toDateString`, sin hora ni segundos); cambia una vez al día, no en cada paso.
+- **Herramientas deterministas** (`LLMRequestPrep.ordenarHerramientas`): orden por nombre en puntos de código (antes `localeCompare`, que depende del idioma del sistema); vale también para las MCP.
+- **Marcas de caché** (`provider/transform.ts` `applyCaching`, solo proveedores tipo Anthropic/Bedrock/OpenRouter/etc., sin cambios para OpenAI): primer y **último** bloque de sistema (antes los 2 primeros: con 3 o más bloques el último quedaba sin marca) y los 2 últimos mensajes. `promptCacheKey` intacto.
+- Lo que añadieron otras ramas no rompe el prefijo: `<contexto-vigente>` y la nota de rebobinar son mensajes persistidos (estables entre pasos); las herramientas diferidas cambian el conjunto de herramientas solo cuando el modelo las pide (cambio esperado, un fallo de caché por cambio).
+- Pruebas: `test/lazunox/prefijo-estable.test.ts`. Comprobación con motor real (`PROBE_ONLY=cache` en el arnés): ver la entrega de la tarea 1E (compara los cuerpos de las peticiones 1 y 2: `system` y `tools` byte a byte y el prefijo de `messages`).
+
 ## Estado
 
 - Paso 2 hecho: compila desde el código fuente, repetible, pasa el contrato de Lazunox.
