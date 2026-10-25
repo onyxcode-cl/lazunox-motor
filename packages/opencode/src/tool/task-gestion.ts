@@ -8,6 +8,7 @@ import { InstanceState } from "@/effect/instance-state"
 import * as Truncate from "./truncate"
 import { ShellBackground } from "./shell/background"
 import { TrabajosDisco } from "./shell/trabajos-disco"
+import { neutralizar } from "./neutralizar"
 import { CABECERA_AYUDANTE, acotarResultado, limiteSubagentes, resultadoMaximo, topeAlcanzado } from "./task"
 
 // Lazunox (2B del plan maestro de paridad, P13 + P14): esperar y gestionar los ayudantes de fondo.
@@ -41,8 +42,7 @@ export const esperaSegundos = (pedido: number | undefined) => {
 /** Quita repetidos conservando el orden. */
 export const sinRepetidos = (ids: readonly string[]) => [...new Set(ids)]
 
-/** Lo que escribió un ayudante es dato: no puede cerrar las etiquetas del sobre ni fingir otro ayudante. */
-export const neutralizar = (text: string) => text.replace(/<(\/?)(task_result|task_error|task)\b/gi, "<​$1$2")
+export { neutralizar }
 
 type Estado = "running" | "completed" | "error" | "perdido" | "desconocido"
 
@@ -59,6 +59,7 @@ const sobre = (id: string, estado: Estado, cuerpo: string, cabecera = false) => 
 }
 
 /** Texto único para «no existe» y «es de otra sesión»: no se revela el ayudante ajeno. */
+export const ID_INVALIDO = "Un id de ayudante no es válido (solo letras, números y guion bajo): no hay nada con ese id."
 export const NO_EXISTE = (id: string) =>
   `No hay un ayudante de segundo plano con el id ${id} en esta sesión (¿es de otra sesión, ya se limpió o el id está mal?).`
 
@@ -145,6 +146,8 @@ export const TaskWaitTool = Tool.define(
 
           const uno = (id: string) =>
             Effect.gen(function* () {
+              // Un id que no es un id de ayudante nunca se refleja en la salida (va dentro de atributos del sobre).
+              if (!TrabajosDisco.idValido(id)) return { id: "desconocido", estado: "desconocido" as const, texto: ID_INVALIDO }
               const h = yield* buscar(jobs, ctx.sessionID, id)
               if (h.kind === "nada") return { id, estado: "desconocido" as const, texto: NO_EXISTE(id) }
               if (h.kind === "perdido") return { id, estado: "perdido" as const, texto: textoPerdido(id) }
@@ -174,7 +177,7 @@ export const TaskWaitTool = Tool.define(
           ].join("\n")
           return {
             title: `task_wait (${listos}/${filas.length})`,
-            metadata: { ids, listos, pendientes: filas.length - listos },
+            metadata: { ids: ids.filter(TrabajosDisco.idValido), listos, pendientes: filas.length - listos },
             output,
           }
         }),
@@ -242,6 +245,10 @@ export const TaskCancelTool = Tool.define(
           const lineas: string[] = []
           let cancelados = 0
           for (const id of ids) {
+            if (!TrabajosDisco.idValido(id)) {
+              lineas.push(`(id no válido): ${ID_INVALIDO}`)
+              continue
+            }
             const h = yield* buscar(jobs, ctx.sessionID, id)
             if (h.kind === "nada") lineas.push(`${id}: ${NO_EXISTE(id)}`)
             else if (h.kind === "perdido") lineas.push(`${id}: ya estaba perdido por el reinicio del motor; no hay nada que cancelar.`)
@@ -256,7 +263,7 @@ export const TaskCancelTool = Tool.define(
           }
           return {
             title: `task_cancel (${cancelados}/${ids.length})`,
-            metadata: { ids, cancelados },
+            metadata: { ids: ids.filter(TrabajosDisco.idValido), cancelados },
             output: lineas.join("\n"),
           }
         }),

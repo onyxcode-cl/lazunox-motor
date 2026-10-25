@@ -17,6 +17,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Database } from "@opencode-ai/core/database/database"
 import { Provider } from "@/provider/provider"
 import * as Truncate from "./truncate"
+import { neutralizar } from "./neutralizar"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
@@ -119,7 +120,7 @@ export const Parameters = Schema.Struct({
   }),
 })
 
-function renderOutput(input: {
+export function renderOutput(input: {
   sessionID: SessionID
   state: "running" | "completed" | "error"
   summary?: string
@@ -128,10 +129,10 @@ function renderOutput(input: {
   const tag = input.state === "error" ? "task_error" : "task_result"
   return [
     `<task id="${input.sessionID}" state="${input.state}">`,
-    ...(input.summary ? [`<summary>${input.summary}</summary>`] : []),
+    ...(input.summary ? [`<summary>${neutralizar(input.summary)}</summary>`] : []),
     ...(input.state === "completed" ? [CABECERA_AYUDANTE] : []),
     `<${tag}>`,
-    input.text,
+    neutralizar(input.text),
     `</${tag}>`,
     "</task>",
   ].join("\n")
