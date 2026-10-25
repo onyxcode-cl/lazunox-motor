@@ -18,6 +18,7 @@ import { SessionStatus } from "@/session/status"
 
 import { TaskTool, type TaskPromptOps } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
+import { Provider } from "@/provider/provider"
 import { ToolRegistry } from "@/tool/registry"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { disposeAllInstances } from "../fixture/fixture"
@@ -47,6 +48,7 @@ const layer = (flags: Partial<RuntimeFlags.Info> = {}) =>
       SessionRunState.node,
       SessionStatus.node,
       Truncate.node,
+      Provider.node,
       ToolRegistry.node,
       Database.node,
       RuntimeFlags.node,
