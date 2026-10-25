@@ -307,6 +307,22 @@ export interface Hooks {
     output: { context: string[]; prompt?: string },
   ) => Promise<void>
   /**
+   * Lazunox: llamado cuando un resumen salió bien (gancho de usuario `PostCompact`).
+   *
+   * - `context`: textos que se suman al bloque `<contexto-vigente>` que se reinyecta tras compactar
+   * - `tokensDespues` es una estimación (resumen + cola conservada)
+   */
+  "experimental.session.compacted"?: (
+    input: {
+      sessionID: string
+      trigger: "auto" | "manual"
+      parcial: boolean
+      tokensAntes?: number
+      tokensDespues?: number
+    },
+    output: { context: string[] },
+  ) => Promise<void>
+  /**
    * Called after compaction succeeds and before a synthetic user
    * auto-continue message is added.
    *

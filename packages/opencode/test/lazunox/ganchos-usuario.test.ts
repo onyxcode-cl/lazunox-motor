@@ -1,10 +1,13 @@
 import { describe, expect, test } from "bun:test"
-import { aplica, ejecutar, leerConfig } from "../../src/plugin/lazunox-ganchos"
+import fs from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { aplica, ejecutar, leerConfig, LazunoxGanchosPlugin } from "../../src/plugin/lazunox-ganchos"
 
 describe("ganchos de usuario", () => {
   test("leerConfig descarta lo inválido y acota tiempos y cantidad", () => {
-    expect(leerConfig("no json")).toEqual({ PreToolUse: [], PostToolUse: [], PreCompact: [], Stop: [] })
-    expect(leerConfig('{"hooks":7}')).toEqual({ PreToolUse: [], PostToolUse: [], PreCompact: [], Stop: [] })
+    expect(leerConfig("no json")).toEqual({ PreToolUse: [], PostToolUse: [], PreCompact: [], PostCompact: [], Stop: [] })
+    expect(leerConfig('{"hooks":7}')).toEqual({ PreToolUse: [], PostToolUse: [], PreCompact: [], PostCompact: [], Stop: [] })
     expect(leerConfig('{"hooks":{"PreCompact":[{"command":"x"}],"Stop":[{"command":"y"}]}}')).toMatchObject({ PreCompact: [{ command: "x" }], Stop: [{ command: "y" }] })
     const c = leerConfig(
       JSON.stringify({
@@ -39,5 +42,39 @@ describe("ganchos de usuario", () => {
     const r = await ejecutar({ command: `"${process.execPath}" -e "setTimeout(()=>{},30000)"`, timeout: 1 }, {}, process.cwd())
     expect(r.timedOut).toBe(true)
     expect(Date.now() - t0).toBeLessThan(8000)
+  })
+  test("leerConfig reconoce PostCompact y lo acota como los demás", () => {
+    const c = leerConfig(JSON.stringify({ hooks: { PostCompact: [{ command: "a", timeout: 999 }, { command: "" }] } }))
+    expect(c.PostCompact).toEqual([{ command: "a", matcher: undefined, timeout: 60 }])
+  })
+  test("PostCompact: el stdout (código 0) llega a output.context marcado, el stdin lleva las cifras; código ≠ 0 o sin archivo no aporta", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lzx-post-"))
+    const previo = process.env.LAZUNOX_HOOKS_FILE
+    try {
+      const imprime = `"${process.execPath}" -e "let d='';process.stdin.on('data',c=>d+=c).on('end',()=>{const j=JSON.parse(d);console.log('MARCA '+j.event+' '+j.trigger+' '+j.parcial+' '+j.tokensAntes+'>'+j.tokensDespues)})"`
+      const falla = `"${process.execPath}" -e "console.log('NO-DEBE-SALIR');process.exit(1)"`
+      const largo = `"${process.execPath}" -e "console.log('z'.repeat(9000))"`
+      const archivo = path.join(dir, "ganchos.json")
+      fs.writeFileSync(archivo, JSON.stringify({ hooks: { PostCompact: [{ command: imprime }, { command: falla }, { command: largo }] } }))
+      process.env.LAZUNOX_HOOKS_FILE = archivo
+      const hooks = await LazunoxGanchosPlugin({ directory: dir } as never)
+      const out = { context: [] as string[] }
+      await hooks["experimental.session.compacted"]!(
+        { sessionID: "ses_x", trigger: "manual", parcial: true, tokensAntes: 900, tokensDespues: 120 },
+        out,
+      )
+      expect(out.context.length).toBe(2)
+      expect(out.context[0]).toBe("[Gancho PostCompact]\nMARCA PostCompact manual true 900>120")
+      expect(out.context[1]!.length).toBeLessThanOrEqual("[Gancho PostCompact]\n".length + 4000)
+      expect(out.context.join("")).not.toContain("NO-DEBE-SALIR")
+
+      // Sin LAZUNOX_HOOKS_FILE el plugin ni se registra (un proyecto no puede traer sus propios ganchos).
+      delete process.env.LAZUNOX_HOOKS_FILE
+      expect(await LazunoxGanchosPlugin({ directory: dir } as never)).toEqual({})
+    } finally {
+      if (previo === undefined) delete process.env.LAZUNOX_HOOKS_FILE
+      else process.env.LAZUNOX_HOOKS_FILE = previo
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
   })
 })

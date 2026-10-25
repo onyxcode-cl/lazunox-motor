@@ -122,6 +122,17 @@ export class SessionBusyError extends Schema.TaggedErrorClass<SessionBusyError>(
   { httpApiStatus: 409 },
 ) {}
 
+/** Lazunox: la compactación manual se niega en un momento inseguro. `motivo` es parte del contrato (409). */
+export class CompactionConflictError extends Schema.TaggedErrorClass<CompactionConflictError>()(
+  "CompactionConflictError",
+  {
+    sessionID: Schema.String,
+    motivo: Schema.Literals(["ocupada", "pendiente", "revert"]),
+    message: Schema.String,
+  },
+  { httpApiStatus: 409 },
+) {}
+
 export class QuestionNotFoundError extends Schema.TaggedErrorClass<QuestionNotFoundError>()(
   "QuestionNotFoundError",
   {

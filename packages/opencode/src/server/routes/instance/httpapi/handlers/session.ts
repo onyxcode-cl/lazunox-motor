@@ -4,6 +4,9 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
+import { Question } from "@/question"
+import { McpElicitation } from "@/mcp/elicitation"
+import { Provider } from "@/provider/provider"
 import { SessionShare } from "@/share/session"
 import { Session } from "@/session/session"
 import { SessionCompaction } from "@/session/compaction"
@@ -36,7 +39,7 @@ import {
   SummarizePayload,
   UpdatePayload,
 } from "../groups/session"
-import { PermissionNotFoundError } from "../errors"
+import { CompactionConflictError, InvalidRequestError, PermissionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
 
 const tryParseJson = (text: string) =>
@@ -56,6 +59,9 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const agentSvc = yield* Agent.Service
     const permissionSvc = yield* Permission.Service
     const statusSvc = yield* SessionStatus.Service
+    const questionSvc = yield* Question.Service
+    const elicitationSvc = yield* McpElicitation.Service
+    const providerSvc = yield* Provider.Service
     const todoSvc = yield* Todo.Service
     const summary = yield* SessionSummary.Service
     const events = yield* EventV2Bridge.Service
@@ -274,21 +280,60 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       params: { sessionID: SessionID }
       payload: typeof SummarizePayload.Type
     }) {
-      yield* revertSvc.cleanup(yield* requireSession(ctx.params.sessionID))
-      const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID: ctx.params.sessionID }))
+      const sessionID = ctx.params.sessionID
+      const info = yield* requireSession(sessionID)
+
+      // Lazunox: momento seguro. Antes consolidaba un revert pendiente en silencio y aceptaba compactar con la sesión en marcha
+      // o con un permiso/pregunta/formulario esperando respuesta. Ahora responde 409 con `motivo`.
+      const conflicto = (motivo: "ocupada" | "pendiente" | "revert", message: string) =>
+        new CompactionConflictError({ sessionID, motivo, message })
+      const busy = yield* runState.assertNotBusy(sessionID).pipe(
+        Effect.as(false),
+        Effect.catchTag("SessionBusyError", () => Effect.succeed(true)),
+      )
+      if (busy || (yield* statusSvc.get(sessionID)).type !== "idle")
+        return yield* conflicto("ocupada", "La sesión está en marcha; espera a que termine o detenla antes de compactar.")
+      const propias = new Set<string>([sessionID, ...(yield* session.children(sessionID)).map((child) => child.id)])
+      const pendientes =
+        (yield* permissionSvc.list()).filter((item) => propias.has(item.sessionID)).length +
+        (yield* questionSvc.list()).filter((item) => propias.has(item.sessionID)).length +
+        (yield* elicitationSvc.list()).filter((item) => propias.has(item.sessionID)).length
+      if (pendientes > 0)
+        return yield* conflicto("pendiente", "Hay un permiso, una pregunta o un formulario esperando respuesta; contéstalo antes de compactar.")
+      if (info.revert)
+        return yield* conflicto("revert", "Hay un cambio revertido sin confirmar; restáuralo o continúa la conversación antes de compactar.")
+
+      const messages = yield* SessionError.mapStorageNotFound(session.messages({ sessionID }))
       const defaultAgent = yield* agentSvc.defaultAgent()
-      const currentAgent = messages.findLast((message) => message.info.role === "user")?.info.agent ?? defaultAgent
+      const lastUser = messages.findLast((message) => message.info.role === "user" && !message.parts.some((p) => p.type === "compaction"))
+      const currentAgent = lastUser?.info.agent ?? defaultAgent
+
+      // Modelo: el del payload si viene completo; si no, el de la sesión (último mensaje de la persona) o el predeterminado.
+      if ((ctx.payload.providerID === undefined) !== (ctx.payload.modelID === undefined))
+        return yield* new InvalidRequestError({ message: "providerID y modelID van juntos o ninguno.", field: "modelID" })
+      const model =
+        ctx.payload.providerID !== undefined && ctx.payload.modelID !== undefined
+          ? { providerID: ctx.payload.providerID, modelID: ctx.payload.modelID }
+          : lastUser?.info.role === "user"
+            ? lastUser.info.model
+            : yield* providerSvc.defaultModel().pipe(
+                Effect.mapError(() => new InvalidRequestError({ message: "No hay un modelo para compactar; elige uno.", field: "modelID" })),
+              )
+
+      if (ctx.payload.upTo !== undefined) {
+        yield* compactSvc
+          .validateUpTo({ sessionID, upTo: ctx.payload.upTo, model })
+          .pipe(Effect.mapError((error) => new InvalidRequestError({ message: error.message, kind: error.razon, field: "upTo" })))
+      }
 
       yield* compactSvc.create({
-        sessionID: ctx.params.sessionID,
+        sessionID,
         agent: currentAgent,
-        model: {
-          providerID: ctx.payload.providerID,
-          modelID: ctx.payload.modelID,
-        },
+        model,
         auto: ctx.payload.auto ?? false,
+        tail: ctx.payload.upTo,
       })
-      yield* promptSvc.loop({ sessionID: ctx.params.sessionID })
+      yield* promptSvc.loop({ sessionID })
       return true
     })
 
