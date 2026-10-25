@@ -111,6 +111,15 @@ Plan: `docs/PLAN-REBOBINAR-Y-COMPACTACION.md` de la app (sección 2.B y fases C1
 - Gancho de usuario **`PostCompact`** en `plugin/lazunox-ganchos.ts` (mismo archivo de la app que `PreCompact`, `LAZUNOX_HOOKS_FILE`; un proyecto no puede traer el suyo): el comando recibe por stdin `{ event: "PostCompact", sessionID, cwd, trigger, parcial, tokensAntes, tokensDespues }`; su stdout con código 0 (hasta 4000 caracteres) va al bloque marcado `[Gancho PostCompact]`.
 - Ni la reinyección ni las métricas pueden hacer fallar una compactación que ya salió bien (se registra un aviso y se sigue).
 
+## No releer (P22, ola 1D)
+
+Pruebas: `packages/opencode/test/lazunox/no-releer.test.ts`. Interruptor de emergencia: **`LAZUNOX_NO_RELEER=0`** (la herramienta `read` vuelve a comportarse como antes).
+
+- `session/lecturas.ts` (`LecturasSesion`): mapa en memoria por sesión `{ruta canónica (realpath) -> { hash sha256 del contenido leído, callID, número de lectura }}` (tope 500 rutas por sesión, 64 sesiones).
+- `tool/read.ts`: DESPUÉS de las comprobaciones de siempre (`assertExternalDirectoryEffect`, `ctx.ask({permission:"read"})`, que incluye `.env`) y de leer el archivo, si la lectura es **completa** (sin `offset` ni `limit`, sin corte por tamaño o líneas) y su contenido es idéntico al de la lectura anterior de esa ruta **y esa lectura sigue visible** (la parte `read` existe en `ctx.messages`, está completada y no tiene `time.compacted`), devuelve una línea `Sin cambios: <ruta> es idéntico a la lectura n.º N de esta sesión...` con `metadata.repetida = N`. Si el archivo cambió (persona, shell, edición) el contenido difiere y se lee completo. Rangos, directorios, imágenes y PDF no entran.
+- Compactar y rebobinar: la comprobación de visibilidad ya cubre ambos casos (tras compactar o limpiar el revert, la parte anterior no está en `ctx.messages` o está podada), sin tocar `compaction.ts`. Además se exporta **`LecturasSesion.vaciar(sessionID)`** para que el integrador lo conecte (p. ej. en `session.compacted` y al rebobinar) si quiere vaciar el mapa de forma explícita; no es imprescindible.
+- Sin `callID` en el contexto no se registra nada (no hay a qué apuntar).
+
 ## Estado
 
 - Paso 2 hecho: compila desde el código fuente, repetible, pasa el contrato de Lazunox.
