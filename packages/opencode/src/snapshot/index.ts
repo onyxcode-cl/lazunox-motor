@@ -3,6 +3,7 @@ import { Cause, Duration, Effect, Layer, Schedule, Schema, Semaphore, Context } 
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { formatPatch, structuredPatch } from "diff"
 import path from "path"
+import fsp from "fs/promises"
 import { AppProcess } from "@opencode-ai/core/process"
 import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
@@ -19,6 +20,23 @@ export type Patch = typeof Patch.Type
 
 export const FileDiff = Info
 export type FileDiff = typeof FileDiff.Type
+
+/**
+ * Lazunox: el punto de control ya no existe (el árbol fue podado por `git gc` o nunca se creó).
+ * Es un ERROR, nunca «el archivo no existía»: así no se borra nada del proyecto de la persona.
+ */
+export class ExpiredError extends Schema.TaggedErrorClass<ExpiredError>()(
+  "SnapshotExpiredError",
+  { hash: Schema.String, message: Schema.String },
+  { httpApiStatus: 409 },
+) {}
+
+/** Lazunox: resultado de restaurar archivos concretos. `file` siempre relativo a la carpeta del proyecto. */
+export interface RestoreReport {
+  readonly restaurados: string[]
+  readonly borrados: string[]
+  readonly omitidos: { file: string; motivo: string }[]
+}
 
 const prune = "7.days"
 const limit = 2 * 1024 * 1024
@@ -38,8 +56,12 @@ export interface Interface {
   readonly cleanup: () => Effect.Effect<void>
   readonly track: () => Effect.Effect<string | undefined>
   readonly patch: (hash: string) => Effect.Effect<Patch>
-  readonly restore: (snapshot: string) => Effect.Effect<void>
-  readonly revert: (patches: Patch[]) => Effect.Effect<void>
+  readonly restore: (snapshot: string) => Effect.Effect<void, ExpiredError>
+  readonly revert: (patches: Patch[]) => Effect.Effect<RestoreReport, ExpiredError>
+  /** Lazunox: restaura SOLO estos archivos (rutas absolutas o relativas al proyecto) a como estaban en `tree`. Nunca toca nada más. */
+  readonly restoreFiles: (tree: string, files: string[]) => Effect.Effect<RestoreReport, ExpiredError>
+  /** Lazunox: ¿existe el árbol en el repositorio de instantáneas? */
+  readonly has: (hash: string) => Effect.Effect<boolean>
   readonly diff: (hash: string) => Effect.Effect<string>
   readonly diffFull: (from: string, to: string) => Effect.Effect<FileDiff[]>
 }
@@ -161,7 +183,6 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
 
         const exists = (file: string) => fs.exists(file).pipe(Effect.orDie)
         const read = (file: string) => fs.readFileString(file).pipe(Effect.catch(() => Effect.succeed("")))
-        const remove = (file: string) => fs.remove(file).pipe(Effect.catch(() => Effect.void))
         const locked = <A, E, R>(fx: Effect.Effect<A, E, R>) => lock(state.gitdir).withPermits(1)(fx)
 
         const enabled = Effect.fnUntraced(function* () {
@@ -379,10 +400,198 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
+        const validHash = (hash: string) => /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(hash)
+
+        const has = Effect.fnUntraced(function* (hash: string) {
+          if (!validHash(hash)) return false
+          if (!(yield* exists(state.gitdir))) return false
+          const result = yield* git([...core, ...args(["cat-file", "-e", `${hash}^{tree}`])], { cwd: state.worktree })
+          return result.code === 0
+        })
+
+        const expired = (hash: string) =>
+          new ExpiredError({
+            hash,
+            message: `El punto de control ${hash.slice(0, 12)} ya no existe (caducó o se limpió). No se cambió ningún archivo.`,
+          })
+
+        /**
+         * Guardia de rutas para TODA escritura o borrado: el archivo tiene que estar dentro de la carpeta del
+         * proyecto, no puede ser parte de `.git` y ninguna carpeta del camino puede ser un enlace simbólico
+         * (se revisa cada componente con lstat, igual que los puntos de restauración de la app).
+         */
+        const safe = (file: string) =>
+          Effect.promise(async (): Promise<{ ok: true; rel: string; abs: string } | { ok: false; motivo: string }> => {
+            const abs = path.resolve(state.worktree, file)
+            const rel = path.relative(state.worktree, abs)
+            if (!rel || rel === ".." || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+              return { ok: false, motivo: "fuera-del-proyecto" }
+            }
+            const parts = rel.split(path.sep)
+            if (parts.some((part) => part.toLowerCase() === ".git")) return { ok: false, motivo: "git" }
+            let current = state.worktree
+            for (const part of parts.slice(0, -1)) {
+              current = path.join(current, part)
+              const stat = await fsp.lstat(current).catch((error: NodeJS.ErrnoException) => error)
+              if (stat instanceof Error) {
+                if (stat.code === "ENOENT") break // no existe: git lo crea; más allá no hay nada que seguir
+                return { ok: false, motivo: "inaccesible" }
+              }
+              if (stat.isSymbolicLink()) return { ok: false, motivo: "enlace-simbolico" }
+              // Un archivo normal en el lugar de una carpeta (cambio archivo/carpeta): git lo sustituye; más allá no hay nada.
+              if (!stat.isDirectory()) break
+            }
+            return { ok: true, rel: parts.join("/"), abs }
+          })
+
+        /** Un enlace simbólico del árbol solo se restaura si apunta dentro del proyecto. */
+        const linkInside = Effect.fnUntraced(function* (hash: string, rel: string, abs: string) {
+          const blob = yield* git([...core, ...args(["cat-file", "blob", `${hash}:${rel}`])], { cwd: state.worktree })
+          if (blob.code !== 0) return false
+          const target = blob.text
+          if (!target || target.includes("\0")) return false
+          const resolved = path.resolve(path.dirname(abs), target)
+          const back = path.relative(state.worktree, resolved)
+          return !!back && back !== ".." && !back.startsWith(`..${path.sep}`) && !path.isAbsolute(back)
+        })
+
+        type Located = { mode: string; type: string } | "ausente" | "error"
+
+        /** Qué había en `rel` dentro del árbol. «ausente» solo si el árbol existe Y de verdad no tenía ese camino. */
+        const locate = Effect.fnUntraced(function* (hash: string, rel: string) {
+          const listed = yield* git([...core, ...args(["ls-tree", "-z", hash, "--", rel])], { cwd: state.worktree })
+          if (listed.code !== 0) return "error" as Located
+          for (const row of listed.text.split("\0").filter(Boolean)) {
+            const tab = row.indexOf("\t")
+            if (tab < 0) continue
+            if (row.slice(tab + 1) !== rel) continue
+            const [mode, type] = row.slice(0, tab).split(" ")
+            return { mode: mode ?? "", type: type ?? "" } as Located
+          }
+          // ls-tree no lo listó: se confirma con cat-file (sin comodines) antes de decir «no existía».
+          const probe = yield* git([...core, ...args(["cat-file", "-e", `${hash}:${rel}`])], { cwd: state.worktree })
+          if (probe.code === 0) return "error" as Located
+          return "ausente" as Located
+        })
+
+        /**
+         * Núcleo de revert/restoreFiles. Orden: (1) comprobar que TODOS los árboles existen (si falta uno, error y
+         * no se toca nada), (2) borrados de lo que no existía, (3) restauraciones. Falta de objeto o fallo de git
+         * NUNCA se interpreta como «no existía».
+         */
+        const apply = Effect.fnUntraced(function* (ops: { hash: string; file: string }[]) {
+          const report: { restaurados: string[]; borrados: string[]; omitidos: { file: string; motivo: string }[] } = {
+            restaurados: [],
+            borrados: [],
+            omitidos: [],
+          }
+          if (!ops.length) return report
+          for (const hash of new Set(ops.map((op) => op.hash))) {
+            if (!(yield* has(hash))) return yield* Effect.fail(expired(hash))
+          }
+
+          const clash = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
+          const relOf = (file: string) => path.relative(state.worktree, path.resolve(state.worktree, file)).replaceAll("\\", "/")
+
+          // Tandas de archivos del mismo árbol cuyas rutas no se afectan entre sí; se respeta el orden de los parches.
+          const runs: { hash: string; files: string[] }[] = []
+          for (const op of ops) {
+            const last = runs[runs.length - 1]
+            const rel = relOf(op.file)
+            if (last && last.hash === op.hash && last.files.length < 100 && !last.files.some((item) => clash(relOf(item), rel))) {
+              last.files.push(op.file)
+              continue
+            }
+            runs.push({ hash: op.hash, files: [op.file] })
+          }
+
+          for (const run of runs) {
+            const hash = run.hash
+            const toDelete: { rel: string; abs: string }[] = []
+            const toRestore: { rel: string; abs: string }[] = []
+            for (const file of run.files) {
+              const check = yield* safe(file)
+              if (!check.ok) {
+                report.omitidos.push({ file, motivo: check.motivo })
+                continue
+              }
+              const found = yield* locate(hash, check.rel)
+              if (found === "error") {
+                report.omitidos.push({ file: check.rel, motivo: "no-se-pudo-leer-el-punto" })
+                continue
+              }
+              if (found === "ausente") {
+                toDelete.push({ rel: check.rel, abs: check.abs })
+                continue
+              }
+              if (found.type !== "blob") {
+                report.omitidos.push({ file: check.rel, motivo: found.type === "commit" ? "submodulo" : "era-una-carpeta" })
+                continue
+              }
+              if (found.mode === "120000" && !(yield* linkInside(hash, check.rel, check.abs))) {
+                report.omitidos.push({ file: check.rel, motivo: "enlace-fuera-del-proyecto" })
+                continue
+              }
+              toRestore.push({ rel: check.rel, abs: check.abs })
+            }
+
+            for (const item of toDelete) {
+              yield* Effect.logInfo("file did not exist in snapshot, deleting", { file: item.rel, hash })
+              // Solo el archivo exacto (unlink): nunca recursivo, nunca una carpeta.
+              const result = yield* Effect.promise(() =>
+                fsp.unlink(item.abs).then(
+                  () => "ok" as const,
+                  (error: NodeJS.ErrnoException) => error.code ?? "error",
+                ),
+              )
+              if (result === "ok") report.borrados.push(item.rel)
+              else if (result === "ENOENT") continue
+              else
+                report.omitidos.push({
+                  file: item.rel,
+                  motivo: result === "EISDIR" || result === "EPERM" ? "es-carpeta" : "no-se-pudo-borrar",
+                })
+            }
+
+            if (!toRestore.length) continue
+            const batch = yield* git(
+              [...core, ...args(["checkout", hash, "--pathspec-from-file=-", "--pathspec-file-nul"])],
+              { cwd: state.worktree, stdin: encodeTopLevelLiteralPathspecs(toRestore.map((item) => item.rel)) },
+            )
+            if (batch.code === 0) {
+              report.restaurados.push(...toRestore.map((item) => item.rel))
+              continue
+            }
+            yield* Effect.logInfo("batched checkout failed, falling back to single-file revert", {
+              hash,
+              files: toRestore.length,
+            })
+            for (const item of toRestore) {
+              const one = yield* git(
+                [...core, ...args(["checkout", hash, "--pathspec-from-file=-", "--pathspec-file-nul"])],
+                { cwd: state.worktree, stdin: encodeTopLevelLiteralPathspecs([item.rel]) },
+              )
+              if (one.code === 0) report.restaurados.push(item.rel)
+              else {
+                // Existía en el punto pero git no pudo escribirlo: se deja como está, NO se borra.
+                yield* Effect.logWarning("file existed in snapshot but checkout failed, keeping", {
+                  file: item.rel,
+                  hash,
+                  stderr: one.stderr,
+                })
+                report.omitidos.push({ file: item.rel, motivo: "no-se-pudo-restaurar" })
+              }
+            }
+          }
+          return report
+        })
+
+        // Compatibilidad: restaura el árbol ENTERO. La sesión ya no lo usa (usa restoreFiles con la lista exacta).
         const restore = Effect.fnUntraced(function* (snapshot: string) {
           return yield* locked(
             Effect.gen(function* () {
               yield* Effect.logInfo("restore", { commit: snapshot })
+              if (!(yield* has(snapshot))) return yield* Effect.fail(expired(snapshot))
               const result = yield* git([...core, ...args(["read-tree", snapshot])], { cwd: state.worktree })
               if (result.code === 0) {
                 const checkout = yield* git([...core, ...args(["checkout-index", "-a", "-f"])], {
@@ -405,120 +614,23 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
+        const restoreFiles = Effect.fnUntraced(function* (tree: string, files: string[]) {
+          return yield* locked(apply(files.map((file) => ({ hash: tree, file }))))
+        })
+
         const revert = Effect.fnUntraced(function* (patches: Patch[]) {
           return yield* locked(
             Effect.gen(function* () {
-              const ops: { hash: string; file: string; rel: string }[] = []
+              const ops: { hash: string; file: string }[] = []
               const seen = new Set<string>()
               for (const item of patches) {
                 for (const file of item.files) {
                   if (seen.has(file)) continue
                   seen.add(file)
-                  ops.push({
-                    hash: item.hash,
-                    file,
-                    rel: path.relative(state.worktree, file).replaceAll("\\", "/"),
-                  })
+                  ops.push({ hash: item.hash, file })
                 }
               }
-
-              const single = Effect.fnUntraced(function* (op: (typeof ops)[number]) {
-                yield* Effect.logInfo("reverting", { file: op.file, hash: op.hash })
-                const result = yield* git([...core, ...args(["checkout", op.hash, "--", op.file])], {
-                  cwd: state.worktree,
-                })
-                if (result.code === 0) return
-                const tree = yield* git([...core, ...args(["ls-tree", op.hash, "--", op.rel])], {
-                  cwd: state.worktree,
-                })
-                if (tree.code === 0 && tree.text.trim()) {
-                  yield* Effect.logInfo("file existed in snapshot but checkout failed, keeping", {
-                    file: op.file,
-                    hash: op.hash,
-                  })
-                  return
-                }
-                yield* Effect.logInfo("file did not exist in snapshot, deleting", { file: op.file, hash: op.hash })
-                yield* remove(op.file)
-              })
-
-              const clash = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
-
-              for (let i = 0; i < ops.length; ) {
-                const first = ops[i]!
-                const run = [first]
-                let j = i + 1
-                // Only batch adjacent files when their paths cannot affect each other.
-                while (j < ops.length && run.length < 100) {
-                  const next = ops[j]!
-                  if (next.hash !== first.hash) break
-                  if (run.some((item) => clash(item.rel, next.rel))) break
-                  run.push(next)
-                  j += 1
-                }
-
-                if (run.length === 1) {
-                  yield* single(first)
-                  i = j
-                  continue
-                }
-
-                const tree = yield* git(
-                  [...core, ...args(["ls-tree", "--name-only", first.hash, "--", ...run.map((item) => item.rel)])],
-                  {
-                    cwd: state.worktree,
-                  },
-                )
-
-                if (tree.code !== 0) {
-                  yield* Effect.logInfo("batched ls-tree failed, falling back to single-file revert", {
-                    hash: first.hash,
-                    files: run.length,
-                  })
-                  for (const op of run) {
-                    yield* single(op)
-                  }
-                  i = j
-                  continue
-                }
-
-                const have = new Set(
-                  tree.text
-                    .trim()
-                    .split("\n")
-                    .map((item) => item.trim())
-                    .filter(Boolean),
-                )
-                const list = run.filter((item) => have.has(item.rel))
-                if (list.length) {
-                  yield* Effect.logInfo("reverting", { hash: first.hash, files: list.length })
-                  const result = yield* git(
-                    [...core, ...args(["checkout", first.hash, "--", ...list.map((item) => item.file)])],
-                    {
-                      cwd: state.worktree,
-                    },
-                  )
-                  if (result.code !== 0) {
-                    yield* Effect.logInfo("batched checkout failed, falling back to single-file revert", {
-                      hash: first.hash,
-                      files: list.length,
-                    })
-                    for (const op of run) {
-                      yield* single(op)
-                    }
-                    i = j
-                    continue
-                  }
-                }
-
-                for (const op of run) {
-                  if (have.has(op.rel)) continue
-                  yield* Effect.logInfo("file did not exist in snapshot, deleting", { file: op.file, hash: op.hash })
-                  yield* remove(op.file)
-                }
-
-                i = j
-              }
+              return yield* apply(ops)
             }),
           )
         })
@@ -765,7 +877,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           Effect.forkScoped,
         )
 
-        return { cleanup, track, patch, restore, revert, diff, diffFull }
+        return { cleanup, track, patch, restore, restoreFiles, has, revert, diff, diffFull }
       }),
     )
 
@@ -784,6 +896,12 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
       }),
       restore: Effect.fn("Snapshot.restore")(function* (snapshot: string) {
         return yield* InstanceState.useEffect(state, (s) => s.restore(snapshot))
+      }),
+      restoreFiles: Effect.fn("Snapshot.restoreFiles")(function* (tree: string, files: string[]) {
+        return yield* InstanceState.useEffect(state, (s) => s.restoreFiles(tree, files))
+      }),
+      has: Effect.fn("Snapshot.has")(function* (hash: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.has(hash))
       }),
       revert: Effect.fn("Snapshot.revert")(function* (patches: Patch[]) {
         return yield* InstanceState.useEffect(state, (s) => s.revert(patches))
