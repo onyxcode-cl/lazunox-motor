@@ -7,6 +7,7 @@ import { ConfigAgentV1 } from "@opencode-ai/core/v1/config/agent"
 import { configEntryNameFromPath } from "./entry-name"
 import * as ConfigMarkdown from "./markdown"
 import { ConfigParse } from "./parse"
+import { NOMBRES_RESERVADOS, pareceClaude, traducirClaude } from "./agent-claude"
 
 export async function load(dir: string) {
   const result: Record<string, ConfigAgentV1.Info> = {}
@@ -21,12 +22,45 @@ export async function load(dir: string) {
 
     const name = configEntryNameFromPath(path.relative(dir, item), ["agent/", "agents/"])
 
+    // Un .md de Claude Code copiado aquí (tools como cadena, disallowedTools, maxTurns...) también funciona.
+    const data = md.data as Record<string, unknown>
     const config = {
       name,
-      ...md.data,
+      ...(pareceClaude(data) ? traducirClaude(data, { soloClaude: false }) : data),
       prompt: md.content.trim(),
     }
     result[config.name] = ConfigParse.schema(ConfigAgentV1.Info, config, item)
+  }
+  return result
+}
+
+/**
+ * Lazunox (2A): agentes de Claude Code en `<raíz>/.claude/agents/**.md` (proyecto o `~/.claude`).
+ * Solo subagentes; los permisos se traducen desde `tools`/`disallowedTools` y NUNCA pueden ampliar los del padre
+ * (ver `agent/restringir-permisos.ts`). No pisan a los agentes nativos. Un archivo roto se omite sin romper la configuración.
+ * `LAZUNOX_SIN_AGENTES_CLAUDE=1` lo apaga.
+ */
+export async function loadClaude(root: string, env: NodeJS.ProcessEnv = process.env) {
+  const result: Record<string, ConfigAgentV1.Info> = {}
+  if (env.LAZUNOX_SIN_AGENTES_CLAUDE === "1") return result
+  const cwd = path.join(root, ".claude", "agents")
+  for (const item of await Glob.scan("**/*.md", { cwd, absolute: true, dot: false, symlink: false }).catch(() => [])) {
+    const md = await ConfigMarkdown.parse(item).catch(() => undefined)
+    if (!md) continue
+    const data = md.data as Record<string, unknown>
+    const name = typeof data.name === "string" && /^[A-Za-z0-9][A-Za-z0-9._-]*$/.test(data.name)
+      ? data.name
+      : configEntryNameFromPath(path.relative(cwd, item), [])
+    if (NOMBRES_RESERVADOS.has(name)) continue
+    try {
+      result[name] = ConfigParse.schema(
+        ConfigAgentV1.Info,
+        { ...traducirClaude(data, { soloClaude: true }), name, prompt: md.content.trim() },
+        item,
+      )
+    } catch {
+      continue
+    }
   }
   return result
 }

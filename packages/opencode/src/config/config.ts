@@ -435,6 +435,24 @@ const layer = Layer.effect(
 
         const deps: Fiber.Fiber<void>[] = []
 
+        // Lazunox (2A): agentes de Claude Code: ~/.claude/agents (prioridad más baja) y .claude/agents del proyecto; los de .opencode ganan.
+        const raicesClaude = [Global.Path.home]
+        if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+          // Del tope del proyecto hacia la carpeta actual (la más cercana gana). Sin repositorio solo la carpeta actual.
+          const raiz = ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory
+          const cadena: string[] = []
+          for (let d = ctx.directory; ; d = path.dirname(d)) {
+            cadena.unshift(d)
+            if (d === raiz || path.dirname(d) === d) break
+          }
+          raicesClaude.push(...cadena)
+        }
+        let agentesClaude: Record<string, any> = {}
+        for (const root of raicesClaude)
+          agentesClaude = mergeDeep(agentesClaude, yield* Effect.promise(() => ConfigAgent.loadClaude(root)))
+        // Debajo de lo que ya había: nada de la carpeta de Claude pisa la configuración propia.
+        result.agent = mergeDeep(agentesClaude, result.agent ?? {})
+
         for (const dir of directories) {
           if (dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR) {
             for (const file of ["opencode.json", "opencode.jsonc"]) {

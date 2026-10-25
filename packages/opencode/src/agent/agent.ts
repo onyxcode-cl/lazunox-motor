@@ -31,6 +31,7 @@ import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/l
 import { Reference } from "@opencode-ai/core/reference"
 import { Location } from "@opencode-ai/core/location"
 import { PluginV2 } from "@opencode-ai/core/plugin"
+import { restringir } from "./restringir-permisos"
 
 export const Info = Schema.Struct({
   name: Schema.String,
@@ -54,6 +55,12 @@ export const Info = Schema.Struct({
   prompt: Schema.optional(Schema.String),
   options: Schema.Record(Schema.String, Schema.Unknown),
   steps: Schema.optional(Schema.Finite),
+  // Lazunox (2A, P06): agente definido por el usuario en una carpeta (no nativo). Sus permisos NUNCA superan los del padre
+  // (ver `restringir-permisos.ts`); `estricto` son sus negaciones propias, que se vuelven a imponer al final.
+  usuario: Schema.optional(Schema.Boolean),
+  estricto: Schema.optional(PermissionV1.Ruleset),
+  background: Schema.optional(Schema.Boolean),
+  skills: Schema.optional(Schema.Array(Schema.String)),
 }).annotate({ identifier: "Agent" })
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -274,6 +281,7 @@ const layer = Layer.effect(
             continue
           }
           let item = agents[key]
+          const creado = !item
           if (!item)
             item = agents[key] = {
               name: key,
@@ -284,6 +292,9 @@ const layer = Layer.effect(
             }
           if (value.model === "small") {
             item.modelSmall = true
+            item.model = undefined
+          } else if (value.model === "inherit") {
+            item.modelSmall = undefined
             item.model = undefined
           } else if (value.model) {
             item.model = Provider.parseModel(value.model)
@@ -300,7 +311,19 @@ const layer = Layer.effect(
           item.name = value.name ?? item.name
           item.steps = value.steps ?? item.steps
           item.options = mergeDeep(item.options, value.options ?? {})
-          item.permission = Permission.merge(item.permission, Permission.fromConfig(value.permission ?? {}))
+          item.background = value.background ?? item.background
+          item.skills = value.skills ?? item.skills
+          const declarado = Permission.fromConfig(value.permission ?? {})
+          if (creado && item.mode !== "primary") {
+            // Lazunox (2A): un agente nuevo de carpeta (subagente) solo puede RESTRINGIR lo que hereda (defaults + config del
+            // usuario); no puede ampliarlo. Un agente `primary` lo elige la persona a mano, como antes.
+            const r = restringir(item.permission, declarado)
+            item.permission = r.permission
+            item.estricto = r.estricto
+            item.usuario = true
+          } else {
+            item.permission = Permission.merge(item.permission, declarado)
+          }
         }
 
         // Ensure Truncate.GLOB is allowed unless explicitly configured
