@@ -94,7 +94,14 @@ export const turno = Effect.fn("test.turno")(function* (input: {
       type: "tool",
       tool: item.tool,
       callID: `call-${index}`,
-      state: { status: "completed", input: item.input, output: "", title: "", metadata: {}, time: { start: 0, end: 1 } },
+      state: {
+        status: "completed",
+        input: item.input,
+        output: "",
+        title: "",
+        metadata: {},
+        time: { start: 0, end: 1 },
+      },
     })
   }
   if (patch.files.length) {
@@ -141,7 +148,8 @@ export const gitSnap = (...args: string[]) =>
     })
   })
 
-export const arbolExiste = (tree: string) => gitSnap("cat-file", "-e", `${tree}^{tree}`).pipe(Effect.map((r) => r.code === 0))
+export const arbolExiste = (tree: string) =>
+  gitSnap("cat-file", "-e", `${tree}^{tree}`).pipe(Effect.map((r) => r.code === 0))
 
 /** Variable de entorno solo durante `self`. */
 export const conEntorno = <A, E, R>(vars: Record<string, string | undefined>, self: Effect.Effect<A, E, R>) =>

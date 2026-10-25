@@ -71,7 +71,9 @@ describe("turnos y puntos de control (R1)", () => {
         yield* escribir(`${tmp.directory}/a.txt`, "A0")
         const hechos = []
         for (let i = 1; i <= 4; i++) {
-          hechos.push(yield* turno({ sessionID, dir: tmp.directory, mutar: escribir(`${tmp.directory}/a.txt`, `A${i}`) }))
+          hechos.push(
+            yield* turno({ sessionID, dir: tmp.directory, mutar: escribir(`${tmp.directory}/a.txt`, `A${i}`) }),
+          )
         }
         const refs = (yield* gitSnap("for-each-ref", "--format=%(refname)", `refs/lazunox/${sessionID}/`)).out
           .split("\n")
@@ -134,7 +136,10 @@ describe("turnos y puntos de control (R1)", () => {
         sessionID,
         dir: d,
         herramientas: [
-          { tool: "apply_patch", input: { patchText: "*** Begin Patch\n*** Add File: nuevo.txt\n+hola\n*** End Patch" } },
+          {
+            tool: "apply_patch",
+            input: { patchText: "*** Begin Patch\n*** Add File: nuevo.txt\n+hola\n*** End Patch" },
+          },
         ],
         mutar: escribir(`${d}/nuevo.txt`, "hola\n"),
       })
@@ -144,7 +149,11 @@ describe("turnos y puntos de control (R1)", () => {
       expect(origen(0, "b.txt")).toBe("comando")
       expect(origen(1, "c.txt")).toBe("otro")
       expect(origen(2, "nuevo.txt")).toBe("herramienta")
-      expect(lista[0]!.files.find((item) => item.file === "a.txt")).toMatchObject({ status: "modified", additions: 1, deletions: 1 })
+      expect(lista[0]!.files.find((item) => item.file === "a.txt")).toMatchObject({
+        status: "modified",
+        additions: 1,
+        deletions: 1,
+      })
       expect(lista[0]!.files.find((item) => item.file === "b.txt")?.status).toBe("added")
       expect(lista.every((item) => item.restaurable)).toBe(true)
     }),
@@ -189,7 +198,13 @@ describe("turnos y puntos de control (R1)", () => {
       })
       const lista = yield* (yield* SessionTurnos.Service).listar({ sessionID })
       expect(lista).toHaveLength(1)
-      expect(lista[0]).toMatchObject({ messageID: user.id, files: [], truncated: false, restaurable: false, motivo: "sin-git" })
+      expect(lista[0]).toMatchObject({
+        messageID: user.id,
+        files: [],
+        truncated: false,
+        restaurable: false,
+        motivo: "sin-git",
+      })
     }),
   )
 
@@ -203,7 +218,9 @@ describe("turnos y puntos de control (R1)", () => {
       const lineas = Array.from({ length: 40 }, (_, i) => `linea ${i}`).join("\n") + "\n"
       yield* escribir(`${d}/g.txt`, lineas)
       const hechos = []
-      hechos.push(yield* turno({ sessionID, dir: d, mutar: escribir(`${d}/g.txt`, lineas.replace("linea 20", "CAMBIO 20")) }))
+      hechos.push(
+        yield* turno({ sessionID, dir: d, mutar: escribir(`${d}/g.txt`, lineas.replace("linea 20", "CAMBIO 20")) }),
+      )
       hechos.push(yield* turno({ sessionID, dir: d, mutar: escribir(`${d}/h.txt`, "x") }))
       hechos.push(yield* turno({ sessionID, dir: d, mutar: escribir(`${d}/i.txt`, "y") }))
       const svc = yield* SessionTurnos.Service

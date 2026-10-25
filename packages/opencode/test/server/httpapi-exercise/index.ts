@@ -643,6 +643,37 @@ const scenarios: Scenario[] = [
       headers: ctx.headers(),
     }))
     .status(404),
+  http.protected
+    .get("/experimental/session/{sessionID}/rebobinar/{messageID}", "experimental.session.rebobinar.revision")
+    .seeded((ctx) => ctx.session({ title: "Rebobinar revision owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/rebobinar/{messageID}", {
+        sessionID: ctx.state.id,
+        messageID: "msg_noexiste",
+      }),
+      headers: ctx.headers(),
+    }))
+    .status(404),
+  http.protected
+    .post("/experimental/session/{sessionID}/rebobinar", "experimental.session.rebobinar")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Rebobinar owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/rebobinar", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { messageID: "msg_noexiste", modo: "todo" },
+    }))
+    .status(404),
+  http.protected
+    .post("/experimental/session/{sessionID}/rebobinar/deshacer", "experimental.session.rebobinar.deshacer")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Rebobinar deshacer owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/rebobinar/deshacer", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: {},
+    }))
+    .status(409),
   http.protected.get("/experimental/resource", "experimental.resource.list").json(),
   http.protected
     .post("/sync/history", "sync.history.list")

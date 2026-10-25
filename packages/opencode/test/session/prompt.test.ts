@@ -2468,3 +2468,27 @@ noLLMServer.instance(
     }),
   30_000,
 )
+
+// Lazunox R2 (rebobinar «solo código»): la nota para el modelo viaja UNA vez con el siguiente mensaje de la persona.
+it.instance("nota de rebobinar solo código: llega al modelo con el siguiente mensaje, una sola vez", () =>
+  Effect.gen(function* () {
+    const { llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const revert = yield* SessionRevert.Service
+    const chat = yield* sessions.create({ title: "Nota rebobinar" })
+    yield* revert.guardarNota(chat.id, "NOTA-REBOBINAR a.txt vuelve a leerlo")
+    yield* llm.text("uno")
+    yield* llm.text("dos")
+
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [{ type: "text", text: "hola" }] })
+    yield* prompt.prompt({ sessionID: chat.id, agent: "build", model: ref, parts: [{ type: "text", text: "sigue" }] })
+
+    const inputs = yield* llm.inputs
+    expect(inputs).toHaveLength(2)
+    const cuenta = (body: unknown) => JSON.stringify(body).split("NOTA-REBOBINAR").length - 1
+    expect(cuenta(inputs[0])).toBe(1)
+    expect(cuenta(inputs[1])).toBe(1) // sigue en el historial, pero no se volvió a añadir
+    expect(yield* revert.consumirNota(chat.id)).toBeUndefined()
+  }),
+)

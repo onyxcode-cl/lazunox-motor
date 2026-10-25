@@ -16,7 +16,7 @@ import {
 } from "../middleware/workspace-routing"
 import { described } from "./metadata"
 import { QueryBoolean } from "./query"
-import { ApiNotFoundError } from "../errors"
+import { ApiNotFoundError, InvalidRequestError } from "../errors"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 
@@ -153,6 +153,54 @@ export class RebobinarConflictoError extends Schema.TaggedErrorClass<RebobinarCo
   { httpApiStatus: 409 },
 ) {}
 
+const ModoRebobinar = Schema.Union([Schema.Literal("todo"), Schema.Literal("conversacion"), Schema.Literal("codigo")])
+const OmitidoInfo = Schema.Struct({ file: Schema.String, motivo: Schema.String })
+export const RebobinarRevisionResponse = Schema.Struct({
+  archivos: Schema.Array(TurnoArchivo),
+  conflictos: Schema.Array(Schema.String),
+  protegidos: Schema.Array(Schema.String),
+  comandos: Schema.Boolean,
+  commitsDespues: Schema.Array(Schema.Struct({ hash: Schema.String, asunto: Schema.String })),
+  ayudantesActivos: Schema.Array(
+    Schema.Struct({
+      tipo: Schema.Union([
+        Schema.Literal("sesion"),
+        Schema.Literal("ayudante"),
+        Schema.Literal("shell"),
+        Schema.Literal("celda"),
+      ]),
+      id: Schema.String,
+      titulo: Schema.String,
+    }),
+  ),
+  mensajes: Schema.Number,
+  restaurable: Schema.Boolean,
+  motivo: Schema.optionalKey(Schema.String),
+  bloqueado: Schema.optionalKey(Schema.String),
+}).annotate({ identifier: "RebobinarRevision" })
+export const RebobinarPayload = Schema.Struct({
+  messageID: MessageID,
+  modo: ModoRebobinar,
+  sobrescribir: Schema.optional(Schema.Array(Schema.String)),
+}).annotate({ identifier: "RebobinarPayload" })
+export const RebobinarResultadoResponse = Schema.Struct({
+  modo: ModoRebobinar,
+  restaurados: Schema.Array(Schema.String),
+  borrados: Schema.Array(Schema.String),
+  omitidos: Schema.Array(OmitidoInfo),
+  mensajesOcultos: Schema.Number,
+  puedeDeshacer: Schema.Boolean,
+}).annotate({ identifier: "RebobinarResultado" })
+export const RebobinarDeshacerPayload = Schema.Struct({
+  sobrescribir: Schema.optional(Schema.Array(Schema.String)),
+}).annotate({ identifier: "RebobinarDeshacerPayload" })
+export const RebobinarDeshacerResponse = Schema.Struct({
+  restaurados: Schema.Array(Schema.String),
+  borrados: Schema.Array(Schema.String),
+  omitidos: Schema.Array(OmitidoInfo),
+  conflictos: Schema.Array(Schema.String),
+}).annotate({ identifier: "RebobinarDeshacerResultado" })
+
 export const ExperimentalPaths = {
   capabilities: "/experimental/capabilities",
   console: "/experimental/console",
@@ -168,6 +216,9 @@ export const ExperimentalPaths = {
   sessionTrabajoTerminar: "/experimental/session/:sessionID/trabajos/:id/terminar",
   sessionTurnos: "/experimental/session/:sessionID/turnos",
   sessionTurnoDiff: "/experimental/session/:sessionID/turnos/:messageID/diff",
+  sessionRebobinarRevision: "/experimental/session/:sessionID/rebobinar/:messageID",
+  sessionRebobinar: "/experimental/session/:sessionID/rebobinar",
+  sessionRebobinarDeshacer: "/experimental/session/:sessionID/rebobinar/deshacer",
   resource: "/experimental/resource",
 } as const
 
@@ -362,6 +413,47 @@ export const ExperimentalApi = HttpApi.make("experimental")
             identifier: "experimental.session.turnos.diff",
             summary: "Get the patch of one file of a turn",
             description: "Patch with 3 lines of context, cut at 1 MB. 409 caducado if the checkpoint no longer exists.",
+          }),
+        ),
+        HttpApiEndpoint.get("sessionRebobinarRevision", ExperimentalPaths.sessionRebobinarRevision, {
+          params: { sessionID: SessionID, messageID: MessageID },
+          query: WorkspaceRoutingQuery,
+          success: described(RebobinarRevisionResponse, "Preview of what rewinding to before this turn would do"),
+          error: [InvalidRequestError, ApiNotFoundError, RebobinarConflictoError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.rebobinar.revision",
+            summary: "Preview a rewind",
+            description:
+              "Read-only. Files that would be restored, conflicts (changed after the last step of the session), protected paths, whether commands ran, commits made since, live helpers, and whether the code is restorable. bloqueado says why a rewind would be refused right now.",
+          }),
+        ),
+        HttpApiEndpoint.post("sessionRebobinar", ExperimentalPaths.sessionRebobinar, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: RebobinarPayload,
+          success: described(RebobinarResultadoResponse, "Rewind done"),
+          error: [InvalidRequestError, ApiNotFoundError, RebobinarConflictoError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.rebobinar",
+            summary: "Rewind to before a turn",
+            description:
+              "Modes: todo (files and conversation), conversacion (hide messages, files untouched), codigo (restore files, keep messages). Conflicts and protected paths are skipped unless listed in sobrescribir. 409 with motivo when busy, pending, expired or without git.",
+          }),
+        ),
+        HttpApiEndpoint.post("sessionRebobinarDeshacer", ExperimentalPaths.sessionRebobinarDeshacer, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: RebobinarDeshacerPayload,
+          success: described(RebobinarDeshacerResponse, "Rewind undone"),
+          error: [InvalidRequestError, ApiNotFoundError, RebobinarConflictoError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.rebobinar.deshacer",
+            summary: "Undo the last rewind",
+            description:
+              "Puts back only the files the rewind touched; files changed afterwards are skipped unless listed in sobrescribir.",
           }),
         ),
         HttpApiEndpoint.get("resource", ExperimentalPaths.resource, {

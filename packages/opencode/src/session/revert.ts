@@ -20,8 +20,9 @@ export const RevertInput = Schema.Struct({
 export type RevertInput = Schema.Schema.Type<typeof RevertInput>
 
 // Lazunox: lo que el revert de una sesión tocó de verdad (se guarda para deshacer SOLO eso).
-type Tocados = { files: string[]; after?: string }
+type Tocados = { files: string[]; after?: string; snapshot?: string }
 const tocadosKey = (sessionID: SessionID) => ["lazunox_revert", sessionID]
+const notaKey = (sessionID: SessionID) => ["lazunox_nota", sessionID]
 
 /** Lazunox: opciones internas (no forman parte del cuerpo HTTP de /session/revert). */
 export interface RevertOptions {
@@ -29,6 +30,8 @@ export interface RevertOptions {
   readonly files?: boolean
   /** Archivos (ruta absoluta con /) que se SALTAN, con el motivo que se informa. */
   readonly skip?: ReadonlyMap<string, string>
+  /** true = restaura los archivos pero deja los mensajes (no marca `session.revert`); se deshace con `deshacer`. */
+  readonly soloCodigo?: boolean
 }
 
 export interface Detalle {
@@ -41,7 +44,9 @@ export interface Detalle {
 
 export interface Interface {
   readonly revert: (input: RevertInput) => Effect.Effect<Session.Info, Session.BusyError | Snapshot.ExpiredError>
-  readonly unrevert: (input: { sessionID: SessionID }) => Effect.Effect<Session.Info, Session.BusyError | Snapshot.ExpiredError>
+  readonly unrevert: (input: {
+    sessionID: SessionID
+  }) => Effect.Effect<Session.Info, Session.BusyError | Snapshot.ExpiredError>
   /** Lazunox: como `revert` pero con opciones e informe de lo que se hizo. */
   readonly revertir: (
     input: RevertInput,
@@ -52,6 +57,11 @@ export interface Interface {
     sessionID: SessionID
     sobrescribir?: ReadonlySet<string>
   }) => Effect.Effect<Detalle, Session.BusyError | Snapshot.ExpiredError>
+  /** Lazunox: ¿hay un rebobinado (con o sin mensajes ocultos) que se pueda deshacer? */
+  readonly hayQueDeshacer: (sessionID: SessionID) => Effect.Effect<boolean>
+  /** Lazunox: nota para el modelo tras restaurar solo el código; se entrega UNA vez con el siguiente mensaje de la persona. */
+  readonly guardarNota: (sessionID: SessionID, texto: string) => Effect.Effect<void>
+  readonly consumirNota: (sessionID: SessionID) => Effect.Effect<string | undefined>
   readonly cleanup: (session: Session.Info) => Effect.Effect<void>
 }
 
@@ -70,7 +80,9 @@ const layer = Layer.effect(
     const relativa = (file: string) =>
       InstanceState.context.pipe(Effect.map((ctx) => path.relative(ctx.worktree, file).replaceAll("\\", "/")))
     const leerTocados = (sessionID: SessionID) =>
-      storage.read<Tocados>(tocadosKey(sessionID)).pipe(Effect.catch(() => Effect.succeed(undefined as Tocados | undefined)))
+      storage
+        .read<Tocados>(tocadosKey(sessionID))
+        .pipe(Effect.catch(() => Effect.succeed(undefined as Tocados | undefined)))
 
     const revertir = Effect.fn("SessionRevert.revertir")(function* (input: RevertInput, options?: RevertOptions) {
       yield* state.assertNotBusy(input.sessionID)
@@ -142,8 +154,18 @@ const layer = Layer.effect(
           .write(tocadosKey(input.sessionID), {
             files: Array.from(new Set([...(previos?.files ?? []), ...tocados])),
             after: despues,
+            ...(options?.soloCodigo ? { snapshot: rev.snapshot } : {}),
           } satisfies Tocados)
           .pipe(Effect.ignore)
+        // «Solo código»: los mensajes se quedan; no hay revert pendiente que marcar.
+        if (options?.soloCodigo) return { session, ...informe }
+      }
+      if (!tocaArchivos) {
+        // «Solo conversación»: ningún archivo cambió, así que deshacer tampoco debe tocar ninguno.
+        // (si ya había un registro de un rebobinado anterior con archivos, se conserva)
+        if (!(yield* leerTocados(input.sessionID))) {
+          yield* storage.write(tocadosKey(input.sessionID), { files: [] } satisfies Tocados).pipe(Effect.ignore)
+        }
       }
       if (rev.snapshot) rev.diff = yield* snap.diff(rev.snapshot)
       const index = all.findIndex((msg) => msg.info.id === rev.messageID)
@@ -171,20 +193,22 @@ const layer = Layer.effect(
       yield* state.assertNotBusy(input.sessionID)
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       const informe: Detalle = { session, restaurados: [], borrados: [], omitidos: [] }
-      if (!session.revert) return informe
+      const guardado = yield* leerTocados(input.sessionID)
+      // Sin revert pendiente solo se deshace un «solo código» (su registro lleva el estado de antes).
+      if (!session.revert && !guardado?.snapshot) return informe
       let restaurados: string[] = []
       let borrados: string[] = []
       const omitidos: { file: string; motivo: string }[] = []
-      const antes = session.revert.snapshot
+      const antes = session.revert?.snapshot ?? guardado?.snapshot
       if (antes) {
-        const guardado = yield* leerTocados(input.sessionID)
         // Sin registro (revert hecho con una versión anterior): todo lo que hoy difiere del estado previo.
         const archivos = guardado?.files ?? (yield* snap.patch(antes)).files
         // Lo que la persona cambió DESPUÉS del revert no se pisa salvo que lo pida.
         const cambiados = guardado?.after ? new Set((yield* snap.patch(guardado.after)).files) : new Set<string>()
         const lista: string[] = []
         for (const file of archivos) {
-          if (cambiados.has(file) && !input.sobrescribir?.has(file)) omitidos.push({ file: yield* relativa(file), motivo: "conflicto" })
+          if (cambiados.has(file) && !input.sobrescribir?.has(file))
+            omitidos.push({ file: yield* relativa(file), motivo: "conflicto" })
           else lista.push(file)
         }
         const r = yield* snap.restoreFiles(antes, lista)
@@ -192,9 +216,29 @@ const layer = Layer.effect(
         borrados = r.borrados
         omitidos.push(...r.omitidos)
       }
-      yield* sessions.clearRevert(input.sessionID)
+      if (session.revert) yield* sessions.clearRevert(input.sessionID)
       yield* storage.remove(tocadosKey(input.sessionID)).pipe(Effect.ignore)
+      yield* storage.remove(notaKey(input.sessionID)).pipe(Effect.ignore)
       return { session: yield* sessions.get(input.sessionID).pipe(Effect.orDie), restaurados, borrados, omitidos }
+    })
+
+    const hayQueDeshacer = Effect.fn("SessionRevert.hayQueDeshacer")(function* (sessionID: SessionID) {
+      const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+      if (session.revert) return true
+      return !!(yield* leerTocados(sessionID))?.snapshot
+    })
+
+    const guardarNota = Effect.fn("SessionRevert.guardarNota")(function* (sessionID: SessionID, texto: string) {
+      yield* storage.write(notaKey(sessionID), { texto }).pipe(Effect.ignore)
+    })
+
+    const consumirNota = Effect.fn("SessionRevert.consumirNota")(function* (sessionID: SessionID) {
+      const nota = yield* storage
+        .read<{ texto: string }>(notaKey(sessionID))
+        .pipe(Effect.catch(() => Effect.succeed(undefined as { texto: string } | undefined)))
+      if (!nota?.texto) return undefined
+      yield* storage.remove(notaKey(sessionID)).pipe(Effect.ignore)
+      return nota.texto
     })
 
     const revert = Effect.fn("SessionRevert.revert")(function* (input: RevertInput) {
@@ -230,7 +274,7 @@ const layer = Layer.effect(
       yield* sessions.clearRevert(sessionID)
     })
 
-    return Service.of({ revert, unrevert, revertir, deshacer, cleanup })
+    return Service.of({ revert, unrevert, revertir, deshacer, hayQueDeshacer, guardarNota, consumirNota, cleanup })
   }),
 )
 

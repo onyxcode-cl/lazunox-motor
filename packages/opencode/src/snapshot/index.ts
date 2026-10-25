@@ -519,14 +519,20 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           }
 
           const clash = (a: string, b: string) => a === b || a.startsWith(`${b}/`) || b.startsWith(`${a}/`)
-          const relOf = (file: string) => path.relative(state.worktree, path.resolve(state.worktree, file)).replaceAll("\\", "/")
+          const relOf = (file: string) =>
+            path.relative(state.worktree, path.resolve(state.worktree, file)).replaceAll("\\", "/")
 
           // Tandas de archivos del mismo árbol cuyas rutas no se afectan entre sí; se respeta el orden de los parches.
           const runs: { hash: string; files: string[] }[] = []
           for (const op of ops) {
             const last = runs[runs.length - 1]
             const rel = relOf(op.file)
-            if (last && last.hash === op.hash && last.files.length < 100 && !last.files.some((item) => clash(relOf(item), rel))) {
+            if (
+              last &&
+              last.hash === op.hash &&
+              last.files.length < 100 &&
+              !last.files.some((item) => clash(relOf(item), rel))
+            ) {
               last.files.push(op.file)
               continue
             }
@@ -553,7 +559,10 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 continue
               }
               if (found.type !== "blob") {
-                report.omitidos.push({ file: check.rel, motivo: found.type === "commit" ? "submodulo" : "era-una-carpeta" })
+                report.omitidos.push({
+                  file: check.rel,
+                  motivo: found.type === "commit" ? "submodulo" : "era-una-carpeta",
+                })
                 continue
               }
               if (found.mode === "120000" && !(yield* linkInside(hash, check.rel, check.abs))) {
@@ -663,7 +672,11 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
-        const refOk = (ref: string) => /^refs\/lazunox\/[A-Za-z0-9_.\/-]+$/.test(ref) && !ref.includes("..") && !ref.endsWith("/") && !ref.endsWith(".lock")
+        const refOk = (ref: string) =>
+          /^refs\/lazunox\/[A-Za-z0-9_.\/-]+$/.test(ref) &&
+          !ref.includes("..") &&
+          !ref.endsWith("/") &&
+          !ref.endsWith(".lock")
 
         const hasMany = Effect.fnUntraced(function* (hashes: string[]) {
           const found = new Set<string>()
@@ -700,10 +713,9 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
 
         const refs = Effect.fnUntraced(function* (prefix: string) {
           if (!refOk(prefix.endsWith("/") ? prefix + "x" : prefix) || !(yield* exists(state.gitdir))) return []
-          const result = yield* git(
-            [...core, ...args(["for-each-ref", "--format=%(refname) %(objectname)", prefix])],
-            { cwd: state.worktree },
-          )
+          const result = yield* git([...core, ...args(["for-each-ref", "--format=%(refname) %(objectname)", prefix])], {
+            cwd: state.worktree,
+          })
           if (result.code !== 0) return []
           return result.text
             .split("\n")
@@ -736,12 +748,21 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           if (!validHash(from) || !validHash(to)) return []
           const [names, nums] = yield* Effect.all(
             [
-              git([...quote, ...args(["diff", "--no-ext-diff", "--name-status", "--no-renames", "-z", from, to, "--", "."])], {
-                cwd: state.directory,
-              }),
-              git([...quote, ...args(["diff", "--no-ext-diff", "--no-renames", "--numstat", "-z", from, to, "--", "."])], {
-                cwd: state.directory,
-              }),
+              git(
+                [
+                  ...quote,
+                  ...args(["diff", "--no-ext-diff", "--name-status", "--no-renames", "-z", from, to, "--", "."]),
+                ],
+                {
+                  cwd: state.directory,
+                },
+              ),
+              git(
+                [...quote, ...args(["diff", "--no-ext-diff", "--no-renames", "--numstat", "-z", from, to, "--", "."])],
+                {
+                  cwd: state.directory,
+                },
+              ),
             ],
             { concurrency: 2 },
           )
@@ -777,7 +798,17 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           const result = yield* git(
             [
               ...quote,
-              ...args(["diff", "--no-ext-diff", "--no-renames", "--no-color", "-U3", from, to, "--", `:(top,literal)${file}`]),
+              ...args([
+                "diff",
+                "--no-ext-diff",
+                "--no-renames",
+                "--no-color",
+                "-U3",
+                from,
+                to,
+                "--",
+                `:(top,literal)${file}`,
+              ]),
             ],
             { cwd: state.directory },
           )
@@ -1050,7 +1081,24 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           Effect.forkScoped,
         )
 
-        return { cleanup, track, patch, restore, restoreFiles, has, hasMany, keep, refs, forget, numstat, fileDiff, commitsSince, revert, diff, diffFull }
+        return {
+          cleanup,
+          track,
+          patch,
+          restore,
+          restoreFiles,
+          has,
+          hasMany,
+          keep,
+          refs,
+          forget,
+          numstat,
+          fileDiff,
+          commitsSince,
+          revert,
+          diff,
+          diffFull,
+        }
       }),
     )
 

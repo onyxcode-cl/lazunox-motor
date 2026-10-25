@@ -7,6 +7,8 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { MCP } from "@/mcp"
 import { Project } from "@/project/project"
 import { Session } from "@/session/session"
+import type { Snapshot } from "@/snapshot"
+import { SessionRebobinar } from "@/session/rebobinar"
 import { SessionTurnos } from "@/session/turnos"
 import * as ApiError from "../errors"
 import type { SessionID } from "@/session/schema"
@@ -21,6 +23,8 @@ import { InstanceHttpApi } from "../api"
 import {
   ConsoleSwitchPayload,
   RebobinarConflictoError,
+  RebobinarDeshacerPayload,
+  RebobinarPayload,
   SessionListQuery,
   ToolListQuery,
   TurnoDiffQuery,
@@ -229,6 +233,64 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
         )
     })
 
+    const rebobinarSvc = yield* SessionRebobinar.Service
+
+    const mapRebobinar = <A, R>(
+      self: Effect.Effect<
+        A,
+        | InstanceType<typeof SessionTurnos.NoEncontrado>
+        | InstanceType<typeof SessionRebobinar.Invalido>
+        | InstanceType<typeof SessionRebobinar.Conflicto>
+        | Session.NotFound
+        | Snapshot.ExpiredError,
+        R
+      >,
+    ) =>
+      self.pipe(
+        Effect.catchTag("TurnoNoEncontrado", (error) => Effect.fail(ApiError.notFound(error.message))),
+        Effect.catchTag("NotFoundError", (error) => Effect.fail(ApiError.notFound(error.message))),
+        Effect.catchTag("RebobinarInvalido", (error) =>
+          Effect.fail(new ApiError.InvalidRequestError({ message: error.message, kind: "rebobinar" })),
+        ),
+        Effect.catchTag("RebobinarConflictoInterno", (error) =>
+          Effect.fail(new RebobinarConflictoError({ motivo: error.motivo, message: error.message })),
+        ),
+        Effect.catchTag("SnapshotExpiredError", (error) =>
+          Effect.fail(new RebobinarConflictoError({ motivo: "caducado", message: error.message })),
+        ),
+      )
+
+    const sessionRebobinarRevision = Effect.fn("ExperimentalHttpApi.sessionRebobinarRevision")(function* (ctx: {
+      params: { sessionID: SessionID; messageID: MessageID }
+    }) {
+      return yield* mapRebobinar(
+        rebobinarSvc.revision({ sessionID: ctx.params.sessionID, messageID: ctx.params.messageID }),
+      )
+    })
+
+    const sessionRebobinar = Effect.fn("ExperimentalHttpApi.sessionRebobinar")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof RebobinarPayload.Type
+    }) {
+      return yield* mapRebobinar(
+        rebobinarSvc.rebobinar({
+          sessionID: ctx.params.sessionID,
+          messageID: ctx.payload.messageID,
+          modo: ctx.payload.modo,
+          sobrescribir: ctx.payload.sobrescribir,
+        }),
+      )
+    })
+
+    const sessionRebobinarDeshacer = Effect.fn("ExperimentalHttpApi.sessionRebobinarDeshacer")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof RebobinarDeshacerPayload.Type
+    }) {
+      return yield* mapRebobinar(
+        rebobinarSvc.deshacer({ sessionID: ctx.params.sessionID, sobrescribir: ctx.payload.sobrescribir }),
+      )
+    })
+
     const resource = Effect.fn("ExperimentalHttpApi.resource")(function* () {
       return yield* mcp.resources()
     })
@@ -250,6 +312,9 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("sessionTrabajoTerminar", sessionTrabajoTerminar)
       .handle("sessionTurnos", sessionTurnos)
       .handle("sessionTurnoDiff", sessionTurnoDiff)
+      .handle("sessionRebobinarRevision", sessionRebobinarRevision)
+      .handle("sessionRebobinar", sessionRebobinar)
+      .handle("sessionRebobinarDeshacer", sessionRebobinarDeshacer)
       .handle("resource", resource)
   }),
 )

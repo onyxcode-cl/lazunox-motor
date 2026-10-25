@@ -29,6 +29,7 @@ import { SessionCompaction } from "@/session/compaction"
 import { SessionRevert } from "@/session/revert"
 import { SessionSummary } from "@/session/summary"
 import { SessionTurnos } from "@/session/turnos"
+import { SessionRebobinar } from "@/session/rebobinar"
 import { SessionPrompt } from "@/session/prompt"
 import { Instruction } from "@/session/instruction"
 import { LLM } from "@/session/llm"
@@ -89,6 +90,7 @@ export const AppLayer = AppNodeBuilderV1.build(
     SessionRevert.node,
     SessionSummary.node,
     SessionTurnos.node,
+    SessionRebobinar.node,
     SessionPrompt.node,
     Instruction.node,
     LLM.node,

@@ -1061,6 +1061,20 @@ const layer = Layer.effect(
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(input)
+      // Lazunox: tras «restaurar solo el código» el modelo recibe UNA vez la lista de archivos que cambiaron de estado.
+      const notaRebobinar = yield* revert.consumirNota(input.sessionID)
+      if (notaRebobinar) {
+        const parte: SessionV1.TextPart = {
+          id: PartID.ascending(),
+          messageID: message.info.id,
+          sessionID: input.sessionID,
+          type: "text",
+          text: notaRebobinar,
+          synthetic: true,
+        }
+        yield* sessions.updatePart(parte)
+        message.parts.push(parte)
+      }
       yield* sessions.touch(input.sessionID)
 
       const permissions: PermissionV1.Rule[] = []

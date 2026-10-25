@@ -25,7 +25,14 @@ import { testEffect } from "../lib/effect"
 const it = testEffect(
   Layer.mergeAll(
     LayerNode.compile(
-      LayerNode.group([Snapshot.node, FSUtil.node, Session.node, SessionRevert.node, SessionProjector.node, CrossSpawnSpawner.node]),
+      LayerNode.group([
+        Snapshot.node,
+        FSUtil.node,
+        Session.node,
+        SessionRevert.node,
+        SessionProjector.node,
+        CrossSpawnSpawner.node,
+      ]),
     ),
     testInstanceStoreLayer,
   ),
@@ -35,10 +42,11 @@ afterEach(async () => {
   await disposeAllInstances()
 })
 
-const write = (file: string, content: string) => Effect.promise(async () => {
-  await fs.mkdir(path.dirname(file), { recursive: true })
-  await fs.writeFile(file, content)
-})
+const write = (file: string, content: string) =>
+  Effect.promise(async () => {
+    await fs.mkdir(path.dirname(file), { recursive: true })
+    await fs.writeFile(file, content)
+  })
 const readText = (file: string) => Effect.promise(() => fs.readFile(file, "utf8"))
 const exists = (file: string) =>
   Effect.promise(() =>
@@ -81,7 +89,9 @@ describe("snapshot seguro (R0)", () => {
       // Pasan los 7 días: gc se lleva el árbol sin ref.
       const gitdir = yield* gitdirDeSnapshots
       yield* Effect.promise(() => $`git --git-dir ${gitdir} gc --prune=now`.quiet())
-      const sigue = yield* Effect.promise(async () => (await $`git --git-dir ${gitdir} cat-file -e ${antes}`.quiet().nothrow()).exitCode === 0)
+      const sigue = yield* Effect.promise(
+        async () => (await $`git --git-dir ${gitdir} cat-file -e ${antes}`.quiet().nothrow()).exitCode === 0,
+      )
       expect(sigue).toBe(false) // la prueba es válida solo si el objeto de verdad desapareció
 
       const exit = yield* snap.revert([patch]).pipe(Effect.exit)
@@ -173,7 +183,13 @@ describe("unrevert (R0)", () => {
           yield* write(`${dir}/a.txt`, "A0")
           yield* write(`${dir}/x.txt`, "X0")
           const u = yield* user(sessionID)
-          yield* session.updatePart({ id: PartID.ascending(), messageID: u.id, sessionID, type: "text", text: "cambia a" })
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: u.id,
+            sessionID,
+            type: "text",
+            text: "cambia a",
+          })
 
           const antes = yield* snap.track()
           // El turno edita a.txt.
@@ -194,7 +210,14 @@ describe("unrevert (R0)", () => {
             time: { created: Date.now() },
             finish: "end_turn",
           })
-          yield* session.updatePart({ id: PartID.ascending(), messageID: a.id, sessionID, type: "patch", hash: patch.hash, files: patch.files })
+          yield* session.updatePart({
+            id: PartID.ascending(),
+            messageID: a.id,
+            sessionID,
+            type: "patch",
+            hash: patch.hash,
+            files: patch.files,
+          })
 
           yield* revert.revert({ sessionID, messageID: u.id })
           expect(yield* readText(`${dir}/a.txt`)).toBe("A0")

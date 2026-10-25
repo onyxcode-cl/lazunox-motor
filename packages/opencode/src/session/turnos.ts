@@ -83,7 +83,9 @@ export const arbolesDe = (turno: TurnoDatos) =>
       ...(turno.to ? [turno.to] : []),
       ...turno.parches.map((item) => item.hash),
       ...turno.mensajes.flatMap((message) =>
-        message.parts.flatMap((part) => (part.type === "step-start" || part.type === "step-finish") && part.snapshot ? [part.snapshot] : []),
+        message.parts.flatMap((part) =>
+          (part.type === "step-start" || part.type === "step-finish") && part.snapshot ? [part.snapshot] : [],
+        ),
       ),
     ]),
   )
@@ -120,7 +122,8 @@ export const conservar = Effect.fn("Turnos.conservar")(function* (
 const aRelativa = (base: string, worktree: string, file: string) =>
   path.relative(worktree, path.resolve(base, file)).replaceAll("\\", "/")
 
-const ES_COMANDO = (tool: string) => tool === "bash" || tool.startsWith("bash_") || tool === "execute" || tool === "execute_wait"
+const ES_COMANDO = (tool: string) =>
+  tool === "bash" || tool.startsWith("bash_") || tool === "execute" || tool === "execute_wait"
 
 /** Archivos que una herramienta de edición del turno nombra (relativos al proyecto) y si el turno corrió comandos. */
 export function origenes(turno: TurnoDatos, directory: string, worktree: string) {
@@ -160,7 +163,15 @@ export interface Interface {
     messageID: MessageID
     file: string
   }) => Effect.Effect<
-    { file: string; status: Archivo["status"]; additions: number; deletions: number; patch: string; binary: boolean; truncated: boolean },
+    {
+      file: string
+      status: Archivo["status"]
+      additions: number
+      deletions: number
+      patch: string
+      binary: boolean
+      truncated: boolean
+    },
     NoEncontrado | Session.NotFound | Snapshot.ExpiredError
   >
 }
