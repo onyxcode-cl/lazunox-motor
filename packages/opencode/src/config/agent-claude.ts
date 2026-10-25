@@ -19,7 +19,12 @@ import { permisoDeHerramienta } from "@opencode-ai/core/v1/config/agent"
 const NOMBRE_VALIDO = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 /** Nombres de agentes nativos: un archivo de `.claude/agents` no puede sustituirlos. */
-export const NOMBRES_RESERVADOS = new Set(["build", "plan", "general", "explore", "compaction", "title", "summary"])
+export const NOMBRES_RESERVADOS = new Set([
+  "build", "plan", "general", "explore", "compaction", "title", "summary",
+  // agentes primarios y ayudantes de la app (Lazunox): un archivo de la carpeta no puede ocupar ni ampliar estos nombres
+  "chat", "tasks", "computer", "lazunox-helper", "lazunox-chat-helper",
+])
+export const esNombreReservado = (name: string) => NOMBRES_RESERVADOS.has(name.trim().toLowerCase())
 
 function lista(value: unknown): string[] {
   const items = Array.isArray(value) ? value : typeof value === "string" ? value.split(",") : []

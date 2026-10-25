@@ -27,6 +27,7 @@ interface State {
   pending: Map<PermissionV1.ID, PendingEntry>
   approved: PermissionV1.Rule[]
   directory: string
+  worktree: string
 }
 
 export function evaluate(permission: string, pattern: string, ...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule {
@@ -55,6 +56,7 @@ const layer = Layer.effect(
           pending: new Map<PermissionV1.ID, PendingEntry>(),
           approved: SiempreDisco.cargar(ctx.directory).map((r) => ({ ...r, action: "allow" as const })),
           directory: ctx.directory,
+          worktree: ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory,
         }
 
         yield* Effect.addFinalizer(() =>
@@ -71,14 +73,15 @@ const layer = Layer.effect(
     )
 
     const ask = Effect.fn("Permission.ask")(function* (input: PermissionV1.AskInput) {
-      const { approved, pending } = yield* InstanceState.get(state)
+      const { approved, pending, worktree } = yield* InstanceState.get(state)
       const { ruleset, ...request } = input
+      const agente = typeof request.metadata?.["lazunox_agente"] === "string" ? request.metadata["lazunox_agente"] : undefined
       let needsAsk = false
       // Lazunox: ediciones en rutas protegidas (.git, .opencode, .claude, .mcp.json…) siempre se preguntan, salvo `deny`.
       let protegido = false
 
       for (const pattern of request.patterns) {
-        if (request.permission === "edit" && RutasProtegidas.activo() && RutasProtegidas.esProtegida(pattern)) {
+        if (request.permission === "edit" && RutasProtegidas.activo() && RutasProtegidas.esProtegida(pattern, process.env, { agente, raiz: worktree })) {
           if (evaluate(request.permission, pattern, ruleset).action === "deny") {
             return yield* new PermissionV1.DeniedError({
               ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
