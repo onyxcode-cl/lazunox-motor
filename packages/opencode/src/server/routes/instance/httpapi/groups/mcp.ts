@@ -1,8 +1,9 @@
 import { MCP } from "@/mcp"
+import { McpEvent } from "@opencode-ai/schema/mcp-event"
 import { ConfigMCPV1 } from "@opencode-ai/core/v1/config/mcp"
 import { Schema } from "effect"
 import { HttpApi, HttpApiEndpoint, HttpApiError, HttpApiGroup, OpenApi } from "effect/unstable/httpapi"
-import { McpServerNotFoundError } from "../errors"
+import { McpElicitationInvalidReplyError, McpElicitationNotFoundError, McpServerNotFoundError } from "../errors"
 import { Authorization } from "../middleware/authorization"
 import { InstanceContextMiddleware } from "../middleware/instance-context"
 import { WorkspaceRoutingMiddleware, WorkspaceRoutingQuery } from "../middleware/workspace-routing"
@@ -24,6 +25,15 @@ export const AuthCallbackPayload = Schema.Struct({
 export const AuthRemoveResponse = Schema.Struct({
   success: Schema.Literal(true),
 })
+export const ElicitationReplyPayload = Schema.Struct({
+  action: McpEvent.ElicitationAction,
+  content: Schema.optional(
+    Schema.Record(Schema.String, Schema.Union([Schema.String, Schema.Number, Schema.Boolean])).annotate({
+      description: "Valores del formulario (solo con action=accept). El motor los valida contra el esquema pedido.",
+    }),
+  ),
+})
+
 export class UnsupportedOAuthError extends Schema.ErrorClass<UnsupportedOAuthError>("McpUnsupportedOAuthError")(
   { error: Schema.String },
   { httpApiStatus: 400 },
@@ -36,6 +46,8 @@ export const McpPaths = {
   authAuthenticate: "/mcp/:name/auth/authenticate",
   connect: "/mcp/:name/connect",
   disconnect: "/mcp/:name/disconnect",
+  elicitation: "/mcp/elicitation",
+  elicitationReply: "/mcp/elicitation/:requestID/reply",
 } as const
 
 export const McpApi = HttpApi.make("mcp")
@@ -134,6 +146,29 @@ export const McpApi = HttpApi.make("mcp")
           OpenApi.annotations({
             identifier: "mcp.disconnect",
             description: "Disconnect an MCP server.",
+          }),
+        ),
+        HttpApiEndpoint.get("elicitationList", McpPaths.elicitation, {
+          query: WorkspaceRoutingQuery,
+          success: described(Schema.Array(McpEvent.ElicitationRequest), "Pending MCP form requests"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "mcp.elicitation.list",
+            summary: "List pending MCP forms",
+            description: "Get the form requests (elicitation) that MCP servers are waiting for a person to answer.",
+          }),
+        ),
+        HttpApiEndpoint.post("elicitationReply", McpPaths.elicitationReply, {
+          params: { requestID: McpEvent.ElicitationID },
+          query: WorkspaceRoutingQuery,
+          payload: ElicitationReplyPayload,
+          success: described(Schema.Boolean, "MCP form answered"),
+          error: [McpElicitationInvalidReplyError, McpElicitationNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "mcp.elicitation.reply",
+            summary: "Reply to an MCP form",
+            description: "Accept (with values), decline or cancel a form requested by an MCP server.",
           }),
         ),
       )

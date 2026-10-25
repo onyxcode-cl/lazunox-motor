@@ -19,6 +19,7 @@ import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
+import { McpElicitation } from "../mcp/elicitation"
 import { LSP } from "@/lsp/lsp"
 import { ulid } from "ulid"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -126,6 +127,7 @@ const layer = Layer.effect(
     const permission = yield* Permission.Service
     const fsys = yield* FSUtil.Service
     const mcp = yield* MCP.Service
+    const elicitation = yield* McpElicitation.Service
     const lsp = yield* LSP.Service
     const registry = yield* ToolRegistry.Service
     const truncate = yield* Truncate.Service
@@ -153,6 +155,8 @@ const layer = Layer.effect(
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       LazunoxWake.markStopped(String(sessionID)) // Lazunox: un aviso de un trabajo anterior no reanuda una sesión detenida
+      // Lazunox: Detener cierra los formularios MCP abiertos de la sesión (publica rejected/abort y contesta cancel al servidor).
+      yield* elicitation.cancelSession(sessionID, "abort")
       yield* state.cancel(sessionID)
     })
 
@@ -1614,6 +1618,7 @@ export const node = LayerNode.make({
     Permission.node,
     FSUtil.node,
     MCP.node,
+    McpElicitation.node,
     LSP.node,
     ToolRegistry.node,
     Truncate.node,

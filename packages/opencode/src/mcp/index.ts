@@ -9,6 +9,8 @@ import { SSEClientTransport } from "@modelcontextprotocol/sdk/client/sse.js"
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { UnauthorizedError } from "@modelcontextprotocol/sdk/client/auth.js"
 import {
+  CancelledNotificationSchema,
+  ElicitRequestSchema,
   ListRootsRequestSchema,
   type LoggingMessageNotification,
   LoggingMessageNotificationSchema,
@@ -33,21 +35,29 @@ import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { McpCatalog } from "./catalog"
 import { McpEvent } from "@opencode-ai/schema/mcp-event"
+import type { SessionID } from "@/session/schema"
 import { McpBrowser } from "./browser"
+import { McpElicitation } from "./elicitation"
+import { elicitacionActiva } from "./elicitation-esquema"
+import * as EnCurso from "./en-curso"
 
 const DEFAULT_TIMEOUT = 30_000
-const CLIENT_OPTIONS = {
-  capabilities: {
-    // https://github.com/anomalyco/opencode/issues/11948
-    // sampling: {},
-    // https://github.com/anomalyco/opencode/issues/23066
-    // elicitation: {},
-    // https://github.com/anomalyco/opencode/issues/2308
-    roots: {},
-    // https://github.com/anomalyco/opencode/issues/28567
-    // tasks: {},
-  },
-} satisfies ClientOptions
+// Lazunox: la capacidad `elicitation: { form: {} }` solo se anuncia con LAZUNOX_MCP_ELICITATION=1 (la app lo pone en Code y
+// Chat, donde hay una persona delante). Sin la variable el servidor no la ve y, según la especificación, no debe pedir
+// formularios. El modo `url` no se anuncia (se pospone).
+function clientOptions(env: NodeJS.ProcessEnv = process.env) {
+  return {
+    capabilities: {
+      // https://github.com/anomalyco/opencode/issues/11948
+      // sampling: {},
+      ...(elicitacionActiva(env) ? { elicitation: { form: {} } } : {}),
+      // https://github.com/anomalyco/opencode/issues/2308
+      roots: {},
+      // https://github.com/anomalyco/opencode/issues/28567
+      // tasks: {},
+    },
+  } satisfies ClientOptions
+}
 
 export const Resource = Schema.Struct({
   name: Schema.String,
@@ -73,7 +83,7 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("MCP
 type MCPClient = Client
 
 function createClient(directory: string) {
-  const client = new Client({ name: "opencode", version: InstallationVersion }, CLIENT_OPTIONS)
+  const client = new Client({ name: "opencode", version: InstallationVersion }, clientOptions())
   client.setRequestHandler(ListRootsRequestSchema, () =>
     Promise.resolve({ roots: [{ uri: pathToFileURL(directory).href }] }),
   )
@@ -208,6 +218,7 @@ const layer = Layer.effect(
     const auth = yield* McpAuth.Service
     const events = yield* EventV2Bridge.Service
     const browser = yield* McpBrowser.Service
+    const elicitation = yield* McpElicitation.Service
 
     type Transport = StdioClientTransport | StreamableHTTPClientTransport | SSEClientTransport
 
@@ -439,7 +450,86 @@ const layer = Layer.effect(
       Effect.catch(() => Effect.succeed([] as number[])),
     )
 
+    // Lazunox: formularios MCP (elicitation/create). La solicitud llega por el cliente del servidor, que no sabe de sesiones:
+    // se atribuye a la llamada viva de ESE cliente (mcp/en-curso.ts). Sin llamada viva, o con llamadas de sesiones
+    // distintas, se responde `decline` sin adivinar. Modo `url` -> `decline`. Nunca se registran valores.
+    const rechazarFormulario = Effect.fn("MCP.rechazarFormulario")(function* (
+      name: string,
+      sessions: ReadonlyArray<string>,
+      reason: McpElicitation.RejectReason,
+      detalle: string,
+    ) {
+      yield* Effect.logWarning("mcp elicitation refused", { server: name, reason, detalle })
+      for (const sessionID of sessions) {
+        yield* events
+          .publish(McpElicitation.Event.Rejected, {
+            id: McpElicitation.ElicitationID.ascending(),
+            sessionID: sessionID as SessionID,
+            reason,
+          })
+          .pipe(Effect.catchCause(() => Effect.void))
+      }
+      return { action: "decline" as const }
+    })
+
+    const atenderFormulario = Effect.fn("MCP.atenderFormulario")(function* (
+      name: string,
+      client: MCPClient,
+      params: { mode?: string; message: unknown; requestedSchema?: unknown },
+      serverSignal: AbortSignal | undefined,
+    ) {
+      const atribucion = EnCurso.atribuir(client)
+      if (params.mode === "url")
+        return yield* rechazarFormulario(
+          name,
+          atribucion.kind === "sesion" ? [atribucion.sessionID] : [],
+          "schema",
+          "modo url no soportado",
+        )
+      if (atribucion.kind === "ninguna")
+        return yield* rechazarFormulario(name, [], "ambiguous", "solicitud sin llamada viva")
+      if (atribucion.kind === "ambigua")
+        return yield* rechazarFormulario(name, atribucion.sesiones, "ambiguous", "llamadas de varias sesiones")
+      const reanudar = EnCurso.pausarTodas(atribucion.llamadas)
+      return yield* elicitation
+        .ask({
+          sessionID: atribucion.sessionID as SessionID,
+          server: name,
+          callID: atribucion.callID,
+          message: params.message,
+          requestedSchema: params.requestedSchema,
+          serverSignal,
+          callSignal: EnCurso.senalDeAborto(atribucion.llamadas),
+        })
+        .pipe(Effect.ensuring(Effect.sync(reanudar)))
+    })
+
+    function registrarFormularios(name: string, client: MCPClient, bridge: EffectBridge.Shape) {
+      if (!elicitacionActiva()) return
+      // El SDK ignora `notifications/cancelled` con `requestId` 0 (`if (!requestId) return`), y el primer pedido de un servidor
+      // suele tener ese id: sin esto, un formulario que el servidor cancela no se cerraría. Se lleva un registro propio por id.
+      const abortos = new Map<string | number, AbortController>()
+      client.setNotificationHandler(CancelledNotificationSchema, (notification) => {
+        const id = notification.params.requestId
+        if (id !== undefined) abortos.get(id)?.abort(notification.params.reason)
+        // Comportamiento original del SDK para el resto de peticiones.
+        void (client as unknown as { _oncancel?: (n: unknown) => unknown })._oncancel?.(notification)
+      })
+      client.setRequestHandler(ElicitRequestSchema, (request, extra) => {
+        const propio = new AbortController()
+        abortos.set(extra.requestId, propio)
+        return bridge
+          .promise(atenderFormulario(name, client, request.params, AbortSignal.any([extra.signal, propio.signal])))
+          .finally(() => abortos.delete(extra.requestId))
+      })
+      EnCurso.alSalir(client, (call) => {
+        if (call.callID === undefined) return
+        bridge.fork(elicitation.finishCall(call.sessionID as SessionID, call.callID).pipe(Effect.ignore))
+      })
+    }
+
     function watch(s: State, name: string, client: MCPClient, bridge: EffectBridge.Shape, timeout?: number) {
+      registrarFormularios(name, client, bridge)
       client.onclose = () => {
         if (s.clients[name] !== client) return
         delete s.clients[name]
@@ -998,7 +1088,7 @@ export type AuthStatus = "authenticated" | "expired" | "not_authenticated"
 export const node = LayerNode.make({
   service: Service,
   layer: layer,
-  deps: [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node, Config.node, McpBrowser.node],
+  deps: [CrossSpawnSpawner.node, McpAuth.node, EventV2Bridge.node, Config.node, McpBrowser.node, McpElicitation.node],
 })
 
 export * as MCP from "."

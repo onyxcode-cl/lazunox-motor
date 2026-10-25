@@ -39,7 +39,7 @@ export function defs(client: Client, timeout?: number) {
   return listTools(client, timeout ?? DEFAULT_TIMEOUT).pipe(Effect.catch(() => Effect.void))
 }
 
-export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number): Tool {
+export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: number, onProgress?: () => void): Tool {
   const inputSchema: JSONSchema7 = {
     ...(mcpTool.inputSchema as JSONSchema7),
     type: "object",
@@ -62,7 +62,8 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
           signal: options.abortSignal,
           timeout,
           // The MCP SDK only sends a progress token when this hook is present, enabling timeout resets.
-          onprogress: () => {},
+          // Lazunox: `onProgress` reinicia además el temporizador propio de los formularios MCP (mcp/en-curso.ts).
+          onprogress: () => onProgress?.(),
         },
       )
       if (result.isError)

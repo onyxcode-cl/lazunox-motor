@@ -13,6 +13,7 @@ import type { Truncate } from "@/tool/truncate"
 import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { PartID } from "@/session/schema"
 import { McpCatalog } from "./catalog"
+import * as EnCurso from "./en-curso"
 import type { MCP } from "."
 
 export const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
@@ -36,17 +37,9 @@ export function formatBytes(value: number) {
   return `${Math.ceil(value / (1024 * 1024))} MB`
 }
 
-/** Una llamada MCP viva. T4 (formularios) la registra para atribuir solicitudes del servidor a una sesión. */
-export interface LiveCall {
-  readonly key: string
-  readonly sessionID: string
-  readonly messageID: string
-  readonly callID: string | undefined
-  readonly abort: AbortSignal | undefined
-}
-
-/** Se llama al entrar (`enter`) y al salir (`exit`, siempre, también con error o aborto) de la llamada al servidor. */
-export type OnCall = (phase: "enter" | "exit", call: LiveCall) => void
+// La llamada viva y su gancho viven en `en-curso.ts` (registro por cliente para los formularios MCP).
+export type LiveCall = EnCurso.LiveCall
+export type OnCall = EnCurso.OnCall
 
 export interface RunInput {
   /** Clave real `servidor_herramienta` (la que ven permisos, ganchos y la app). */
@@ -60,7 +53,7 @@ export interface RunInput {
   readonly truncate: Pick<Truncate.Interface, "output">
   readonly agent: Agent.Info
   readonly processor: { completeToolCall: (callID: string, output: any) => Effect.Effect<unknown> }
-  /** Gancho opcional de «llamada viva»; por defecto no hace nada. */
+  /** Gancho de «llamada viva». Por defecto registra la llamada en `en-curso.ts` (atribución de formularios MCP). */
   readonly onCall?: OnCall
   /** Título y metadatos extra del resultado (lo usa `mcp_call`; la llamada directa no los pone). */
   readonly title?: string
@@ -72,24 +65,32 @@ export const run = Effect.fn("McpInvocar.run")(function* (input: RunInput) {
   const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
   const execute = item.execute
   if (!execute) return yield* Effect.die(new Error(`MCP tool ${key} is not executable`))
-  const onCall: OnCall = input.onCall ?? (() => {})
-  const live: LiveCall = {
+  const call: Omit<LiveCall, "pausar"> = {
     key,
     sessionID: ctx.sessionID,
     messageID: input.messageID,
     callID: opts.toolCallId,
     abort: opts.abortSignal,
+    client: entry.client,
   }
 
   // El gancho recibe el MISMO objeto `args` que va a `callTool` (los plugins lo mutan en sitio).
   yield* input.plugin.trigger("tool.execute.before", { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId }, { args })
   const result: Awaited<ReturnType<NonNullable<typeof execute>>> = yield* Effect.gen(function* () {
     yield* ctx.ask({ permission: key, metadata: {}, patterns: ["*"], always: ["*"] })
-    return yield* Effect.acquireUseRelease(
-      Effect.sync(() => onCall("enter", live)),
-      () => Effect.promise(() => execute(args, opts)),
-      () => Effect.sync(() => onCall("exit", live)),
-    )
+    // Con formularios MCP activos, el tiempo de la llamada lo mide un temporizador que se pausa mientras haya un formulario
+    // abierto (ver `en-curso.ts`); sin la variable `t` es transparente y se ejecuta exactamente lo de antes.
+    return yield* EnCurso.conLlamadaViva({
+      call,
+      timeoutMs: entry.timeout,
+      onCall: input.onCall,
+      use: (t) =>
+        Effect.promise(() => {
+          if (!t.activo) return execute(args, opts)
+          const vivo = McpCatalog.convertTool(entry.def, entry.client, t.timeout, t.onprogress)
+          return vivo.execute!(args, { ...opts, abortSignal: t.signal })
+        }),
+    })
   }).pipe(
     Effect.withSpan("Tool.execute", {
       attributes: {

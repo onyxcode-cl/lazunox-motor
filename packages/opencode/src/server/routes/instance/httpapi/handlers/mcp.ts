@@ -1,13 +1,15 @@
 import { MCP } from "@/mcp"
+import { McpElicitation } from "@/mcp/elicitation"
 import { Effect, Schema } from "effect"
 import { HttpApiBuilder, HttpApiError } from "effect/unstable/httpapi"
 import { InstanceHttpApi } from "../api"
-import { McpServerNotFoundError } from "../errors"
-import { AddPayload, AuthCallbackPayload, StatusMap, UnsupportedOAuthError } from "../groups/mcp"
+import { McpElicitationInvalidReplyError, McpElicitationNotFoundError, McpServerNotFoundError } from "../errors"
+import { AddPayload, AuthCallbackPayload, ElicitationReplyPayload, StatusMap, UnsupportedOAuthError } from "../groups/mcp"
 
 export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handlers) =>
   Effect.gen(function* () {
     const mcp = yield* MCP.Service
+    const elicitation = yield* McpElicitation.Service
 
     const status = Effect.fn("McpHttpApi.status")(function* () {
       return yield* mcp.status()
@@ -98,6 +100,39 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       return true
     })
 
+    const elicitationList = Effect.fn("McpHttpApi.elicitationList")(function* () {
+      return yield* elicitation.list()
+    })
+
+    const elicitationReply = Effect.fn("McpHttpApi.elicitationReply")(function* (ctx: {
+      params: { requestID: McpElicitation.ElicitationID }
+      payload: typeof ElicitationReplyPayload.Type
+    }) {
+      yield* elicitation
+        .reply({ requestID: ctx.params.requestID, action: ctx.payload.action, content: ctx.payload.content })
+        .pipe(
+          Effect.catchTag("McpElicitation.NotFoundError", (error) =>
+            Effect.fail(
+              new McpElicitationNotFoundError({
+                requestID: String(error.requestID),
+                message: `MCP form request not found: ${error.requestID}`,
+              }),
+            ),
+          ),
+          // `errors` solo trae nombres de campo y motivo, nunca los valores escritos.
+          Effect.catchTag("McpElicitation.InvalidReplyError", (error) =>
+            Effect.fail(
+              new McpElicitationInvalidReplyError({
+                requestID: String(error.requestID),
+                message: error.message,
+                errors: error.errors,
+              }),
+            ),
+          ),
+        )
+      return true
+    })
+
     return handlers
       .handle("status", status)
       .handle("add", add)
@@ -107,5 +142,7 @@ export const mcpHandlers = HttpApiBuilder.group(InstanceHttpApi, "mcp", (handler
       .handle("authRemove", authRemove)
       .handle("connect", connect)
       .handle("disconnect", disconnect)
+      .handle("elicitationList", elicitationList)
+      .handle("elicitationReply", elicitationReply)
   }),
 )

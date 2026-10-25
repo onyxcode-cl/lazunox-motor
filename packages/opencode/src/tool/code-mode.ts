@@ -4,6 +4,7 @@ import { Cause, Effect, Schema } from "effect"
 import { CodeMode, Tool as SandboxTool, toolError } from "@opencode-ai/codemode"
 import { MCP } from "@/mcp"
 import { McpCatalog } from "@/mcp/catalog"
+import * as McpEnCurso from "@/mcp/en-curso"
 import { Agent } from "@/agent/agent"
 import { Session } from "@/session/session"
 import { SessionID } from "@/session/schema"
@@ -186,26 +187,40 @@ const invokeChildTool = Effect.fn("CodeMode.invokeChildTool")(function* (input: 
   const result: CallToolResult = yield* Effect.gen(function* () {
     yield* input.ctx.ask({ permission: input.entry.key, metadata: {}, patterns: ["*"], always: ["*"] })
     // Deliberately mirrors McpCatalog.convertTool's transport call so the MCP service stays free of tool-loop concerns.
-    return yield* Effect.promise(async () => {
-      const raw = await input.entry.tool.client.callTool(
-        { name: input.entry.tool.def.name, arguments: input.args },
-        CallToolResultSchema,
-        {
-          resetTimeoutOnProgress: true,
-          signal: input.ctx.abort,
-          timeout: input.entry.tool.timeout,
-          // The MCP SDK only sends a progress token when this hook is present, enabling timeout resets.
-          onprogress: () => {},
-        },
-      )
-      if (raw.isError)
-        throw new Error(
-          raw.content
-            .flatMap((item) => (item.type === "text" ? [item.text] : []))
-            .filter((text) => text.trim())
-            .join("\n\n") || "MCP tool returned an error",
-        )
-      return raw
+    // Lazunox: la llamada se registra como «viva» (formularios MCP) y, con la variable activa, su tiempo lo mide un
+    // temporizador que se pausa mientras haya un formulario abierto (mcp/en-curso.ts).
+    return yield* McpEnCurso.conLlamadaViva({
+      call: {
+        key: input.entry.key,
+        sessionID: input.ctx.sessionID,
+        messageID: input.ctx.messageID,
+        callID: input.callID,
+        abort: input.ctx.abort,
+        client: input.entry.tool.client,
+      },
+      timeoutMs: input.entry.tool.timeout,
+      use: (t) =>
+        Effect.promise(async () => {
+          const raw = await input.entry.tool.client.callTool(
+            { name: input.entry.tool.def.name, arguments: input.args },
+            CallToolResultSchema,
+            {
+              resetTimeoutOnProgress: true,
+              signal: t.signal,
+              timeout: t.timeout,
+              // The MCP SDK only sends a progress token when this hook is present, enabling timeout resets.
+              onprogress: () => t.onprogress(),
+            },
+          )
+          if (raw.isError)
+            throw new Error(
+              raw.content
+                .flatMap((item) => (item.type === "text" ? [item.text] : []))
+                .filter((text) => text.trim())
+                .join("\n\n") || "MCP tool returned an error",
+            )
+          return raw
+        }),
     })
   }).pipe(
     Effect.withSpan("Tool.execute", {

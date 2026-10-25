@@ -140,6 +140,26 @@ export class PermissionNotFoundError extends Schema.TaggedErrorClass<PermissionN
   { httpApiStatus: 404 },
 ) {}
 
+export class McpElicitationNotFoundError extends Schema.TaggedErrorClass<McpElicitationNotFoundError>()(
+  "McpElicitationNotFoundError",
+  {
+    requestID: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 404 },
+) {}
+
+/** Respuesta de formulario MCP inválida. `errors` solo lleva nombres de campo y motivo, nunca valores. */
+export class McpElicitationInvalidReplyError extends Schema.TaggedErrorClass<McpElicitationInvalidReplyError>()(
+  "McpElicitationInvalidReplyError",
+  {
+    requestID: Schema.String,
+    message: Schema.String,
+    errors: Schema.Array(Schema.Struct({ campo: Schema.String, motivo: Schema.String })),
+  },
+  { httpApiStatus: 400 },
+) {}
+
 export class McpServerNotFoundError extends Schema.TaggedErrorClass<McpServerNotFoundError>()(
   "McpServerNotFoundError",
   {

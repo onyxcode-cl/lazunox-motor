@@ -58,6 +58,18 @@ Base interna, **todavía sin conectar** al cliente MCP (no hay cambio observable
 - Eventos en `packages/schema/src/mcp-event.ts`: `mcp.elicitation.asked|replied|rejected` (3 más en el inventario público; `event-manifest.test.ts` pasa de 88 a 91). Los archivos generados del SDK (`packages/sdk`) no se regeneraron: la app usa `fetch` crudo.
 - Pruebas: `packages/opencode/test/lazunox/mcp-elicitation.test.ts`.
 
+## Formularios MCP - fase B2 (conectados al cliente MCP)
+
+Con `LAZUNOX_MCP_ELICITATION=1` los formularios de los conectores llegan a la app; **sin la variable no cambia nada** (el servidor no ve la capacidad, el `timeout` de las llamadas lo corta el SDK como antes). Interruptor de emergencia: quitar la variable.
+
+- **Capacidad** (`mcp/index.ts`): se anuncia `elicitation: { form: {} }` solo con la variable (el modo `url` no se anuncia; si llegara una solicitud `url` se responde `decline`). El manejador `ElicitRequestSchema` se registra por cliente en `watch`.
+- **Atribución** (`mcp/en-curso.ts`): registro de llamadas MCP vivas **por cliente** (servidor y carpeta). Lo alimentan `McpInvocar.run` (llamada directa y `mcp_call`) y `invokeChildTool` de Code Mode mediante `conLlamadaViva` (entrar/salir siempre, también con error o aborto). Una solicitud se atribuye a la sesión de las llamadas vivas de ESE cliente; con 0 llamadas vivas, o llamadas de sesiones distintas, se responde `decline` sin preguntar (con varias sesiones se publica `rejected/ambiguous` en cada una; sin llamada viva no hay sesión a quien avisar y solo queda el registro). `callID` solo se manda si hay una única llamada viva.
+- **Respuestas al servidor**: `accept` con los valores validados por el motor, `decline` (rechazado por la persona, secreto, esquema, ambiguo) o `cancel` (tiempo, Detener, cancelación del servidor). `notifications/cancelled` del servidor cierra el formulario (`rejected/server-cancel`). Al terminar la llamada se llama a `McpElicitation.finishCall`.
+- **Temporizador pausable**: con la variable, `McpInvocar.run` e `invokeChildTool` pasan al SDK un tope de 1 h y miden el `timeout` real con un temporizador propio (`crearTemporizador`) que se **pausa** mientras haya un formulario abierto de la llamada (se reanuda completo al contestar) y se reinicia con el progreso (`onprogress`, como `resetTimeoutOnProgress`). El error al agotarse es `MCP request timed out after N ms`.
+- **Detener**: `SessionPrompt.cancel` llama a `McpElicitation.cancelSession(sessionID, "abort")` antes de cancelar el turno: `rejected/abort` y el servidor recibe `cancel`. Abortar la llamada (señal del turno o de la celda) hace lo mismo.
+- **Rutas HTTP nuevas** (`server/routes/instance/httpapi/groups/mcp.ts` + `handlers/mcp.ts`): `GET /mcp/elicitation` (operationId `mcp.elicitation.list`, lista de `McpElicitationRequest`) y `POST /mcp/elicitation/{requestID}/reply` (`mcp.elicitation.reply`, cuerpo `{ action: accept|decline|cancel, content? }`, respuesta `true`; `404 McpElicitationNotFoundError`, `400 McpElicitationInvalidReplyError` con `errors: [{ campo, motivo }]`, nunca valores). **El contrato de rutas de la app (`resources/opencode-bin/api-routes.json`) debe regenerarse con este motor.**
+- Pruebas: `packages/opencode/test/lazunox/mcp-elicitation-b2.test.ts` (servidor real por stdio: `test/fixture/mcp-elicitation-stdio.ts`), ampliación de `test/server/httpapi-exercise/index.ts` y `httpapi-public-openapi.test.ts`.
+
 ## Estado
 
 - Paso 2 hecho: compila desde el código fuente, repetible, pasa el contrato de Lazunox.

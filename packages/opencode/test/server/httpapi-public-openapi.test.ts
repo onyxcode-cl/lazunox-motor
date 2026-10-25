@@ -317,6 +317,16 @@ describe("PublicApi OpenAPI v2 errors", () => {
     }
   })
 
+  test("documents MCP form (elicitation) routes and errors", () => {
+    const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
+
+    expect(spec.paths["/mcp/elicitation"]?.get).toBeDefined()
+    const reply = spec.paths["/mcp/elicitation/{requestID}/reply"]?.post
+    expect(reply).toBeDefined()
+    expect(componentNames(reply?.responses?.["404"])).toContain("McpElicitationNotFoundError")
+    expect(componentNames(reply?.responses?.["400"])).toContain("McpElicitationInvalidReplyError")
+  })
+
   test("documents PTY resource and ticket errors", () => {
     const spec = OpenApi.fromApi(PublicApi) as OpenApiSpec
 
