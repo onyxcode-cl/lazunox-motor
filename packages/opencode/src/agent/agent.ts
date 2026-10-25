@@ -48,6 +48,8 @@ export const Info = Schema.Struct({
       providerID: ProviderV2.ID,
     }),
   ),
+  // Lazunox: el ayudante usa el modelo pequeño del mismo proveedor que el padre (`model: "small"`); sin pequeño hereda el del padre.
+  modelSmall: Schema.optional(Schema.Boolean),
   variant: Schema.optional(Schema.String),
   prompt: Schema.optional(Schema.String),
   options: Schema.Record(Schema.String, Schema.Unknown),
@@ -212,6 +214,8 @@ const layer = Layer.effect(
             ),
             description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
             prompt: PROMPT_EXPLORE,
+            // Lazunox: lectura barata, modelo pequeño del mismo proveedor que el padre (si no hay, hereda).
+            modelSmall: true,
             options: {},
             mode: "subagent",
             native: true,
@@ -278,7 +282,13 @@ const layer = Layer.effect(
               options: {},
               native: false,
             }
-          if (value.model) item.model = Provider.parseModel(value.model)
+          if (value.model === "small") {
+            item.modelSmall = true
+            item.model = undefined
+          } else if (value.model) {
+            item.model = Provider.parseModel(value.model)
+            item.modelSmall = undefined
+          }
           item.variant = value.variant ?? item.variant
           item.prompt = value.prompt ?? item.prompt
           item.description = value.description ?? item.description
