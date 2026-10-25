@@ -148,6 +148,7 @@ describe("opencode run con banderas (proceso)", () => {
         yield* Effect.promise(() => Bun.write(`${home}/esquema.json`, JSON.stringify(ESQUEMA)))
         yield* llm.tool("StructuredOutput", { respuesta: 4, detalle: "dos más dos" })
         const r = yield* opencode.run("¿cuánto es 2+2?", {
+          timeoutMs: 80_000,
           format: "json",
           extraArgs: ["--json-schema", "esquema.json"],
         })
@@ -172,7 +173,10 @@ describe("opencode run con banderas (proceso)", () => {
       Effect.gen(function* () {
         yield* Effect.promise(() => Bun.write(`${home}/esquema.json`, JSON.stringify(ESQUEMA)))
         yield* llm.tool("StructuredOutput", { respuesta: "cuatro" })
-        const r = yield* opencode.run("¿cuánto es 2+2?", { extraArgs: ["--json-schema", "esquema.json"] })
+        const r = yield* opencode.run("¿cuánto es 2+2?", {
+          timeoutMs: 80_000,
+          extraArgs: ["--json-schema", "esquema.json"],
+        })
         expect(r.exitCode).toBe(CODIGO_SALIDA.esquema_invalido)
         expect(r.stderr).toContain("no cumple el esquema")
         expect(r.stderr).toContain("respuesta")
@@ -187,10 +191,10 @@ describe("opencode run con banderas (proceso)", () => {
     ({ home, llm, opencode }) =>
       Effect.gen(function* () {
         yield* Effect.promise(() => Bun.write(`${home}/roto.json`, "{no"))
-        const falta = yield* opencode.run("hola", { extraArgs: ["--json-schema", "nada.json"] })
+        const falta = yield* opencode.run("hola", { timeoutMs: 80_000, extraArgs: ["--json-schema", "nada.json"] })
         expect(falta.exitCode).not.toBe(0)
         expect(falta.stderr).toContain("no se pudo leer nada.json")
-        const roto = yield* opencode.run("hola", { extraArgs: ["--json-schema", "roto.json"] })
+        const roto = yield* opencode.run("hola", { timeoutMs: 80_000, extraArgs: ["--json-schema", "roto.json"] })
         expect(roto.exitCode).not.toBe(0)
         expect(roto.stderr).toContain("no es JSON válido")
         expect(yield* llm.calls).toBe(0)
@@ -205,6 +209,7 @@ describe("opencode run con banderas (proceso)", () => {
         for (let i = 1; i <= 6; i++) yield* llm.tool("bash", bashEco(i))
         yield* llm.text("fin")
         const r = yield* opencode.run("haz varias cosas", {
+          timeoutMs: 80_000,
           format: "json",
           permission: ejecutar,
           extraArgs: ["--max-steps", "2"],
@@ -232,6 +237,7 @@ describe("opencode run con banderas (proceso)", () => {
           yield* llm.push(reply().tool("bash", bashEco(i)).usage({ input: 400, output: 100 }))
         yield* llm.text("fin")
         const r = yield* opencode.run("haz varias cosas", {
+          timeoutMs: 80_000,
           format: "json",
           permission: ejecutar,
           extraArgs: ["--presupuesto-tokens", "900"],
@@ -254,6 +260,7 @@ describe("opencode run con banderas (proceso)", () => {
         yield* llm.push(reply().tool("bash", bashEco(1)).usage({ input: 50, output: 10 }))
         yield* llm.text("listo", { usage: { input: 60, output: 5 } })
         const r = yield* opencode.run("una cosa", {
+          timeoutMs: 80_000,
           permission: ejecutar,
           extraArgs: ["--max-steps", "10", "--informe", "informe.json"],
         })
@@ -275,10 +282,10 @@ describe("opencode run con banderas (proceso)", () => {
         yield* llm.tool("bash", { command: "touch negado", description: "Crea un archivo" })
         yield* llm.text("seguí sin el permiso")
         const r = yield* opencode.run("crea un archivo", {
+          timeoutMs: 80_000,
           format: "json",
           permission: { bash: "ask" },
           extraArgs: ["--permisos", "ninguno"],
-          timeoutMs: 60_000,
         })
         opencode.expectExit(r, 0)
         const ev = opencode.parseJsonEvents(r.stdout)
@@ -294,16 +301,36 @@ describe("opencode run con banderas (proceso)", () => {
   )
 
   cliIt.concurrent(
+    "un proveedor que sigue fallando (cuota agotada) corta la ejecución con motivo de error en vez de esperar",
+    ({ llm, opencode }) =>
+      Effect.gen(function* () {
+        for (let i = 0; i < 8; i++)
+          yield* llm.error(429, { error: { message: "Free usage limit reached", type: "FreeUsageLimitError" } })
+        const r = yield* opencode.run("haz algo", {
+          format: "json",
+          extraArgs: ["--max-steps", "5"],
+          timeoutMs: 80_000,
+        })
+        expect(r.exitCode).toBe(CODIGO_SALIDA.error)
+        const inf = informeDe(r.stdout, opencode.parseJsonEvents)
+        expect(inf?.motivo).toBe("error")
+        expect(inf?.detalle).toContain("reintentos")
+        expect(r.durationMs).toBeLessThan(75_000)
+      }),
+    90_000,
+  )
+
+  cliIt.concurrent(
     "--permisos ninguno no se combina con --auto; los topes deben ser enteros positivos",
     ({ opencode }) =>
       Effect.gen(function* () {
-        const a = yield* opencode.run("hola", { extraArgs: ["--permisos", "ninguno", "--auto"] })
+        const a = yield* opencode.run("hola", { timeoutMs: 80_000, extraArgs: ["--permisos", "ninguno", "--auto"] })
         expect(a.exitCode).not.toBe(0)
         expect(a.stderr).toContain("--permisos ninguno no se puede combinar con --auto")
-        const b = yield* opencode.run("hola", { extraArgs: ["--max-steps", "0"] })
+        const b = yield* opencode.run("hola", { timeoutMs: 80_000, extraArgs: ["--max-steps", "0"] })
         expect(b.exitCode).not.toBe(0)
         expect(b.stderr).toContain("--max-steps debe ser un entero positivo")
-        const c = yield* opencode.run("hola", { extraArgs: ["--presupuesto-tokens", "-5"] })
+        const c = yield* opencode.run("hola", { timeoutMs: 80_000, extraArgs: ["--presupuesto-tokens", "-5"] })
         expect(c.exitCode).not.toBe(0)
         expect(c.stderr).toContain("--presupuesto-tokens debe ser un entero positivo")
       }),

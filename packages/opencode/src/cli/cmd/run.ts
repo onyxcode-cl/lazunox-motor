@@ -756,6 +756,11 @@ export const RunCommand = effectCmd({
         }
         const sessionID = sess.id
 
+        // Lazunox: si el proveedor sigue fallando tras varios reintentos (p. ej. «Free usage limit reached»), una ejecución sin
+        // supervisión no se queda esperando: se corta y el informe lleva el motivo.
+        let detalleCorte: string | undefined
+        const REINTENTOS_MAX = 3
+
         function emit(type: string, data: Record<string, unknown>) {
           if (args.format === "json") {
             process.stdout.write(
@@ -888,6 +893,22 @@ export const RunCommand = effectCmd({
             }
 
             if (
+              sinSupervision &&
+              event.type === "session.status" &&
+              event.properties.sessionID === sessionID &&
+              event.properties.status.type === "retry" &&
+              event.properties.status.attempt >= REINTENTOS_MAX &&
+              !cortado
+            ) {
+              cortado = true
+              detalleCorte = `El proveedor sigue fallando tras ${event.properties.status.attempt} reintentos: ${event.properties.status.message}`
+              error = error ? error + EOL + detalleCorte : detalleCorte
+              if (!emit("error", { error: { name: "ReintentosAgotados", data: { message: detalleCorte } } }))
+                UI.error(detalleCorte)
+              void client.session.abort({ sessionID }).catch(() => {})
+            }
+
+            if (
               event.type === "session.status" &&
               event.properties.sessionID === sessionID &&
               event.properties.status.type === "idle"
@@ -963,11 +984,11 @@ export const RunCommand = effectCmd({
               corte ??
               (input.esquema && !input.esquema.valido
                 ? "esquema_invalido"
-                : input.error || input.fallo
+                : input.error || input.fallo || detalleCorte
                   ? "error"
                   : "completado")
             const informe: Informe = medidor.informe(motivo, {
-              detalle: input.fallo ?? input.error,
+              detalle: detalleCorte ?? input.fallo ?? input.error,
               esquema: input.esquema,
             })
             if (motivo === "esquema_invalido" && input.esquema)
@@ -1012,7 +1033,7 @@ export const RunCommand = effectCmd({
             ...(esquema ? { format: { type: "json_schema" as const, schema: esquema, retryCount: 0 } } : {}),
           })
           // Un corte por pasos o presupuesto aborta la sesión: el error de «abortado» que devuelve el prompt es esperado.
-          if (result.error && !medidor.corte()) {
+          if (result.error && !medidor.corte() && !detalleCorte) {
             if (!emit("error", { error: result.error })) UI.error(formatRunError(result.error))
             process.exitCode = 1
             await informar({ fallo: formatRunError(result.error) })
