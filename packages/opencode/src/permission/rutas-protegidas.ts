@@ -8,13 +8,25 @@ const FILES = new Set([".mcp.json", ".gitmodules", ".gitattributes", ".gitconfig
 export const activo = (env: NodeJS.ProcessEnv = process.env) => env.LAZUNOX_PROTECTED_PATHS !== "0"
 
 /** `pattern` es la ruta tal como la pide la herramienta (relativa al proyecto o absoluta; con / o \). */
-export const esProtegida = (pattern: string) => {
+export const esProtegida = (pattern: string, env: NodeJS.ProcessEnv = process.env) => {
   const partes = pattern
     .replaceAll("\\", "/")
     .split("/")
     .map((p) => p.trim().toLowerCase())
     .filter((p) => p && p !== ".")
   if (partes.length === 0) return false
+  // Lazunox (2C, modo plan): los planes (`.opencode/plans/<nombre>.md`, relativos al proyecto) son markdown inerte que el motor
+  // nunca carga como instrucciones ni agentes; sin esta excepción cada escritura del plan pediría permiso. Solo con LAZUNOX_PLAN=1.
+  if (
+    (env.LAZUNOX_PLAN === "1" || env.LAZUNOX_PLAN === "true") &&
+    partes.length === 3 &&
+    partes[0] === ".opencode" &&
+    partes[1] === "plans" &&
+    partes[2]!.endsWith(".md") &&
+    partes[2] !== ".md"
+  ) {
+    return false
+  }
   if (partes.some((p) => DIRS.has(p))) return true
   return FILES.has(partes[partes.length - 1]!)
 }

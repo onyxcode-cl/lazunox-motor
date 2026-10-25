@@ -1,7 +1,7 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
-import { PlanExitTool } from "./plan"
+import { PlanEnterTool, PlanExitTool } from "./plan"
 import { Session } from "@/session/session"
 import { QuestionTool } from "./question"
 import { ShellTool, ShellWaitTool } from "./shell"
@@ -109,6 +109,7 @@ const layer = Layer.effect(
     const todo = yield* TodoWriteTool
     const lsptool = yield* LspTool
     const plan = yield* PlanExitTool
+    const planEnter = yield* PlanEnterTool
     const webfetch = yield* WebFetchTool
     const websearch = yield* WebSearchTool
     const shell = yield* ShellTool
@@ -233,6 +234,7 @@ const layer = Layer.effect(
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
+          plan_enter: Tool.init(planEnter),
           ...(codeModeTool ? { execute: Tool.init(codeModeTool) } : {}),
           ...(codeModeWaitTool ? { execute_wait: Tool.init(codeModeWaitTool) } : {}),
         })
@@ -261,6 +263,11 @@ const layer = Layer.effect(
             ...(tool.execute_wait ? [tool.execute_wait] : []),
             ...(flags.experimentalLspTool ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
+            // Lazunox (2C, P08): modo plan para la app, solo con LAZUNOX_PLAN=1 y en los clientes que muestran preguntas
+            // (la app lanza el motor sin OPENCODE_CLIENT, o sea "cli"). Si ya entró por la bandera experimental no se repite.
+            ...(flags.lazunoxPlan && ["app", "cli", "desktop"].includes(flags.client)
+              ? [...(flags.experimentalPlanMode && flags.client === "cli" ? [] : [tool.plan]), tool.plan_enter]
+              : []),
           ],
           task: tool.task,
           read: tool.read,

@@ -1,6 +1,7 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import type { Agent } from "./agent"
 import { topeDelPadre } from "./restringir-permisos"
+import { topeDeModoPlan } from "@/session/plan-modo"
 
 /**
  * Build the `permission` ruleset for a subagent's session when it's spawned
@@ -35,6 +36,8 @@ export function deriveSubagentSessionPermission(input: {
           input.subagent.estricto,
         )
       : []),
+    // Lazunox (2C): un ayudante lanzado desde el modo plan hereda su tope (sin edición fuera del plan y shell de solo lectura).
+    ...(topeDeModoPlan(input.parentAgentPermission, input.parentSessionPermission) as PermissionV1.Ruleset),
     ...(canTodo ? [] : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
     ...(canTask ? [] : [{ permission: "task" as const, pattern: "*" as const, action: "deny" as const }]),
   ]

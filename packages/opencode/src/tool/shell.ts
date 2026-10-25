@@ -25,6 +25,7 @@ import { ShellBackground, type Job } from "./shell/background"
 import { LazunoxWake } from "./lazunox-wake"
 import { TrabajosDisco } from "./shell/trabajos-disco"
 import { utf8Command } from "./shell/utf8-windows"
+import { comandoDeSoloLectura, MENSAJE_SOLO_LECTURA } from "@/session/plan-modo"
 
 export { Parameters } from "./shell/prompt"
 
@@ -813,6 +814,11 @@ export const ShellTool = Tool.define(
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
+              // Lazunox (2C): en modo plan el shell solo lee. Va antes de cualquier otra cosa (también del permiso).
+              if (ctx.extra?.["soloLectura"] === true) {
+                const lectura = comandoDeSoloLectura(params.command)
+                if (!lectura.ok) throw new Error(MENSAJE_SOLO_LECTURA(lectura.motivo))
+              }
               const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)

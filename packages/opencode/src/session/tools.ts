@@ -31,6 +31,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { marcaModoPlan } from "./plan-modo"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -63,7 +64,13 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     abort: options.abortSignal!,
     messageID: input.processor.message.id,
     callID: options.toolCallId,
-    extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps: input.promptOps },
+    extra: {
+      model: input.model,
+      bypassAgentCheck: input.bypassAgentCheck,
+      promptOps: input.promptOps,
+      // Lazunox (2C): en modo plan (agente plan o ayudante lanzado desde él) el shell solo puede leer.
+      soloLectura: flags.lazunoxPlan && (input.agent.name === "plan" || marcaModoPlan(input.session.permission)),
+    },
     agent: input.agent.name,
     messages: input.messages,
     metadata: (val) =>
@@ -86,7 +93,15 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           ...req,
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
+          ruleset: Permission.merge(
+            input.agent.permission,
+            input.session.permission ?? [],
+            // Lazunox (2C): en modo plan las reglas de `edit` del agente van al FINAL: un `* allow` de la sesión (modo «sin preguntar»)
+            // no puede abrir la edición fuera del archivo del plan.
+            ...(flags.lazunoxPlan && input.agent.name === "plan"
+              ? [input.agent.permission.filter((rule) => rule.permission === "edit")]
+              : []),
+          ),
         })
         .pipe(Effect.orDie),
   })

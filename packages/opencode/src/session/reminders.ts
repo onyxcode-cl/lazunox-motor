@@ -11,6 +11,7 @@ import { Session } from "./session"
 import PROMPT_PLAN from "./prompt/plan.txt"
 import BUILD_SWITCH from "./prompt/build-switch.txt"
 import PLAN_MODE from "./prompt/plan-mode.txt"
+import PLAN_APP from "./prompt/plan-app.txt"
 
 export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   messages: SessionV1.WithParts[]
@@ -23,7 +24,8 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
   const userMessage = input.messages.findLast((msg) => msg.info.role === "user")
   if (!userMessage) return input.messages
 
-  if (!flags.experimentalPlanMode) {
+  // Lazunox (2C): con LAZUNOX_PLAN=1 el modo plan de la app usa el mismo ciclo que el experimental (aviso al entrar, cambio a build).
+  if (!flags.experimentalPlanMode && !flags.lazunoxPlan) {
     if (input.agent.name === "plan") {
       userMessage.parts.push({
         id: PartID.ascending(),
@@ -78,7 +80,7 @@ export const apply = Effect.fn("SessionReminders.apply")(function* (input: {
     messageID: userMessage.info.id,
     sessionID: userMessage.info.sessionID,
     type: "text",
-    text: PLAN_MODE.replace("${planInfo}", () =>
+    text: (flags.lazunoxPlan ? PLAN_APP : PLAN_MODE).replace("${planInfo}", () =>
       exists
         ? `A plan file already exists at ${plan}. You can read it and make incremental edits using the edit tool.`
         : `No plan file exists yet. You should create your plan at ${plan} using the write tool.`,
