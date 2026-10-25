@@ -91,7 +91,7 @@ export const SessionListQuery = Schema.Struct({
 // Lazunox: trabajos en segundo plano de una sesión (contrato motor-app, plan 1.7).
 export const TrabajoInfo = Schema.Struct({
   id: Schema.String,
-  tipo: Schema.Union([Schema.Literal("shell"), Schema.Literal("celda")]),
+  tipo: Schema.Union([Schema.Literal("shell"), Schema.Literal("celda"), Schema.Literal("ayudante")]),
   titulo: Schema.String,
   estado: Schema.Union([
     Schema.Literal("en_curso"),
@@ -109,6 +109,15 @@ export const TrabajosResponse = Schema.Struct({ trabajos: Schema.Array(TrabajoIn
 })
 export const TrabajoTerminarResponse = Schema.Struct({ ok: Schema.Boolean }).annotate({
   identifier: "TrabajoTerminarResponse",
+})
+// Lazunox (2B): reanudar un ayudante de fondo perdido. `motivo` solo viene con ok:false.
+export const TrabajoReanudarResponse = Schema.Struct({
+  ok: Schema.Boolean,
+  motivo: Schema.optionalKey(
+    Schema.Union([Schema.Literal("no_existe"), Schema.Literal("ya_en_curso"), Schema.Literal("tope")]),
+  ),
+}).annotate({
+  identifier: "TrabajoReanudarResponse",
 })
 
 // Lazunox: rebobinar por turno (plan PLAN-REBOBINAR-Y-COMPACTACION.md, 2.A). Solo rutas y cifras, nunca contenido salvo el diff bajo demanda.
@@ -214,6 +223,7 @@ export const ExperimentalPaths = {
   sessionBackground: "/experimental/session/:sessionID/background",
   sessionTrabajos: "/experimental/session/:sessionID/trabajos",
   sessionTrabajoTerminar: "/experimental/session/:sessionID/trabajos/:id/terminar",
+  sessionTrabajoReanudar: "/experimental/session/:sessionID/trabajos/:id/reanudar",
   sessionTurnos: "/experimental/session/:sessionID/turnos",
   sessionTurnoDiff: "/experimental/session/:sessionID/turnos/:messageID/diff",
   sessionRebobinarRevision: "/experimental/session/:sessionID/rebobinar/:messageID",
@@ -388,6 +398,18 @@ export const ExperimentalApi = HttpApi.make("experimental")
             summary: "Terminate a background job",
             description:
               "Kill the process group of a background shell or interrupt a Code Mode cell of this session. ok is false if it does not exist, already finished or belongs to another session.",
+          }),
+        ),
+        HttpApiEndpoint.post("sessionTrabajoReanudar", ExperimentalPaths.sessionTrabajoReanudar, {
+          params: { sessionID: SessionID, id: Schema.String },
+          query: WorkspaceRoutingQuery,
+          success: described(TrabajoReanudarResponse, "Whether the lost subagent was resumed"),
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.trabajos.reanudar",
+            summary: "Resume a lost background subagent",
+            description:
+              "Resume a background subagent of this session that was lost when the engine restarted: starts a new turn in its child session with a fixed continuation message, as a background job. ok is false (with motivo no_existe, ya_en_curso or tope) if it is not a lost subagent of this session, is already running, or the simultaneous subagent limit was reached.",
           }),
         ),
         HttpApiEndpoint.get("sessionTurnos", ExperimentalPaths.sessionTurnos, {

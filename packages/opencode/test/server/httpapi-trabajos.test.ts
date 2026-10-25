@@ -22,6 +22,8 @@ type Vista = { id: string; tipo: string; titulo: string; estado: string; codigo:
 
 const get = (sessionID: string, directory: string) =>
   requestInDirectory(`/experimental/session/${sessionID}/trabajos`, directory)
+const reanudar = (sessionID: string, id: string, directory: string) =>
+  requestInDirectory(`/experimental/session/${sessionID}/trabajos/${id}/reanudar`, directory, { method: "POST" })
 const terminar = (sessionID: string, id: string, directory: string) =>
   requestInDirectory(`/experimental/session/${sessionID}/trabajos/${id}/terminar`, directory, { method: "POST" })
 
@@ -124,6 +126,30 @@ describe("rutas de trabajos", () => {
       const otro = yield* json<{ trabajos: Vista[] }>(yield* get("ses_dos", directory))
       expect(otro.trabajos.find((t) => t.id === "sh_perdidoA")).toBeUndefined()
       TrabajosDisco.pruneTombstones(Date.now() + TrabajosDisco.LAPIDA_TTL_MS + 1)
+    }),
+  )
+  it.instance("un ayudante perdido sale como tipo «ayudante»; reanudar exige pertenencia a la sesión (lápida ajena o forjada: no_existe)", () =>
+    Effect.gen(function* () {
+      const { directory } = yield* TestInstance
+      const sessions = yield* Session.Service
+      const padre = yield* sessions.create({ title: "padre" })
+      const otra = yield* sessions.create({ title: "otra" })
+      const hija = yield* sessions.create({ parentID: padre.id, title: "hija" })
+      created.push(hija.id)
+      TrabajosDisco.writeTombstone({ id: hija.id, tipo: "ayudante", sessionID: padre.id, directory, titulo: "hija", inicio: 7 })
+
+      const mio = yield* json<{ trabajos: Vista[] }>(yield* get(padre.id, directory))
+      expect(mio.trabajos.find((t) => t.id === hija.id)).toMatchObject({ tipo: "ayudante", estado: "perdido", titulo: "hija" })
+      const ajeno = yield* json<{ trabajos: Vista[] }>(yield* get(otra.id, directory))
+      expect(ajeno.trabajos.find((t) => t.id === hija.id)).toBeUndefined()
+
+      expect(yield* json(yield* reanudar(otra.id, hija.id, directory))).toEqual({ ok: false, motivo: "no_existe" })
+      expect(yield* json(yield* reanudar(padre.id, "ses_noexiste", directory))).toEqual({ ok: false, motivo: "no_existe" })
+      expect(yield* json(yield* reanudar(padre.id, "sh_perdidoX", directory))).toEqual({ ok: false, motivo: "no_existe" })
+      // lápida forjada para la sesión «otra» con una hija que cuelga de «padre»
+      TrabajosDisco.writeTombstone({ id: hija.id, tipo: "ayudante", sessionID: otra.id, directory, titulo: "forjada", inicio: 7 })
+      expect(yield* json(yield* reanudar(otra.id, hija.id, directory))).toEqual({ ok: false, motivo: "no_existe" })
+      TrabajosDisco.removeTombstone(hija.id)
     }),
   )
 })

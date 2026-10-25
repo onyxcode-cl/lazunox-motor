@@ -624,6 +624,18 @@ const scenarios: Scenario[] = [
       check((body as { ok?: unknown }).ok === false, "terminar should report ok:false for an unknown job")
     }),
   http.protected
+    .post("/experimental/session/{sessionID}/trabajos/{id}/reanudar", "experimental.session.trabajos.reanudar")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Trabajos reanudar owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/trabajos/{id}/reanudar", { sessionID: ctx.state.id, id: "ses_noexiste" }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check((body as { ok?: unknown }).ok === false, "reanudar should report ok:false for an unknown subagent")
+      check((body as { motivo?: unknown }).motivo === "no_existe", "reanudar should say no_existe for an unknown subagent")
+    }),
+  http.protected
     .get("/experimental/session/{sessionID}/turnos", "experimental.session.turnos")
     .seeded((ctx) => ctx.session({ title: "Turnos route owner" }))
     .at((ctx) => ({

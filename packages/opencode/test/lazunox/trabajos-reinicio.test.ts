@@ -217,6 +217,41 @@ describe.skipIf(!posix)("marcadores de trabajos en disco", () => {
     fs.rmSync(tombFile("sh_nueva"), { force: true })
   })
 
+  test("ayudantes de fondo: lápida de un día, mensaje con «Reanudar» y barrido que no mata nada", () => {
+    const hace2h = Date.now() - 2 * TrabajosDisco.LAPIDA_TTL_MS
+    TrabajosDisco.writeTombstone({ id: "ses_ayu_vieja", tipo: "ayudante", sessionID: "ses_a", directory: "/x", titulo: "t", inicio: 1 }, hace2h)
+    TrabajosDisco.writeTombstone({ id: "sh_shell_vieja", tipo: "shell", sessionID: "ses_a", directory: "/x", titulo: "t", inicio: 1 }, hace2h)
+    // A las 2 h el shell ya caducó; el ayudante sigue (24 h) y se puede reanudar.
+    expect(TrabajosDisco.tombstoneFor("sh_shell_vieja", "ses_a")).toBeUndefined()
+    expect(TrabajosDisco.tombstoneFor("ses_ayu_vieja", "ses_a")?.tipo).toBe("ayudante")
+    expect(TrabajosDisco.tombstonesOf("ses_a").map((l) => l.id)).toContain("ses_ayu_vieja")
+    TrabajosDisco.writeTombstone({ id: "ses_ayu_vieja", tipo: "ayudante", sessionID: "ses_a", directory: "/x", titulo: "t", inicio: 1 }, Date.now() - TrabajosDisco.LAPIDA_AYUDANTE_TTL_MS - 1000)
+    expect(TrabajosDisco.tombstoneFor("ses_ayu_vieja", "ses_a")).toBeUndefined()
+    expect(fs.existsSync(tombFile("ses_ayu_vieja"))).toBe(false)
+    const msg = TrabajosDisco.lostMessage({ id: "ses_h1", tipo: "ayudante" })
+    expect(msg).toContain("el ayudante ses_h1 se perdió")
+    expect(msg).toContain("Reanudar")
+    TrabajosDisco.removeTombstone("ses_h1")
+  })
+
+  test.skipIf(!posix)("un marcador de ayudante de un motor muerto deja lápida; el de un motor vivo (o de este mismo proceso) no se toca, y no se mata ningún proceso", () => {
+    const dir = "/tmp/dir-ayu"
+    const muerto = deadPid()
+    TrabajosDisco.writeMarker(base({ id: "ses_ayu_muerto", tipo: "ayudante", directory: dir, pid: muerto, enginePid: muerto, titulo: "se pierde" }))
+    TrabajosDisco.writeMarker(base({ id: "ses_ayu_mio", tipo: "ayudante", directory: dir, pid: process.pid, enginePid: process.pid }))
+    // pid de un proceso vivo ajeno (el padre de este): si el barrido lo matara, esta prueba se caería con él.
+    TrabajosDisco.writeMarker(base({ id: "ses_ayu_otro", tipo: "ayudante", directory: dir, pid: process.ppid, enginePid: process.ppid, cmdline: "x" }))
+    const perdidos = TrabajosDisco.sweepOrphans(dir, new Set()).map((m) => m.id)
+    expect(perdidos).toEqual(["ses_ayu_muerto"])
+    expect(TrabajosDisco.tombstoneFor("ses_ayu_muerto", "ses_a")).toMatchObject({ tipo: "ayudante", titulo: "se pierde" })
+    expect(fs.existsSync(markerFile("ses_ayu_mio"))).toBe(true)
+    expect(fs.existsSync(markerFile("ses_ayu_otro"))).toBe(true)
+    for (const id of ["ses_ayu_muerto", "ses_ayu_mio", "ses_ayu_otro"]) {
+      TrabajosDisco.removeMarker(id)
+      TrabajosDisco.removeTombstone(id)
+    }
+  })
+
   test("ids con caracteres de ruta se rechazan", () => {
     expect(TrabajosDisco.idValido("../etc")).toBe(false)
     expect(TrabajosDisco.idValido("sh_ok1")).toBe(true)
