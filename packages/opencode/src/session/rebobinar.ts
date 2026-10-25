@@ -8,7 +8,7 @@
 //    salvo que la persona los pida en `sobrescribir`.
 //  - Se niega (409) si la sesión, una hija o un trabajo de fondo están en marcha, o hay permiso/pregunta/formulario pendiente.
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Context, Effect, Layer } from "effect"
+import { Context, Effect, Layer, Semaphore } from "effect"
 import path from "path"
 import { BackgroundJob } from "@/background/job"
 import { Config } from "@/config/config"
@@ -108,6 +108,16 @@ const layer = Layer.effect(
     const permission = yield* Permission.Service
     const question = yield* Question.Service
     const elicitation = yield* McpElicitation.Service
+
+    // Un candado por sesión: la revisión y la aplicación de un rebobinado/deshacer no se intercalan con otro.
+    const candados = new Map<string, Semaphore.Semaphore>()
+    const candado = (sessionID: string) => {
+      const actual = candados.get(sessionID)
+      if (actual) return actual
+      const nuevo = Semaphore.makeUnsafe(1)
+      candados.set(sessionID, nuevo)
+      return nuevo
+    }
 
     const apagado = () => new NoEncontrado("Rebobinar por turno está desactivado (LAZUNOX_REBOBINAR=0)")
 
@@ -242,9 +252,14 @@ const layer = Layer.effect(
         for (const mensaje of mensajes) {
           for (const part of mensaje.parts) if (part.type === "step-finish" && part.snapshot) ultimo = part.snapshot
         }
-        if (ultimo && (yield* snapshot.has(ultimo))) {
-          const cambiados = new Set((yield* snapshot.patch(ultimo)).files.map(rel))
-          conflictos = archivos.filter((item) => cambiados.has(item.file)).map((item) => item.file)
+        if (ultimo) {
+          // Falla CERRADO: si el árbol del último paso ya no existe o git no puede compararlo, NO se sabe qué cambió
+          // la persona después: todos los archivos cuentan como conflicto (se saltan salvo `sobrescribir`).
+          const cambiados = yield* snapshot.patchEstricto(ultimo).pipe(
+            Effect.map((patch) => new Set(patch.files.map(rel)) as Set<string> | undefined),
+            Effect.catchTag("SnapshotExpiredError", () => Effect.succeed(undefined as Set<string> | undefined)),
+          )
+          conflictos = archivos.filter((item) => !cambiados || cambiados.has(item.file)).map((item) => item.file)
         }
       }
       const protegidos = rutasProtegidasActivo()
@@ -275,6 +290,10 @@ const layer = Layer.effect(
     })
 
     const rebobinar: Interface["rebobinar"] = Effect.fn("SessionRebobinar.rebobinar")(function* (input) {
+      return yield* candado(input.sessionID).withPermits(1)(rebobinarSinCandado(input))
+    })
+
+    const rebobinarSinCandado: Interface["rebobinar"] = Effect.fnUntraced(function* (input) {
       if (!activo()) return yield* Effect.fail(apagado())
       const { revision: r, abs, rel, ordinal } = yield* analizar(input.sessionID, input.messageID)
       if (r.bloqueado) return yield* Effect.fail(new Conflicto(r.bloqueado, mensajeDeBloqueo(r.bloqueado)))
@@ -315,7 +334,13 @@ const layer = Layer.effect(
       const hecho = yield* revert
         .revertir(
           { sessionID: input.sessionID, messageID: input.messageID },
-          input.modo === "conversacion" ? { files: false } : { skip: saltar, soloCodigo: input.modo === "codigo" },
+          input.modo === "conversacion"
+            ? { files: false }
+            : {
+                skip: saltar,
+                soloCodigo: input.modo === "codigo",
+                forzar: new Set(Array.from(forzar, (file) => abs(file))),
+              },
         )
         .pipe(
           Effect.catchTag("SessionBusyError", () => Effect.fail(new Conflicto("ocupada", mensajeDeBloqueo("ocupada")))),
@@ -335,6 +360,10 @@ const layer = Layer.effect(
     })
 
     const deshacer: Interface["deshacer"] = Effect.fn("SessionRebobinar.deshacer")(function* (input) {
+      return yield* candado(input.sessionID).withPermits(1)(deshacerSinCandado(input))
+    })
+
+    const deshacerSinCandado: Interface["deshacer"] = Effect.fnUntraced(function* (input) {
       if (!activo()) return yield* Effect.fail(apagado())
       yield* sessions.get(input.sessionID)
       const ctx = yield* InstanceState.context

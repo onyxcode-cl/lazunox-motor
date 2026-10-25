@@ -23,6 +23,8 @@ export type RevertInput = Schema.Schema.Type<typeof RevertInput>
 type Tocados = { files: string[]; after?: string; snapshot?: string }
 const tocadosKey = (sessionID: SessionID) => ["lazunox_revert", sessionID]
 const notaKey = (sessionID: SessionID) => ["lazunox_nota", sessionID]
+const refRevert = (sessionID: SessionID, que: "snapshot" | "after") => `refs/lazunox/${sessionID}/revert/${que}`
+const prefijoRevert = (sessionID: SessionID) => `refs/lazunox/${sessionID}/revert/`
 
 /** Lazunox: opciones internas (no forman parte del cuerpo HTTP de /session/revert). */
 export interface RevertOptions {
@@ -30,6 +32,8 @@ export interface RevertOptions {
   readonly files?: boolean
   /** Archivos (ruta absoluta con /) que se SALTAN, con el motivo que se informa. */
   readonly skip?: ReadonlyMap<string, string>
+  /** Archivos (ruta absoluta con /) que la persona pidió sobrescribir aunque hayan cambiado después de un rebobinado anterior. */
+  readonly forzar?: ReadonlySet<string>
   /** true = restaura los archivos pero deja los mensajes (no marca `session.revert`); se deshace con `deshacer`. */
   readonly soloCodigo?: boolean
 }
@@ -84,6 +88,20 @@ const layer = Layer.effect(
         .read<Tocados>(tocadosKey(sessionID))
         .pipe(Effect.catch(() => Effect.succeed(undefined as Tocados | undefined)))
 
+    /** Falla CERRADO: si falta cualquiera de los árboles no se toca nada (ExpiredError → 409 caducado). */
+    const exigirArboles = Effect.fnUntraced(function* (hashes: (string | undefined)[]) {
+      for (const hash of new Set(hashes.filter((item): item is string => !!item))) {
+        if (!(yield* snap.has(hash))) {
+          return yield* Effect.fail(
+            new Snapshot.ExpiredError({
+              hash,
+              message: `El punto de control ${hash.slice(0, 12)} ya no existe (caducó o se limpió). No se cambió ningún archivo.`,
+            }),
+          )
+        }
+      }
+    })
+
     const revertir = Effect.fn("SessionRevert.revertir")(function* (input: RevertInput, options?: RevertOptions) {
       yield* state.assertNotBusy(input.sessionID)
       const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
@@ -127,10 +145,28 @@ const layer = Layer.effect(
       if (tocaArchivos) {
         // Un segundo revert parte del estado de antes del primero, pero solo en los archivos que el primero tocó.
         const previos = session.revert?.snapshot ? yield* leerTocados(input.sessionID) : undefined
-        if (session.revert?.snapshot && previos?.files.length) {
-          yield* snap.restoreFiles(session.revert.snapshot, previos.files)
-        }
+        // Antes de tocar nada: deben existir TODOS los árboles (el anterior, el de los parches y el de después del primer revert).
+        yield* exigirArboles([
+          previos?.files.length ? session.revert?.snapshot : undefined,
+          previos?.files.length ? previos.after : undefined,
+          ...patches.filter((patch) => patch.files.length).map((patch) => patch.hash),
+        ])
         const saltar = options?.skip
+        if (session.revert?.snapshot && previos?.files.length) {
+          // Lo que cambió después del primer rebobinado no se pisa sin que la persona lo pida (igual que en deshacer).
+          const cambiadosDespues = previos.after
+            ? new Set((yield* snap.patchEstricto(previos.after)).files)
+            : new Set<string>()
+          const lista: string[] = []
+          for (const file of previos.files) {
+            const motivo = saltar?.get(file)
+            if (motivo) informe.omitidos.push({ file: yield* relativa(file), motivo })
+            else if (cambiadosDespues.has(file) && !options?.forzar?.has(file))
+              informe.omitidos.push({ file: yield* relativa(file), motivo: "conflicto" })
+            else lista.push(file)
+          }
+          yield* snap.restoreFiles(session.revert.snapshot, lista)
+        }
         const aplicar: Snapshot.Patch[] = []
         const vistos = new Set<string>()
         for (const patch of patches) {
@@ -148,8 +184,14 @@ const layer = Layer.effect(
         informe.restaurados.push(...hecho.restaurados)
         informe.borrados.push(...hecho.borrados)
         informe.omitidos.push(...hecho.omitidos)
+        // Un archivo se informa una sola vez (puede salir del restaurado previo y del nuevo).
+        const dicho = new Set<string>()
+        informe.omitidos = informe.omitidos.filter((item) => !dicho.has(item.file) && !!dicho.add(item.file))
         const tocados = Array.from(new Set(aplicar.flatMap((item) => item.files)))
         const despues = yield* snap.track()
+        // Que `git gc` no pode el estado de antes ni el de después mientras se pueda deshacer.
+        if (rev.snapshot) yield* snap.keep(refRevert(input.sessionID, "snapshot"), rev.snapshot)
+        if (despues) yield* snap.keep(refRevert(input.sessionID, "after"), despues)
         yield* storage
           .write(tocadosKey(input.sessionID), {
             files: Array.from(new Set([...(previos?.files ?? []), ...tocados])),
@@ -202,9 +244,12 @@ const layer = Layer.effect(
       const antes = session.revert?.snapshot ?? guardado?.snapshot
       if (antes) {
         // Sin registro (revert hecho con una versión anterior): todo lo que hoy difiere del estado previo.
-        const archivos = guardado?.files ?? (yield* snap.patch(antes)).files
+        const archivos = guardado?.files ?? (yield* snap.patchEstricto(antes)).files
+        // Falla CERRADO: si hay archivos que restaurar y falta el estado de antes o el de después, no se toca nada (409 caducado).
+        // («solo conversación» no toca archivos: su deshacer no depende de ningún árbol.)
+        if (archivos.length) yield* exigirArboles([antes, guardado?.after])
         // Lo que la persona cambió DESPUÉS del revert no se pisa salvo que lo pida.
-        const cambiados = guardado?.after ? new Set((yield* snap.patch(guardado.after)).files) : new Set<string>()
+        const cambiados = guardado?.after ? new Set((yield* snap.patchEstricto(guardado.after)).files) : new Set<string>()
         const lista: string[] = []
         for (const file of archivos) {
           if (cambiados.has(file) && !input.sobrescribir?.has(file))
@@ -218,6 +263,7 @@ const layer = Layer.effect(
       }
       if (session.revert) yield* sessions.clearRevert(input.sessionID)
       yield* storage.remove(tocadosKey(input.sessionID)).pipe(Effect.ignore)
+      yield* snap.forget(prefijoRevert(input.sessionID)).pipe(Effect.ignore)
       yield* storage.remove(notaKey(input.sessionID)).pipe(Effect.ignore)
       return { session: yield* sessions.get(input.sessionID).pipe(Effect.orDie), restaurados, borrados, omitidos }
     })
@@ -272,6 +318,8 @@ const layer = Layer.effect(
         }
       }
       yield* sessions.clearRevert(sessionID)
+      // Sin «solo código» pendiente ya no hay nada que deshacer: se sueltan las refs del revert.
+      if (!(yield* leerTocados(sessionID))?.snapshot) yield* snap.forget(prefijoRevert(sessionID)).pipe(Effect.ignore)
     })
 
     return Service.of({ revert, unrevert, revertir, deshacer, hayQueDeshacer, guardarNota, consumirNota, cleanup })

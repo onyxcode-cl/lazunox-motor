@@ -65,6 +65,8 @@ export interface Interface {
   readonly cleanup: () => Effect.Effect<void>
   readonly track: () => Effect.Effect<string | undefined>
   readonly patch: (hash: string) => Effect.Effect<Patch>
+  /** Lazunox: como `patch` pero si el árbol no existe o git falla FALLA (ExpiredError) en vez de devolver `files: []`. Para decisiones de seguridad (conflictos). */
+  readonly patchEstricto: (hash: string) => Effect.Effect<Patch, ExpiredError>
   readonly restore: (snapshot: string) => Effect.Effect<void, ExpiredError>
   readonly revert: (patches: Patch[]) => Effect.Effect<RestoreReport, ExpiredError>
   /** Lazunox: restaura SOLO estos archivos (rutas absolutas o relativas al proyecto) a como estaban en `tree`. Nunca toca nada más. */
@@ -395,7 +397,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           )
         })
 
-        const patch = Effect.fnUntraced(function* (hash: string) {
+        const patchBase = Effect.fnUntraced(function* (hash: string) {
           return yield* locked(
             Effect.gen(function* () {
               yield* add()
@@ -407,7 +409,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
               )
               if (result.code !== 0) {
                 yield* Effect.logWarning("failed to get diff", { hash, exitCode: result.code })
-                return { hash, files: [] }
+                return { hash, files: [] as string[], fallo: true }
               }
               const files = result.text
                 .trim()
@@ -420,12 +422,18 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
 
               return {
                 hash,
+                fallo: false,
                 files: files
                   .filter((item) => !ignored.has(item))
                   .map((x) => path.join(state.worktree, x).replaceAll("\\", "/")),
               }
             }),
           )
+        })
+
+        const patch = Effect.fnUntraced(function* (hash: string) {
+          const r = yield* patchBase(hash)
+          return { hash: r.hash, files: r.files }
         })
 
         const validHash = (hash: string) => /^[0-9a-f]{40}([0-9a-f]{24})?$/.test(hash)
@@ -442,6 +450,13 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
             hash,
             message: `El punto de control ${hash.slice(0, 12)} ya no existe (caducó o se limpió). No se cambió ningún archivo.`,
           })
+
+        const patchEstricto = Effect.fnUntraced(function* (hash: string) {
+          if (!(yield* has(hash))) return yield* Effect.fail(expired(hash))
+          const r = yield* patchBase(hash)
+          if (r.fallo) return yield* Effect.fail(expired(hash))
+          return { hash: r.hash, files: r.files }
+        })
 
         /**
          * Guardia de rutas para TODA escritura o borrado: el archivo tiene que estar dentro de la carpeta del
@@ -1085,6 +1100,7 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           cleanup,
           track,
           patch,
+          patchEstricto,
           restore,
           restoreFiles,
           has,
@@ -1114,6 +1130,9 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
       }),
       patch: Effect.fn("Snapshot.patch")(function* (hash: string) {
         return yield* InstanceState.useEffect(state, (s) => s.patch(hash))
+      }),
+      patchEstricto: Effect.fn("Snapshot.patchEstricto")(function* (hash: string) {
+        return yield* InstanceState.useEffect(state, (s) => s.patchEstricto(hash))
       }),
       restore: Effect.fn("Snapshot.restore")(function* (snapshot: string) {
         return yield* InstanceState.useEffect(state, (s) => s.restore(snapshot))

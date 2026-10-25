@@ -109,7 +109,8 @@ export const conservar = Effect.fn("Turnos.conservar")(function* (
   const grupos = new Set<string>()
   for (const item of yield* snapshot.refs(prefijoSesion(sessionID))) {
     const turnoID = item.ref.slice(prefijoSesion(sessionID).length).split("/")[0]
-    if (turnoID) grupos.add(turnoID)
+    // `revert` guarda los puntos del rebobinado (session/revert.ts), no es un turno.
+    if (turnoID && turnoID !== "revert") grupos.add(turnoID)
   }
   const ordenados = Array.from(grupos).sort()
   const tope = puntosMax()
