@@ -346,7 +346,7 @@ export const ReadTool = Tool.define<
 
       // No releer: solo para lecturas completas (sin rango, sin corte). Los permisos y la lectura ya se hicieron arriba.
       const completa = !params.offset && params.limit === undefined && !file.more && !file.cut
-      const callID = ctx.callID
+      const callID = ctx.callID ?? ""
       const claveLectura = LecturasSesion.activo() && completa && callID ? yield* lecturaClave(filepath) : undefined
       if (claveLectura) {
         const h = LecturasSesion.hash(file.raw.join("\n") + "\n" + file.count)
