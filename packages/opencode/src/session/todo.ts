@@ -40,6 +40,8 @@ const layer = Layer.effect(
                   content: todo.content,
                   status: todo.status,
                   priority: todo.priority,
+                  verificar: todo.verificar ?? null,
+                  bloqueado: todo.bloqueado ?? null,
                   position,
                 })),
               )
@@ -62,6 +64,8 @@ const layer = Layer.effect(
         content: row.content,
         status: row.status,
         priority: row.priority,
+        ...(row.verificar ? { verificar: row.verificar } : {}),
+        ...(row.bloqueado ? { bloqueado: true } : {}),
       }))
     })
 
