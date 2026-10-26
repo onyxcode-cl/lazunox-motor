@@ -18,6 +18,8 @@ export type EntradaBloque = {
   ayudantes: ReadonlyArray<Ayudante>
   /** Salida de los plugins `experimental.session.compacted` (ya marcada, p. ej. «[Gancho PostCompact]»). */
   ganchos: ReadonlyArray<string>
+  /** Lazunox (6.4): cuántos mensajes antiguos no entraron en el resumen (0 o ausente = ninguno). */
+  descartados?: number
   /** Presupuesto en bytes; se limita a BLOQUE_MAX_BYTES. */
   presupuestoBytes: number
 }
@@ -58,7 +60,8 @@ export const construirBloque = (input: EntradaBloque): Bloque | undefined => {
   const tareas = input.tareas.filter((t) => t.content.trim())
   const ayudantes = input.ayudantes
   const ganchos = input.ganchos.map((g) => g.trim()).filter(Boolean)
-  if (!tareas.length && !input.habilidades.length && !input.instrucciones.length && !ayudantes.length && !ganchos.length) return undefined
+  const descartados = Number.isFinite(input.descartados) ? Math.max(0, Math.floor(input.descartados ?? 0)) : 0
+  if (!descartados && !tareas.length && !input.habilidades.length && !input.instrucciones.length && !ayudantes.length && !ganchos.length) return undefined
 
   const secciones: string[] = []
   const etiquetas: string[] = []
@@ -71,6 +74,13 @@ export const construirBloque = (input: EntradaBloque): Bloque | undefined => {
       titulo: "## Lista de tareas",
       lineas: tareas.map((t) => `- [${t.status}] ${t.content.replace(/\s+/g, " ").trim().slice(0, 300)}`),
       etiqueta: `plan:${tareas.length}`,
+    })
+  // Nota fija (sin texto de la conversación): solo la cifra.
+  if (descartados)
+    fijas.push({
+      titulo: "## Mensajes antiguos fuera del resumen",
+      lineas: [`- ${descartados} mensajes antiguos no entraron en este resumen; si necesitas algo de esa parte, pídeselo a la persona.`],
+      etiqueta: `descartados:${descartados}`,
     })
   if (ayudantes.length)
     fijas.push({
@@ -134,14 +144,14 @@ export const construirBloque = (input: EntradaBloque): Bloque | undefined => {
     if (ganchosTexto) etiquetas.push(`gancho:${ganchos.length}`)
   }
 
-  for (const clave of ["plan", "habilidades", "instrucciones", "ayudantes"]) {
+  for (const clave of ["plan", "descartados", "habilidades", "instrucciones", "ayudantes"]) {
     const t = seccion[clave]
     if (t) secciones.push(t)
   }
   if (ganchosTexto) secciones.push(ganchosTexto)
   if (!secciones.length) return undefined
   // El orden de `secciones` es el de lectura; `etiquetas` sigue el mismo orden lógico.
-  const orden = ["plan", "habilidades", "instrucciones", "ayudantes", "gancho"]
+  const orden = ["plan", "descartados", "habilidades", "instrucciones", "ayudantes", "gancho"]
   etiquetas.sort((a, b) => orden.indexOf(a.split(":")[0]!) - orden.indexOf(b.split(":")[0]!))
 
   const final = `${CABECERA}\n${secciones.join("\n\n")}\n${PIE}`

@@ -38,6 +38,7 @@ import { Instruction } from "./instruction"
 import { BackgroundJob } from "@/background/job"
 import { SessionStatus } from "./status"
 import { Trabajos } from "@/tool/trabajos"
+import { lineaHerramientas, RECORDATORIO_PLANTILLA, resumenRobustoActivo, resumenSigueLaPlantilla } from "./resumen-robusto"
 import { construirBloque, presupuestoBloque, reinyectarActivo, type Documento } from "./contexto-vigente"
 
 export const Event = SessionCompactionEvent
@@ -495,6 +496,8 @@ const layer = Layer.effect(
       model: Provider.Model
       cfg: ConfigV1.Info
       base: { auto: boolean; parcial: boolean; mensajes: number; tokensAntes: number | undefined }
+      /** Lazunox (6.4): mensajes antiguos que `ajustarConversacion` descartó del resumen. */
+      descartados?: number
     }) {
       const resumen = (yield* session.messages({ sessionID: input.sessionID, limit: 8 })).find((m) => m.info.id === input.summaryID)
       const textoResumen = resumen ? (summaryText(resumen) ?? "") : ""
@@ -560,6 +563,7 @@ const layer = Layer.effect(
       model: Provider.Model
       cfg: ConfigV1.Info
       ganchos: string[]
+      descartados?: number
     }) {
       const tareas = yield* todos.get(input.sessionID).pipe(Effect.orElseSucceed(() => []))
 
@@ -622,6 +626,7 @@ const layer = Layer.effect(
         instrucciones,
         ayudantes: [...vivos.values()].slice(0, 50),
         ganchos: input.ganchos,
+        descartados: input.descartados,
         presupuestoBytes: presupuestoBloque(usable({ cfg: input.cfg, model: input.model, outputTokenMax: flags.outputTokenMax })),
       })
     })
@@ -722,6 +727,9 @@ const layer = Layer.effect(
       }
       const msgs = structuredClone(selected.head)
       yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
+      // Lazunox (6.4): apagado por defecto. Con un prompt de plugin no se valida la plantilla (no es la nuestra).
+      const robusto = resumenRobustoActivo()
+      const lineaDeHerramientas = robusto ? lineaHerramientas(msgs) : undefined
       const armar = (conversation: string) =>
         compacting.prompt ??
         [
@@ -731,6 +739,7 @@ const layer = Layer.effect(
           }),
           ...compacting.context,
           ...planContext,
+          ...(robusto && lineaDeHerramientas ? [lineaDeHerramientas] : []),
         ]
           .filter(Boolean)
           .join("\n\n")
@@ -747,7 +756,9 @@ const layer = Layer.effect(
       }
       const conversation = ajuste.conversation
       const nextPrompt = armar(conversation)
+      let incompleto = false
       const ctx = yield* InstanceState.context
+      const generar = Effect.fn("SessionCompaction.generar")(function* (recordatorio?: string) {
       const msg: SessionV1.Assistant = {
         id: MessageID.ascending(),
         role: "assistant",
@@ -794,6 +805,7 @@ const layer = Layer.effect(
                 type: "text",
                 text: [
                   nextPrompt,
+                  ...(recordatorio ? [recordatorio] : []),
                   ...(compacting.prompt ? ["The following is the conversation history:", conversation] : []),
                 ]
                   .filter(Boolean)
@@ -804,6 +816,40 @@ const layer = Layer.effect(
         ],
         model,
       })
+      return { processor, result }
+      })
+      const primero = yield* generar()
+      let processor = primero.processor
+      let result = primero.result
+
+      // Lazunox (6.4, H7): si el resumen no sigue la plantilla, UN solo reintento con un recordatorio fijo. Nunca peor que antes:
+      // si el reintento falla o también sale mal, se conserva el primer resumen (y se marca como incompleto).
+      if (robusto && !compacting.prompt && result === "continue" && !processor.message.error) {
+        const textoDe = (id: MessageID) =>
+          session.messages({ sessionID: input.sessionID, limit: 8 }).pipe(
+            Effect.map((l) => {
+              const m = l.find((x) => x.info.id === id)
+              return m ? (summaryText(m) ?? "") : ""
+            }),
+            Effect.orElseSucceed(() => ""),
+          )
+        const t1 = yield* textoDe(processor.message.id)
+        if (!resumenSigueLaPlantilla(t1)) {
+          yield* Effect.logInfo("resumen robusto: el resumen no sigue la plantilla, un reintento")
+          const segundo = yield* generar(RECORDATORIO_PLANTILLA).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+          const t2 = segundo && segundo.result === "continue" && !segundo.processor.message.error ? yield* textoDe(segundo.processor.message.id) : undefined
+          const quitar = (id: MessageID) =>
+            session.removeMessage({ sessionID: input.sessionID, messageID: id }).pipe(Effect.catchCause(() => Effect.void))
+          if (segundo && t2 !== undefined && resumenSigueLaPlantilla(t2)) {
+            yield* quitar(processor.message.id)
+            processor = segundo.processor
+          } else {
+            if (segundo) yield* quitar(segundo.processor.message.id)
+            yield* Effect.logWarning("resumen robusto: se acepta el resumen sin la plantilla completa")
+            incompleto = true
+          }
+        }
+      }
 
       if (result === "compact") {
         processor.message.error = new SessionV1.ContextOverflowError({
@@ -908,6 +954,14 @@ const layer = Layer.effect(
       }
 
       if (processor.message.error) return "stop"
+      if (result === "continue" && incompleto) {
+        // Marca (solo informativa) en el texto del resumen aceptado sin plantilla completa.
+        yield* Effect.gen(function* () {
+          const m = (yield* session.messages({ sessionID: input.sessionID, limit: 8 })).find((x) => x.info.id === processor.message.id)
+          const parte = m?.parts.find((p): p is SessionV1.TextPart => p.type === "text")
+          if (parte) yield* session.updatePart({ ...parte, metadata: { ...parte.metadata, lazunox_resumen: "incompleto" } })
+        }).pipe(Effect.catchCause(() => Effect.void))
+      }
       if (result === "continue") {
         const base = {
           auto: input.auto,
@@ -928,6 +982,7 @@ const layer = Layer.effect(
           model,
           cfg,
           base,
+          descartados: robusto ? ajuste.descartados : 0,
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.logWarning("compaction finalize failed", { cause }).pipe(Effect.as({ reinyectado: [] as string[], tokensDespues: undefined as number | undefined })),
