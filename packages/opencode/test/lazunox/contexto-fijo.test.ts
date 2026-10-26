@@ -36,6 +36,8 @@ const agente = { name: "build", mode: "primary", options: {}, permission: [{ per
 const ayudante = { name: "explore", mode: "subagent", options: {}, permission: [], description: "D".repeat(100) }
 const oculto = { name: "titulo", mode: "primary", hidden: true, options: {}, permission: [], description: "NO" }
 
+const actual: { agente: any } = { agente }
+
 const capa = (dir: string, mcpDefs: Record<string, unknown> = {}) =>
   AppNodeBuilder.build(SessionContextoFijo.node, [
     [Config.node, Layer.succeed(Config.Service, TestConfig.make())],
@@ -49,7 +51,7 @@ const capa = (dir: string, mcpDefs: Record<string, unknown> = {}) =>
           get: (id: SessionID) =>
             id === SessionID.make("ses_noexiste")
               ? Effect.fail(new NotFoundError({ message: "nope" }))
-              : Effect.succeed({ id, permission: [] } as any),
+              : Effect.succeed({ id, permission: [], ...(id === SessionID.make("ses_hija") ? { parentID: "ses_padre" } : {}) } as any),
           messages: () => Effect.succeed([]),
         } as any),
       ),
@@ -59,9 +61,9 @@ const capa = (dir: string, mcpDefs: Record<string, unknown> = {}) =>
       Layer.succeed(
         Agent.Service,
         Agent.Service.of({
-          get: () => Effect.succeed(agente as any),
+          get: () => Effect.succeed(actual.agente as any),
           list: () => Effect.succeed([agente, ayudante, oculto] as any),
-          defaultInfo: () => Effect.succeed(agente as any),
+          defaultInfo: () => Effect.succeed(actual.agente as any),
         } as any),
       ),
     ],
@@ -111,6 +113,37 @@ describe("contexto fijo (4D)", () => {
           expect(r.reglasPorRuta).toBe(1)
           expect(r.tokens).toBe(r.partes.agentes + r.partes.skills + r.partes.mcp + r.partes.instrucciones)
         }).pipe(Effect.provide(capa(dir, defs)))
+      }),
+    ),
+  )
+
+  it.live("Ola 6 (6.3): la hija en contexto mínimo (bandera encendida) no suma skills ni AGENTS.md", () =>
+    provideTmpdirInstance((dir) =>
+      Effect.gen(function* () {
+        yield* Effect.promise(() => fs.writeFile(path.join(dir, "AGENTS.md"), "I".repeat(1000)))
+        const previo = process.env.LAZUNOX_AYUDANTES_MINIMOS
+        actual.agente = { ...agente, name: "lector", contexto: "minimo", permission: [{ permission: "*", pattern: "*", action: "deny" }] }
+        try {
+          return yield* Effect.gen(function* () {
+            const svc = yield* SessionContextoFijo.Service
+            delete process.env.LAZUNOX_AYUDANTES_MINIMOS
+            const apagada = yield* svc.calcular(SessionID.make("ses_hija"))
+            process.env.LAZUNOX_AYUDANTES_MINIMOS = "1"
+            const hija = yield* svc.calcular(SessionID.make("ses_hija"))
+            const raiz = yield* svc.calcular(SessionID.make("ses_x"))
+            expect(apagada.partes.skills).toBe(100)
+            expect(apagada.partes.instrucciones).toBeGreaterThanOrEqual(250)
+            expect(hija.partes.skills).toBe(0)
+            expect(hija.partes.instrucciones).toBe(0)
+            expect(hija.tokens).toBeLessThan(apagada.tokens)
+            // la sesión raíz no es hija: igual que antes
+            expect(raiz.partes.skills).toBe(100)
+          }).pipe(Effect.provide(capa(dir)))
+        } finally {
+          actual.agente = agente
+          if (previo === undefined) delete process.env.LAZUNOX_AYUDANTES_MINIMOS
+          else process.env.LAZUNOX_AYUDANTES_MINIMOS = previo
+        }
       }),
     ),
   )
