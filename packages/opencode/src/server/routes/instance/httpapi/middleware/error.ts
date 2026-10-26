@@ -1,5 +1,6 @@
 import { NamedError } from "@opencode-ai/core/util/error"
 import { ConfigErrorV1 } from "@opencode-ai/core/v1/config/error"
+import { GanchoRechazoError } from "@/plugin/lazunox-rechazo"
 import { Cause, Effect } from "effect"
 import { HttpRouter, HttpServerError, HttpServerRespondable, HttpServerResponse } from "effect/unstable/http"
 
@@ -25,6 +26,9 @@ export const errorLayer = HttpRouter.middleware<{ handles: unknown }>()((effect)
       ) {
         return Effect.succeed(HttpServerResponse.jsonUnsafe(error.toObject(), { status: 400 }))
       }
+
+      // B2: un gancho UserPromptSubmit rechazó el mensaje: error de cliente con el motivo (ya acotado y neutralizado), sin rutas ni pila.
+      if (GanchoRechazoError.isInstance(error)) return Effect.succeed(HttpServerResponse.jsonUnsafe(error.toObject(), { status: 400 }))
 
       const ref = `err_${crypto.randomUUID().slice(0, 8)}`
 

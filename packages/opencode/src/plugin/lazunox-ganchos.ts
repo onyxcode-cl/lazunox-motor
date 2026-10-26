@@ -7,6 +7,7 @@ import { validarEsquema } from "@/cli/cmd/run-banderas"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { PartID } from "@/session/schema"
 import { ToolID } from "@/tool/schema"
+import { GanchoRechazoError } from "./lazunox-rechazo"
 import { TRUNCATION_DIR } from "@/tool/truncation-dir"
 
 // Lazunox: ganchos de usuario por comando (como los hooks de Claude Code), solo del archivo que la APP fija en LAZUNOX_HOOKS_FILE.
@@ -446,7 +447,7 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
       const extra: string[] = []
       for (const { r } of await correr("UserPromptSubmit", { event: "UserPromptSubmit", sessionID: i.sessionID, cwd, agent: i.agent, prompt: prompt.slice(0, 8000) })) {
         const razon = pideBloquear(r)
-        if (razon !== undefined) throw new Error(`Un gancho de usuario rechazó este mensaje: ${razon}`)
+        if (razon !== undefined) throw new GanchoRechazoError(razon)
         const t = textoContexto(r)
         if (t) extra.push(t)
       }

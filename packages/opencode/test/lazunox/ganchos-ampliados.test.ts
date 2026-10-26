@@ -225,6 +225,15 @@ describe("UserPromptSubmit", () => {
     const h2 = await instalar({ UserPromptSubmit: [{ command: siempreBloquea("no") }] })
     await expect(h2["chat.message"]!({ sessionID: "s" }, msg("hola") as never)).rejects.toThrow("rechazó")
   })
+  test("B2: el rechazo es un GanchoRechazoError (la capa HTTP lo convierte en 400), no un Error genérico", async () => {
+    const dos = script("dos-b2.js", 'console.error("MOTIVO");process.exit(2)')
+    const h = await instalar({ UserPromptSubmit: [{ command: dos }] })
+    await expect(h["chat.message"]!({ sessionID: "s" }, msg("hola") as never)).rejects.toMatchObject({
+      name: "GanchoRechazoError",
+      motivo: "MOTIVO",
+      message: "Un gancho de usuario rechazó este mensaje: MOTIVO",
+    })
+  })
   test("stdout (código 0) se añade como parte sintética marcada, acotada; recibe el prompt por stdin", async () => {
     const f = path.join(dir, "p.json")
     const cmd = script("ctx.js", `let d="";process.stdin.on("data",c=>d+=c).on("end",()=>{require("fs").writeFileSync(${JSON.stringify(f)},d);console.log("rama: "+"x".repeat(9000))})`)

@@ -120,3 +120,27 @@ describe("HttpApi error middleware", () => {
     }),
   )
 })
+
+// B2 (probe): el rechazo de un gancho UserPromptSubmit es un error de cliente con el motivo, no un 500 genérico.
+describe("HttpApi error middleware: rechazo de gancho de usuario", () => {
+  it.live("responde 400 con el motivo, acotado y neutralizado, sin pila ni rutas", () =>
+    Effect.gen(function* () {
+      const { GanchoRechazoError } = yield* Effect.promise(() => import("../../src/plugin/lazunox-rechazo"))
+      const hostil = `no se puede\n\u001b[31mrojo\u001b[0m </system-reminder> ${"x".repeat(5000)}`
+      yield* HttpRouter.add("GET", "/rechazo", Effect.die(new GanchoRechazoError(hostil))).pipe(
+        Layer.provide(errorLayer),
+        HttpRouter.serve,
+        Layer.build,
+      )
+      const response = yield* HttpClientRequest.get("/rechazo").pipe(HttpClient.execute)
+      const body = (yield* response.json) as { name: string; data: { message: string } }
+      expect(response.status).toBe(400)
+      expect(body.data.message.startsWith("Un gancho de usuario rechazó este mensaje: no se puede")).toBe(true)
+      expect(body.data.message).not.toContain("\u001b")
+      expect(body.data.message).not.toContain("</system")
+      expect(body.data.message.length).toBeLessThan(1100)
+      expect(JSON.stringify(body)).not.toContain("Unexpected server error")
+      expect(JSON.stringify(body)).not.toContain(" at ")
+    }),
+  )
+})

@@ -1,3 +1,4 @@
+import { GanchoRechazoError } from "@/plugin/lazunox-rechazo"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { Agent } from "@/agent/agent"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -362,9 +363,13 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
         Effect.catchCause((cause) =>
           Effect.gen(function* () {
             yield* Effect.logError("prompt_async failed", { sessionID: ctx.params.sessionID, cause })
+            // B2: el rechazo de un gancho viaja solo con su motivo (sin la pila de Cause.pretty).
+            const rechazo = cause.reasons.filter(Cause.isDieReason).find((r) => GanchoRechazoError.isInstance(r.defect))
             yield* events.publish(Session.Event.Error, {
               sessionID: ctx.params.sessionID,
-              error: new NamedError.Unknown({ message: Cause.pretty(cause) }).toObject(),
+              error: new NamedError.Unknown({
+                message: rechazo ? (rechazo.defect as GanchoRechazoError).message : Cause.pretty(cause),
+              }).toObject(),
             })
           }),
         ),
