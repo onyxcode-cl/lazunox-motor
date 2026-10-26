@@ -261,7 +261,8 @@ const layer = Layer.effect(
             tool.patch,
             ...(tool.execute ? [tool.execute] : []),
             ...(tool.execute_wait ? [tool.execute_wait] : []),
-            ...(flags.experimentalLspTool ? [tool.lsp] : []),
+            // Lazunox (4B, P16): la herramienta `lsp` sale con LAZUNOX_LSP=1 (ya no con la bandera experimental).
+            ...(flags.lazunoxLsp ? [tool.lsp] : []),
             ...(flags.experimentalPlanMode && flags.client === "cli" ? [tool.plan] : []),
             // Lazunox (2C, P08): modo plan para la app, solo con LAZUNOX_PLAN=1 y en los clientes que muestran preguntas
             // (la app lanza el motor sin OPENCODE_CLIENT, o sea "cli"). Si ya entró por la bandera experimental no se repite.

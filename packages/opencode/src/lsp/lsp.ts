@@ -8,12 +8,14 @@ import * as LSPServer from "./server"
 import { Config } from "@/config/config"
 import { Process } from "@/util/process"
 import { spawn as lspspawn } from "./launch"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Duration, Effect, Layer, Context, Option, Schema } from "effect"
 import { InstanceState } from "@/effect/instance-state"
 import { containsPath } from "@/project/instance-context"
 import { NonNegativeInt } from "@opencode-ai/core/schema"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { LspEvent } from "@opencode-ai/schema/lsp-event"
+import * as Estable from "./estable"
+import { Filesystem } from "@/util/filesystem"
 
 export const Event = LspEvent
 
@@ -114,6 +116,9 @@ interface State {
   servers: Record<string, LSPServer.Info>
   broken: Set<string>
   spawning: Map<string, Promise<LSPClient.Info | undefined>>
+  // Lazunox (4B): plazos agotados seguidos; con 2 el LSP se apaga en esta instancia.
+  lentos: number
+  apagado: boolean
 }
 
 export interface Interface {
@@ -121,7 +126,8 @@ export interface Interface {
   readonly status: () => Effect.Effect<Status[]>
   readonly hasClients: (file: string) => Effect.Effect<boolean>
   readonly touchFile: (input: string, diagnostics?: "document" | "full") => Effect.Effect<void>
-  readonly diagnostics: () => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
+  // Lazunox (4B): con `soloArchivo` y LAZUNOX_LSP=1 devuelve únicamente ese archivo (y con mensajes limpios).
+  readonly diagnostics: (soloArchivo?: string) => Effect.Effect<Record<string, LSPClient.Diagnostic[]>>
   readonly hover: (input: LocInput) => Effect.Effect<any>
   readonly definition: (input: LocInput) => Effect.Effect<any[]>
   readonly references: (input: LocInput) => Effect.Effect<any[]>
@@ -148,7 +154,28 @@ const layer = Layer.effect(
 
         const servers: Record<string, LSPServer.Info> = {}
 
-        if (!cfg.lsp) {
+        if (flags.lazunoxLsp) {
+          // Lazunox (4B): `lsp` sin definir = encendido con los servidores del PATH; `false` lo apaga.
+          if (cfg.lsp === false) {
+            yield* Effect.logInfo("all LSPs are disabled")
+          } else {
+            const global = yield* config.getGlobal()
+            const base: Record<string, LSPServer.Info> = {}
+            for (const server of Object.values(LSPServer)) base[server.id] = server
+            filterExperimentalServers(base, flags)
+            Object.assign(
+              servers,
+              Estable.servidores({
+                base,
+                usuario: global.lsp === true || global.lsp === false ? undefined : global.lsp,
+                proyecto: cfg.lsp === true ? undefined : cfg.lsp,
+                raices: [ctx.directory, ...(ctx.worktree && path.dirname(ctx.worktree) !== ctx.worktree ? [ctx.worktree] : [])],
+                aviso: (m) => Effect.runFork(Effect.logWarning(m)),
+              }),
+            )
+            yield* Effect.logInfo("enabled LSP servers (estable)", { serverIds: Object.keys(servers).join(", ") })
+          }
+        } else if (!cfg.lsp) {
           yield* Effect.logInfo("all LSPs are disabled")
         } else {
           for (const server of Object.values(LSPServer)) {
@@ -193,6 +220,8 @@ const layer = Layer.effect(
           servers,
           broken: new Set(),
           spawning: new Map(),
+          lentos: 0,
+          apagado: false,
         }
 
         yield* Effect.addFinalizer(() =>
@@ -343,26 +372,46 @@ const layer = Layer.effect(
 
     const touchFile = Effect.fn("LSP.touchFile")(function* (input: string, diagnostics?: "document" | "full") {
       yield* Effect.logInfo("touching file", { file: input })
-      const clients = yield* getClients(input)
-      yield* Effect.promise(() =>
-        Promise.all(
-          clients.map(async (client) => {
-            const after = Date.now()
-            const version = await client.notify.open({ path: input })
-            if (!diagnostics) return
-            return client.waitForDiagnostics({
-              path: input,
-              version,
-              mode: diagnostics,
-              after,
-            })
-          }),
-        ).catch(() => {}),
-      )
+      const abrir = Effect.gen(function* () {
+        const clients = yield* getClients(input)
+        yield* Effect.promise(() =>
+          Promise.all(
+            clients.map(async (client) => {
+              const after = Date.now()
+              const version = await client.notify.open({ path: input })
+              if (!diagnostics) return
+              return client.waitForDiagnostics({
+                path: input,
+                version,
+                mode: diagnostics,
+                after,
+              })
+            }),
+          ).catch(() => {}),
+        )
+      })
+      if (!flags.lazunoxLsp) return yield* abrir
+      // Lazunox (4B): plazo total; con dos plazos agotados seguidos el LSP se apaga en esta instancia (un servidor
+      // que cuelga no debe frenar cada edición).
+      const s = yield* InstanceState.get(state)
+      if (s.apagado) return
+      const r = yield* abrir.pipe(Effect.timeoutOption(Duration.millis(Estable.plazoMs())))
+      if (Option.isSome(r)) {
+        s.lentos = 0
+        return
+      }
+      s.lentos++
+      yield* Effect.logWarning("LSP: plazo agotado", { file: input, lentos: s.lentos })
+      if (s.lentos >= 2) {
+        s.apagado = true
+        yield* Effect.promise(() => Promise.all(s.clients.map((c) => c.shutdown().catch(() => {}))))
+      }
     })
 
-    const diagnostics = Effect.fn("LSP.diagnostics")(function* () {
+    const diagnostics = Effect.fn("LSP.diagnostics")(function* (soloArchivo?: string) {
       const results: Record<string, LSPClient.Diagnostic[]> = {}
+      const s = yield* InstanceState.get(state)
+      if (flags.lazunoxLsp && s.apagado) return results
       const all = yield* runAll(async (client) => client.diagnostics)
       for (const result of all) {
         for (const [p, diags] of result.entries()) {
@@ -371,7 +420,15 @@ const layer = Layer.effect(
           results[p] = arr
         }
       }
-      return results
+      if (!flags.lazunoxLsp) return results
+      // Lazunox (4B): lo que dice el servidor es dato (una línea, sin etiquetas, acotado); con archivo, solo ese.
+      const objetivo = soloArchivo ? Filesystem.normalizePath(soloArchivo) : undefined
+      const limpio: Record<string, LSPClient.Diagnostic[]> = {}
+      for (const [p, diags] of Object.entries(results)) {
+        if (objetivo && p !== objetivo) continue
+        limpio[p] = Estable.limpiarDiagnosticos(diags)
+      }
+      return limpio
     })
 
     const hover = Effect.fn("LSP.hover")(function* (input: LocInput) {

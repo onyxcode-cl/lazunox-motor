@@ -7,6 +7,7 @@ import { InstanceState } from "@/effect/instance-state"
 import { pathToFileURL } from "url"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { acotarSalida } from "@/lsp/estable"
 
 const operations = [
   "goToDefinition",
@@ -105,7 +106,8 @@ export const LspTool = Tool.define(
           return {
             title,
             metadata: { result },
-            output: result.length === 0 ? `No results found for ${args.operation}` : JSON.stringify(result, null, 2),
+            // Lazunox (4B): lo que devuelve el servidor es dato y va acotado.
+            output: result.length === 0 ? `No results found for ${args.operation}` : acotarSalida(JSON.stringify(result, null, 2)),
           }
         }).pipe(Effect.orDie),
     }
