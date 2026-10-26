@@ -1241,7 +1241,13 @@ const layer = Layer.effect(
       const ag = (yield* agents.get("title")) ?? (yield* agents.get(input.lastUser.agent))
       if (!ag) return "sigue" as const
       const { providerID, modelID } = input.lastUser.model
-      const mdl = (yield* provider.getSmallModel(providerID)) ?? (yield* provider.getModel(providerID, modelID).pipe(Effect.orDie))
+      // El juez ve la conversación: solo un modelo pequeño del MISMO proveedor que eligió la persona (un `small_model` de otro proveedor
+      // mandaría el texto a un servicio distinto); si no hay, el modelo de la propia sesión.
+      const pequeno = yield* provider.getSmallModel(providerID)
+      const mdl =
+        pequeno && pequeno.providerID === providerID
+          ? pequeno
+          : yield* provider.getModel(providerID, modelID).pipe(Effect.orDie)
       const { pedido, respuesta } = Objetivo.extraerParaJuez(input.msgs)
       const texto = yield* llm
         .stream({
