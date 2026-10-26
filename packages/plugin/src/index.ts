@@ -279,6 +279,28 @@ export interface Hooks {
       metadata: any
     },
   ) => Promise<void>
+  /**
+   * Lazunox (6.8): la herramienta FALLÓ (no incluye permisos negados ni interrupciones). `output.contexto` se añade al mensaje de error
+   * que ve el modelo. Solo informa: no puede convertir el fallo en éxito.
+   */
+  "tool.execute.failure"?: (
+    input: { tool: string; sessionID: string; callID: string; args: any; error: string },
+    output: { contexto?: string },
+  ) => Promise<void>
+  /**
+   * Lazunox (6.8): una REGLA o un plugin negó un permiso. Solo informa (no hay reintento). `reglas` trae las reglas que aplicaban
+   * (permiso, patrón, acción), nunca los argumentos de la llamada.
+   */
+  "permission.denied"?: (
+    input: {
+      sessionID: string
+      callID?: string
+      permission: string
+      origen: "regla" | "plugin"
+      reglas: { permission: string; pattern: string; action: string }[]
+    },
+    output: {},
+  ) => Promise<void>
   "experimental.chat.messages.transform"?: (
     input: {},
     output: {

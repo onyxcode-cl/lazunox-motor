@@ -78,15 +78,32 @@ const layer = Layer.effect(
       const { ruleset, ...request } = input
       const agente = typeof request.metadata?.["lazunox_agente"] === "string" ? request.metadata["lazunox_agente"] : undefined
       let needsAsk = false
+      // Lazunox (6.8): aviso `permission.denied` a los plugins (solo informa; sin argumentos de la llamada) y el error de siempre.
+      const negar = (ruleset: PermissionV1.Ruleset, origen: "regla" | "plugin") =>
+        Effect.gen(function* () {
+          const reglas = ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission))
+          yield* plugin
+            .trigger(
+              "permission.denied",
+              {
+                sessionID: String(request.sessionID),
+                ...(request.tool?.callID ? { callID: request.tool.callID } : {}),
+                permission: request.permission,
+                origen,
+                reglas: reglas.slice(0, 20).map((r) => ({ permission: r.permission, pattern: r.pattern, action: r.action })),
+              },
+              {},
+            )
+            .pipe(Effect.ignore)
+          return yield* new PermissionV1.DeniedError({ ruleset: reglas })
+        })
       // Lazunox: ediciones en rutas protegidas (.git, .opencode, .claude, .mcp.json…) siempre se preguntan, salvo `deny`.
       let protegido = false
 
       for (const pattern of request.patterns) {
         if (request.permission === "edit" && RutasProtegidas.activo() && RutasProtegidas.esProtegida(pattern, process.env, { agente, raiz: worktree })) {
           if (evaluate(request.permission, pattern, ruleset).action === "deny") {
-            return yield* new PermissionV1.DeniedError({
-              ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
-            })
+            return yield* negar(ruleset, "regla")
           }
           protegido = true
           needsAsk = true
@@ -99,9 +116,7 @@ const layer = Layer.effect(
             : evaluate(request.permission, pattern, ruleset, approved)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
-          return yield* new PermissionV1.DeniedError({
-            ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
-          })
+          return yield* negar(ruleset, "regla")
         }
         if (rule.action === "allow") continue
         needsAsk = true
@@ -129,9 +144,7 @@ const layer = Layer.effect(
         { status: "ask" as "ask" | "deny" | "allow" },
       )
       if (decision.status === "deny") {
-        return yield* new PermissionV1.DeniedError({
-          ruleset: ruleset.filter((rule) => Wildcard.match(request.permission, rule.permission)),
-        })
+        return yield* negar(ruleset, "plugin")
       }
       if (decision.status === "allow" && !protegido) return
 
