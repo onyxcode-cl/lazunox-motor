@@ -60,18 +60,114 @@ export const cargar = (directory: string, base = dir(), env: NodeJS.ProcessEnv =
 export const guardar = (directory: string, nuevas: Regla[], base = dir(), env: NodeJS.ProcessEnv = process.env) => {
   if (!activo(env)) return
   try {
-    const todas = [...cargar(directory, base, env)]
-    for (const r of nuevas) {
-      if (!persistible(r, env)) continue
-      if (todas.some((x) => x.permission === r.permission && x.pattern === r.pattern)) continue
-      todas.push({ permission: r.permission, pattern: r.pattern })
-    }
-    fs.mkdirSync(base, { recursive: true, mode: 0o700 })
-    const file = archivo(directory, base)
-    const tmp = `${file}.${process.pid}.tmp`
-    fs.writeFileSync(tmp, JSON.stringify({ directory, rules: todas.slice(-500) }), { mode: 0o600 })
-    fs.renameSync(tmp, file)
+    conCerrojo(directory, base, () => {
+      const todas = [...cargar(directory, base, env)]
+      for (const r of nuevas) {
+        if (!persistible(r, env)) continue
+        if (todas.some((x) => x.permission === r.permission && x.pattern === r.pattern)) continue
+        todas.push({ permission: r.permission, pattern: r.pattern })
+      }
+      escribir(directory, base, todas)
+    })
   } catch {}
+}
+
+// --- Gestión (Ola 7, 7.22): listar, borrar uno, borrar todos. Funciona aunque LAZUNOX_PERMISSION_PERSIST esté apagado
+// (hay que poder quitar lo que quedó guardado). Todo es síncrono, así que dentro de un proceso cada leer-cambiar-escribir
+// es atómico; entre procesos las escrituras usan un cerrojo de archivo breve y rename atómico.
+
+/** Clave estable de una regla (la misma en cada lectura): hash de permiso + patrón. */
+export const idDe = (r: Regla) => createHash("sha256").update(`${r.permission}\0${r.pattern}`).digest("hex").slice(0, 16)
+
+export type Guardada = Regla & { id: string }
+export type Lectura = { reglas: Guardada[]; estado: "ok" | "ausente" | "corrupto"; ignoradas: number }
+
+/** Lee el archivo sin mirar el interruptor. Un archivo roto o de otra carpeta se informa (`corrupto`) y NO se toca. */
+export const leer = (directory: string, base = dir(), env: NodeJS.ProcessEnv = process.env): Lectura => {
+  let texto: string
+  try {
+    texto = fs.readFileSync(archivo(directory, base), "utf-8")
+  } catch {
+    return { reglas: [], estado: "ausente", ignoradas: 0 }
+  }
+  try {
+    const j = JSON.parse(texto) as { directory?: unknown; rules?: unknown }
+    if (!j || j.directory !== directory || !Array.isArray(j.rules)) return { reglas: [], estado: "corrupto", ignoradas: 0 }
+    const reglas: Guardada[] = []
+    let ignoradas = 0
+    for (const r of j.rules.slice(0, 500)) {
+      if (!r || typeof r !== "object" || !persistible(r as Regla, env)) {
+        ignoradas++
+        continue
+      }
+      const { permission, pattern } = r as Regla
+      if (!reglas.some((x) => x.permission === permission && x.pattern === pattern)) reglas.push({ id: idDe({ permission, pattern }), permission, pattern })
+    }
+    return { reglas, estado: "ok", ignoradas }
+  } catch {
+    return { reglas: [], estado: "corrupto", ignoradas: 0 }
+  }
+}
+
+const esperar = (ms: number) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms)
+
+/** Cerrojo de archivo por carpeta (creación exclusiva; uno abandonado de más de 5 s se rompe). */
+const conCerrojo = <T>(directory: string, base: string, fn: () => T): T => {
+  fs.mkdirSync(base, { recursive: true, mode: 0o700 })
+  const lock = `${archivo(directory, base)}.lock`
+  for (let i = 0; i < 100; i++) {
+    try {
+      fs.closeSync(fs.openSync(lock, "wx", 0o600))
+      break
+    } catch {
+      try {
+        if (Date.now() - fs.statSync(lock).mtimeMs > 5000) fs.rmSync(lock, { force: true })
+      } catch {}
+      esperar(20)
+    }
+  }
+  try {
+    return fn()
+  } finally {
+    try {
+      fs.rmSync(lock, { force: true })
+    } catch {}
+  }
+}
+
+const escribir = (directory: string, base: string, reglas: Regla[]) => {
+  const file = archivo(directory, base)
+  const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
+  fs.writeFileSync(tmp, JSON.stringify({ directory, rules: reglas.slice(-500) }), { mode: 0o600 })
+  fs.renameSync(tmp, file)
+}
+
+/** Quita UNA regla por su id. Devuelve la regla quitada, o `undefined` si no existía (o el archivo está roto: no se toca). Nunca lanza. */
+export const borrarUno = (directory: string, id: string, base = dir(), env: NodeJS.ProcessEnv = process.env): Regla | undefined => {
+  try {
+    return conCerrojo(directory, base, () => {
+      const l = leer(directory, base, env)
+      const quitada = l.reglas.find((r) => r.id === id)
+      if (l.estado !== "ok" || !quitada) return undefined
+      escribir(directory, base, l.reglas.filter((r) => r.id !== id).map(({ permission, pattern }) => ({ permission, pattern })))
+      return { permission: quitada.permission, pattern: quitada.pattern }
+    })
+  } catch {
+    return undefined
+  }
+}
+
+/** Quita todo lo guardado de la carpeta (incluido un archivo roto) y devuelve cuántas reglas válidas había. */
+export const borrarTodas = (directory: string, base = dir(), env: NodeJS.ProcessEnv = process.env): Guardada[] => {
+  try {
+    return conCerrojo(directory, base, () => {
+      const antes = leer(directory, base, env).reglas
+      fs.rmSync(archivo(directory, base), { force: true })
+      return antes
+    })
+  } catch {
+    return []
+  }
 }
 
 /** Revoca todo lo guardado de una carpeta. */

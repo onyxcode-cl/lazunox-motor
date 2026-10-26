@@ -582,3 +582,11 @@ Prueba: `test/lazunox/revisor-git-modos.test.ts` (rulesets de la app copiados de
   del propio agente (`Truncate.GLOB`, skills, temporales). `general` y `build` no cambian. Efecto lateral bueno: antes, en modos que preguntan,
   `Truncate.GLOB` quedaba en `ask` para el revisor.
 - Pruebas: `packages/opencode/test/lazunox/revisor-permisos-hijos.test.ts` (sesiones sueltas y acumuladas).
+
+## Ola 7 — 7.22 (gestionar los «siempre» guardados; rama `feat/ola7-permisos`)
+
+- **Rutas nuevas** (por carpeta del proyecto, con el enrutado de siempre `x-opencode-directory`/`directory`; funcionan aunque `LAZUNOX_PERMISSION_PERSIST` esté apagado, para poder quitar lo que quedó): `GET /permission/siempre` → `{ activo, reglas: [{ id, permission, pattern }], aviso? }`; `DELETE /permission/siempre/{id}` → `true` (404 `PermissionNotFoundError` si no existe); `DELETE /permission/siempre` → `{ borradas }`. El `id` es estable (hash de permiso + patrón). El archivo `resources/opencode-bin/api-routes.json` de la app es de otro repo y NO se tocó: hay que añadir ahí estas tres rutas.
+- **Funciones** (`permission/siempre-disco.ts`): `leer` (estado `ok|ausente|corrupto` + reglas ignoradas), `borrarUno`, `borrarTodas`, `idDe`. Las escrituras (también `guardar`) usan cerrojo de archivo por carpeta + rename atómico. `Permission.Service` gana el miembro opcional `siempre` (`listar/borrar/borrarTodos`), que además quita la regla de lo aprobado en memoria (si no, valdría hasta reiniciar).
+- **Seguridad**: lo que `persistible` rechaza (lista de exclusión `external_directory`/`doom_loop`/`LAZUNOX_PERMISSION_NO_PERSIST`, comodín `*` de herramientas propias, patrones con saltos de línea) nunca se guarda ni se lista, aunque se escriba a mano en el archivo (se cuenta en el aviso). Archivo corrupto: se informa con `aviso` y no se toca al borrar uno; borrar todos lo elimina. El valor por defecto de `LAZUNOX_PERMISSION_PERSIST` no cambia (apagado).
+- **Nota**: el nombre `NEVER_ALONE_PERMISSIONS` no existe en este fork; su equivalente es la regla `persistible` (lista `SIEMPRE_NO` + exclusiones de la app).
+- Pruebas: `test/lazunox/siempre-gestion.test.ts`.
