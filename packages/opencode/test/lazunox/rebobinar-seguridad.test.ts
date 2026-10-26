@@ -9,7 +9,8 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import fs from "fs/promises"
 import os from "os"
 import path from "path"
-import { Effect, Layer } from "effect"
+import { Deferred, Effect, Fiber, Layer } from "effect"
+import { Storage } from "../../src/storage/storage"
 import { BackgroundJob } from "../../src/background/job"
 import { McpElicitation } from "../../src/mcp/elicitation"
 import { Permission } from "../../src/permission"
@@ -25,13 +26,14 @@ import { Snapshot } from "../../src/snapshot"
 import { ShellBackground, type Job } from "../../src/tool/shell/background"
 import { disposeAllInstances, TestInstance, testInstanceStoreLayer } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
-import { arbolExiste, conEntorno, escribir, existe, gitSnap, leer, turno } from "./rebobinar-util"
+import { arbolExiste, conEntorno, escribir, existe, gitSnap, gitdirSnap, leer, turno } from "./rebobinar-util"
 
 const it = testEffect(
   Layer.mergeAll(
     LayerNode.compile(
       LayerNode.group([
         Snapshot.node,
+        Storage.node,
         FSUtil.node,
         Session.node,
         SessionSummary.node,
@@ -212,6 +214,124 @@ describe("G: candado por sesión", () => {
       expect(yield* leer(`${d}/a.txt`)).toBe("A1")
       yield* svc.deshacer({ sessionID })
       expect(yield* leer(`${d}/b.txt`)).toBe("B1")
+    }),
+    { git: true },
+  )
+})
+
+/** Dos turnos que tocan AMBOS b.txt: T1 deja a=A1,b=B1; T2 deja b=B2 (el repro del verificador). */
+const dosTurnosConB = Effect.fn("dosTurnosConB")(function* () {
+  const tmp = yield* TestInstance
+  const d = tmp.directory
+  const sessionID = yield* nuevaSesion
+  yield* escribir(`${d}/a.txt`, "A0")
+  yield* escribir(`${d}/b.txt`, "B0")
+  const t1 = yield* turno({
+    sessionID,
+    dir: d,
+    herramientas: [{ tool: "edit", input: { filePath: `${d}/b.txt` } }],
+    mutar: Effect.gen(function* () {
+      yield* escribir(`${d}/a.txt`, "A1")
+      yield* escribir(`${d}/b.txt`, "B1")
+    }),
+  })
+  const t2 = yield* turno({
+    sessionID,
+    dir: d,
+    herramientas: [{ tool: "edit", input: { filePath: `${d}/b.txt` } }],
+    mutar: escribir(`${d}/b.txt`, "B2"),
+  })
+  return { d, sessionID, t1, t2 }
+})
+
+describe("C (ola 2C): el archivo omitido por conflicto no se restaura por la puerta de atrás", () => {
+  it.instance(
+    "ruta normal (revertir sin opciones): lo que la persona escribió tras el primer revert se respeta y el informe no se contradice",
+    Effect.gen(function* () {
+      const { d, sessionID, t1, t2 } = yield* dosTurnosConB()
+      const revert = yield* SessionRevert.Service
+      yield* revert.revertir({ sessionID, messageID: t2.user.id })
+      expect(yield* leer(`${d}/b.txt`)).toBe("B1")
+      yield* escribir(`${d}/b.txt`, "B-persona")
+      const r = yield* revert.revertir({ sessionID, messageID: t1.user.id })
+      expect(yield* leer(`${d}/b.txt`)).toBe("B-persona")
+      expect(r.omitidos.filter((o) => o.file === "b.txt")).toEqual([{ file: "b.txt", motivo: "conflicto" }])
+      expect(r.restaurados).not.toContain("b.txt")
+      expect(yield* leer(`${d}/a.txt`)).toBe("A0")
+    }),
+    { git: true },
+  )
+})
+
+describe("A (ola 2C): sin punto de control no se aplica nada", () => {
+  it.instance(
+    "si git no puede guardar el estado actual, revertir falla (caducado) ANTES de tocar archivos",
+    Effect.gen(function* () {
+      const { d, sessionID, t2 } = yield* dosTurnosConB()
+      const gitdir = yield* gitdirSnap
+      // Índice corrupto: `git write-tree` falla y track() no devuelve ningún árbol.
+      yield* Effect.promise(() => fs.writeFile(path.join(gitdir, "index"), "basura"))
+      const revert = yield* SessionRevert.Service
+      const error = yield* revert.revertir({ sessionID, messageID: t2.user.id }).pipe(Effect.flip)
+      expect(error).toMatchObject({ _tag: "SnapshotExpiredError" })
+      expect(yield* leer(`${d}/b.txt`)).toBe("B2")
+      expect((yield* (yield* Session.Service).get(sessionID)).revert).toBeUndefined()
+    }),
+    { git: true },
+  )
+
+  it.instance(
+    "si el registro del revert perdió el árbol de «después», deshacer falla CERRADO y no pisa lo que la persona editó",
+    Effect.gen(function* () {
+      const { d, sessionID, t1 } = yield* dosTurnos(true)
+      yield* (yield* reb).rebobinar({ sessionID, messageID: t1.user.id, modo: "codigo" })
+      const storage = yield* Storage.Service
+      const clave = ["lazunox_revert", sessionID]
+      const registro = yield* storage.read<{ files: string[]; after?: string; snapshot?: string }>(clave)
+      yield* storage.write(clave, { files: registro.files, snapshot: registro.snapshot })
+      yield* escribir(`${d}/a.txt`, "A-persona")
+      const error = yield* (yield* reb).deshacer({ sessionID }).pipe(Effect.flip)
+      expect(error).toMatchObject({ _tag: "SnapshotExpiredError" })
+      expect(yield* leer(`${d}/a.txt`)).toBe("A-persona")
+    }),
+    { git: true },
+  )
+})
+
+describe("G (ola 2C): el candado por sesión cubre revert/unrevert", () => {
+  it.instance(
+    "revertir por la ruta normal espera a quien tiene el candado, y se libera si el dueño se interrumpe",
+    Effect.gen(function* () {
+      const { d, sessionID, t2 } = yield* dosTurnosConB()
+      const revert = yield* SessionRevert.Service
+      const puerta = yield* Deferred.make<void>()
+      const dueno = yield* Effect.forkScoped(revert.conCandado(sessionID, Deferred.await(puerta)))
+      yield* Effect.sleep("50 millis")
+      const pedido = yield* Effect.forkScoped(revert.revertir({ sessionID, messageID: t2.user.id }))
+      yield* Effect.sleep("300 millis")
+      expect(yield* leer(`${d}/b.txt`)).toBe("B2") // aún no corrió: el candado está tomado
+      yield* Deferred.succeed(puerta, undefined)
+      yield* Fiber.join(dueno)
+      yield* Fiber.join(pedido)
+      expect(yield* leer(`${d}/b.txt`)).toBe("B1")
+      // Interrupción: el dueño muere con el candado puesto y el siguiente no se queda colgado.
+      const colgado = yield* Effect.forkScoped(revert.conCandado(sessionID, Effect.never))
+      yield* Effect.sleep("50 millis")
+      yield* Fiber.interrupt(colgado)
+      yield* revert.deshacer({ sessionID })
+      expect(yield* leer(`${d}/b.txt`)).toBe("B2")
+    }),
+    { git: true },
+  )
+
+  it.instance(
+    "rebobinar y deshacer reutilizan el candado sin pedirlo otra vez (no hay bloqueo mutuo)",
+    Effect.gen(function* () {
+      const { d, sessionID, t2 } = yield* dosTurnosConB()
+      yield* (yield* reb).rebobinar({ sessionID, messageID: t2.user.id, modo: "todo" })
+      expect(yield* leer(`${d}/b.txt`)).toBe("B1")
+      yield* (yield* reb).deshacer({ sessionID })
+      expect(yield* leer(`${d}/b.txt`)).toBe("B2")
     }),
     { git: true },
   )

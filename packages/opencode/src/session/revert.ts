@@ -1,5 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Effect, Layer, Context, Schema } from "effect"
+import { Effect, Layer, Context, Schema, Semaphore } from "effect"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Snapshot } from "../snapshot"
@@ -67,6 +67,20 @@ export interface Interface {
   readonly guardarNota: (sessionID: SessionID, texto: string) => Effect.Effect<void>
   readonly consumirNota: (sessionID: SessionID) => Effect.Effect<string | undefined>
   readonly cleanup: (session: Session.Info) => Effect.Effect<void>
+  /**
+   * Lazunox: el candado por sesión. `revert`, `unrevert`, `revertir` y `deshacer` lo toman solos; quien ya lo tiene
+   * (SessionRebobinar, que agrupa revisión + aplicación) lo toma con `conCandado` y llama a las variantes `*BajoCandado`,
+   * que NO lo piden de nuevo (el semáforo no es reentrante: pedirlo dos veces sería un bloqueo mutuo).
+   */
+  readonly conCandado: <A, E, R>(sessionID: SessionID, efecto: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
+  readonly revertirBajoCandado: (
+    input: RevertInput,
+    options?: RevertOptions,
+  ) => Effect.Effect<Detalle, Session.BusyError | Snapshot.ExpiredError>
+  readonly deshacerBajoCandado: (input: {
+    sessionID: SessionID
+    sobrescribir?: ReadonlySet<string>
+  }) => Effect.Effect<Detalle, Session.BusyError | Snapshot.ExpiredError>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SessionRevert") {}
@@ -88,8 +102,39 @@ const layer = Layer.effect(
         .read<Tocados>(tocadosKey(sessionID))
         .pipe(Effect.catch(() => Effect.succeed(undefined as Tocados | undefined)))
 
-    /** Falla CERRADO: si falta cualquiera de los árboles no se toca nada (ExpiredError → 409 caducado). */
+    // Un candado por sesión (revert, unrevert, revertir, deshacer y rebobinar no se intercalan). Con cuenta de usuarios:
+    // cuando nadie lo usa se saca del Map, así que no crece con las sesiones.
+    const candados = new Map<string, { sem: Semaphore.Semaphore; usos: number }>()
+    const conCandado = <A, E, R>(sessionID: SessionID, efecto: Effect.Effect<A, E, R>): Effect.Effect<A, E, R> =>
+      Effect.suspend(() => {
+        let entrada = candados.get(sessionID)
+        if (!entrada) {
+          entrada = { sem: Semaphore.makeUnsafe(1), usos: 0 }
+          candados.set(sessionID, entrada)
+        }
+        const actual = entrada
+        actual.usos++
+        return actual.sem.withPermits(1)(efecto).pipe(
+          // Se libera en éxito, error e interrupción (el semáforo lo suelta; aquí solo se cuenta).
+          Effect.ensuring(
+            Effect.sync(() => {
+              actual.usos--
+              if (actual.usos === 0 && candados.get(sessionID) === actual) candados.delete(sessionID)
+            }),
+          ),
+        )
+      })
+
+    /** Falla CERRADO: si falta cualquiera de los árboles (o viene `undefined`) no se toca nada (ExpiredError → 409 caducado). */
     const exigirArboles = Effect.fnUntraced(function* (hashes: (string | undefined)[]) {
+      if (hashes.some((item) => !item)) {
+        return yield* Effect.fail(
+          new Snapshot.ExpiredError({
+            hash: "",
+            message: "No hay punto de control del estado de los archivos (git no pudo guardarlo). No se cambió ningún archivo.",
+          }),
+        )
+      }
       for (const hash of new Set(hashes.filter((item): item is string => !!item))) {
         if (!(yield* snap.has(hash))) {
           return yield* Effect.fail(
@@ -102,7 +147,7 @@ const layer = Layer.effect(
       }
     })
 
-    const revertir = Effect.fn("SessionRevert.revertir")(function* (input: RevertInput, options?: RevertOptions) {
+    const revertirBajoCandado = Effect.fn("SessionRevert.revertir")(function* (input: RevertInput, options?: RevertOptions) {
       yield* state.assertNotBusy(input.sessionID)
       const all = yield* sessions.messages({ sessionID: input.sessionID }).pipe(Effect.orDie)
       let lastUser: SessionV1.User | undefined
@@ -137,6 +182,15 @@ const layer = Layer.effect(
 
       const tocaArchivos = options?.files !== false
       rev.snapshot = session.revert?.snapshot ?? (yield* snap.track())
+      // Falla CERRADO: sin punto de control del estado de antes no se podría deshacer (git falló): si hay archivos que tocar, no se toca nada.
+      if (tocaArchivos && !rev.snapshot && patches.some((patch) => patch.files.length)) {
+        return yield* Effect.fail(
+          new Snapshot.ExpiredError({
+            hash: "",
+            message: "No se pudo guardar el estado actual de los archivos (git falló), así que no se podría deshacer. No se cambió ningún archivo.",
+          }),
+        )
+      }
       const informe: { restaurados: string[]; borrados: string[]; omitidos: { file: string; motivo: string }[] } = {
         restaurados: [],
         borrados: [],
@@ -147,11 +201,12 @@ const layer = Layer.effect(
         const previos = session.revert?.snapshot ? yield* leerTocados(input.sessionID) : undefined
         // Antes de tocar nada: deben existir TODOS los árboles (el anterior, el de los parches y el de después del primer revert).
         yield* exigirArboles([
-          previos?.files.length ? session.revert?.snapshot : undefined,
-          previos?.files.length ? previos.after : undefined,
+          ...(previos?.files.length ? [session.revert?.snapshot, previos.after] : []),
           ...patches.filter((patch) => patch.files.length).map((patch) => patch.hash),
         ])
         const saltar = options?.skip
+        // Archivos que NO deben entrar en `aplicar` (omitidos por conflicto o `skip` en el bloque de `previos`, o ya vistos).
+        const vistos = new Set<string>()
         if (session.revert?.snapshot && previos?.files.length) {
           // Lo que cambió después del primer rebobinado no se pisa sin que la persona lo pida (igual que en deshacer).
           const cambiadosDespues = previos.after
@@ -160,15 +215,17 @@ const layer = Layer.effect(
           const lista: string[] = []
           for (const file of previos.files) {
             const motivo = saltar?.get(file)
-            if (motivo) informe.omitidos.push({ file: yield* relativa(file), motivo })
-            else if (cambiadosDespues.has(file) && !options?.forzar?.has(file))
+            if (motivo) {
+              informe.omitidos.push({ file: yield* relativa(file), motivo })
+              vistos.add(file) // omitido: el bucle de parches tampoco debe restaurarlo
+            } else if (cambiadosDespues.has(file) && !options?.forzar?.has(file)) {
               informe.omitidos.push({ file: yield* relativa(file), motivo: "conflicto" })
-            else lista.push(file)
+              vistos.add(file)
+            } else lista.push(file)
           }
           yield* snap.restoreFiles(session.revert.snapshot, lista)
         }
         const aplicar: Snapshot.Patch[] = []
-        const vistos = new Set<string>()
         for (const patch of patches) {
           const files: string[] = []
           for (const file of patch.files) {
@@ -227,7 +284,7 @@ const layer = Layer.effect(
       return { session: yield* sessions.get(input.sessionID).pipe(Effect.orDie), ...informe }
     })
 
-    const deshacer = Effect.fn("SessionRevert.deshacer")(function* (input: {
+    const deshacerBajoCandado = Effect.fn("SessionRevert.deshacer")(function* (input: {
       sessionID: SessionID
       sobrescribir?: ReadonlySet<string>
     }) {
@@ -247,7 +304,8 @@ const layer = Layer.effect(
         const archivos = guardado?.files ?? (yield* snap.patchEstricto(antes)).files
         // Falla CERRADO: si hay archivos que restaurar y falta el estado de antes o el de después, no se toca nada (409 caducado).
         // («solo conversación» no toca archivos: su deshacer no depende de ningún árbol.)
-        if (archivos.length) yield* exigirArboles([antes, guardado?.after])
+        // (con registro, un `after` ausente —git falló al guardarlo— también es «falta»: no se pueden detectar conflictos.)
+        if (archivos.length) yield* exigirArboles([antes, guardado ? guardado.after : antes])
         // Lo que la persona cambió DESPUÉS del revert no se pisa salvo que lo pida.
         const cambiados = guardado?.after ? new Set((yield* snap.patchEstricto(guardado.after)).files) : new Set<string>()
         const lista: string[] = []
@@ -287,6 +345,11 @@ const layer = Layer.effect(
       return nota.texto
     })
 
+    const revertir = (input: RevertInput, options?: RevertOptions) =>
+      conCandado(input.sessionID, revertirBajoCandado(input, options))
+    const deshacer = (input: { sessionID: SessionID; sobrescribir?: ReadonlySet<string> }) =>
+      conCandado(input.sessionID, deshacerBajoCandado(input))
+
     const revert = Effect.fn("SessionRevert.revert")(function* (input: RevertInput) {
       return (yield* revertir(input)).session
     })
@@ -322,7 +385,19 @@ const layer = Layer.effect(
       if (!(yield* leerTocados(sessionID))?.snapshot) yield* snap.forget(prefijoRevert(sessionID)).pipe(Effect.ignore)
     })
 
-    return Service.of({ revert, unrevert, revertir, deshacer, hayQueDeshacer, guardarNota, consumirNota, cleanup })
+    return Service.of({
+      revert,
+      unrevert,
+      revertir,
+      deshacer,
+      hayQueDeshacer,
+      guardarNota,
+      consumirNota,
+      cleanup,
+      conCandado,
+      revertirBajoCandado,
+      deshacerBajoCandado,
+    })
   }),
 )
 
