@@ -375,7 +375,7 @@ export const ReadTool = Tool.define<
             metadata: { preview: msg, truncated: false, loaded: [] as string[], repetida: previa.numero },
           }
         }
-        LecturasSesion.registrar(ctx.sessionID, claveLectura, h, callID)
+        LecturasSesion.registrar(ctx.sessionID, claveLectura, h, callID, { msgID: String(ctx.messageID), pedida: filepath })
       }
 
       let output = [`<path>${filepath}</path>`, `<type>file</type>`, "<content>\n"].join("\n")

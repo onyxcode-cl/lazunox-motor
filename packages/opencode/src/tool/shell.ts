@@ -26,6 +26,7 @@ import { LazunoxWake } from "./lazunox-wake"
 import { tryCompile, type Compiled } from "./shell/regex-seguro"
 import { TrabajosDisco } from "./shell/trabajos-disco"
 import { utf8Command } from "./shell/utf8-windows"
+import { AvisosCambios } from "@/session/avisos-cambios"
 import { comandoDeSoloLectura, MENSAJE_SOLO_LECTURA } from "@/session/plan-modo"
 
 export { Parameters } from "./shell/prompt"
@@ -923,7 +924,9 @@ export const ShellTool = Tool.define(
                 return yield* settle(job, ShellBackground.clampYield(params.yield_ms), ctx, limits)
               }
 
-              return yield* run(
+              // Lazunox (6.7 · H10): con LAZUNOX_AVISOS_CAMBIOS=1, instantáneas antes/después para listar (sin contenido) lo que cambió el comando.
+              const previo = yield* AvisosCambios.antesDelShell()
+              const resultado = yield* run(
                 {
                   shell,
                   command: params.command,
@@ -933,6 +936,14 @@ export const ShellTool = Tool.define(
                 },
                 ctx,
               )
+              if (!previo) return resultado
+              const cambios = yield* AvisosCambios.despuesDelShell(
+                previo,
+                String(ctx.sessionID),
+                { directory: instanceCtx.directory, worktree: instanceCtx.worktree },
+                String(ctx.messageID),
+              )
+              return cambios ? { ...resultado, output: `${resultado.output}\n\n${cambios}` } : resultado
             }),
         }
       })
