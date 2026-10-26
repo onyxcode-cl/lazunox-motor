@@ -11,6 +11,12 @@ import { Instruction } from "../session/instruction"
 import { LecturasSesion } from "../session/lecturas"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
 
+// Lazunox (4D): cifras de las reglas por ruta adjuntadas (solo si hubo).
+const reglasMeta = (loaded: { content: string; regla?: boolean }[]) => {
+  const r = loaded.filter((item) => item.regla)
+  return r.length ? { reglasBytes: r.reduce((a, b) => a + Buffer.byteLength(b.content, "utf-8"), 0), reglasN: r.length } : {}
+}
+
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
 const MAX_LINE_SUFFIX = `... (line truncated to ${MAX_LINE_LENGTH} chars)`
@@ -62,6 +68,9 @@ type Metadata = {
   display?: Display
   // No releer: esta lectura fue idéntica a la n.º `repetida` y se respondió con una línea corta.
   repetida?: number
+  // Lazunox (4D): reglas por ruta adjuntadas en esta lectura (bytes y cantidad), para el tope por turno.
+  reglasBytes?: number
+  reglasN?: number
 }
 
 export const ReadTool = Tool.define<
@@ -397,6 +406,7 @@ export const ReadTool = Tool.define<
           preview: file.raw.slice(0, 20).join("\n"),
           truncated,
           loaded: loaded.map((item) => item.filepath),
+          ...reglasMeta(loaded),
           display: {
             type: "file" as const,
             path: filepath,

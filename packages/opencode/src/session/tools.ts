@@ -21,7 +21,11 @@ import { ToolSearch } from "@/tool/tool-search"
 import { Plugin } from "@/plugin"
 import type { TaskPromptOps } from "@/tool/task"
 import { type Tool as AITool, tool, jsonSchema, type ToolExecutionOptions, asSchema } from "ai"
-import { Effect } from "effect"
+import { Effect, Option } from "effect"
+import path from "path"
+import { Instruction } from "./instruction"
+import { InstanceState } from "@/effect/instance-state"
+import { rutasDePatch } from "./reglas-ruta"
 import { MessageV2 } from "./message-v2"
 import { Session } from "./session"
 import { SessionProcessor } from "./processor"
@@ -58,6 +62,49 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const mcp = yield* MCP.Service
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
+  // Lazunox (4D): opcional para no exigirlo a quien arma esta capa sin instrucciones.
+  const instruction = Option.getOrUndefined(yield* Effect.serviceOption(Instruction.Service))
+
+  // Lazunox (4D): tras editar un archivo se adjuntan las reglas por ruta que le corresponden (una vez por turno, con tope).
+  const conReglas = Effect.fnUntraced(function* <T extends { output: string }>(
+    id: string,
+    args: Record<string, unknown>,
+    ctx: Tool.Context,
+    result: T,
+  ) {
+    if (!instruction || (id !== "edit" && id !== "write" && id !== "apply_patch")) return result
+    const dir = yield* InstanceState.directory
+    const archivos =
+      id === "apply_patch"
+        ? typeof args.patchText === "string"
+          ? rutasDePatch(args.patchText)
+          : []
+        : typeof args.filePath === "string"
+          ? [args.filePath]
+          : []
+    const adjuntas: { filepath: string; content: string }[] = []
+    for (const archivo of archivos) {
+      const abs = path.isAbsolute(archivo) ? archivo : path.resolve(dir, archivo)
+      adjuntas.push(
+        ...(yield* instruction
+          .reglas(ctx.messages, abs, ctx.messageID)
+          .pipe(Effect.orElseSucceed(() => [] as { filepath: string; content: string }[]))),
+      )
+    }
+    if (adjuntas.length === 0) return result
+    const previa: unknown = (result as { metadata?: unknown }).metadata
+    const meta: Record<string, unknown> = isRecord(previa) ? previa : {}
+    return {
+      ...result,
+      output: `${result.output}\n\n<system-reminder>\n${adjuntas.map((item) => item.content).join("\n\n")}\n</system-reminder>`,
+      metadata: {
+        ...meta,
+        loaded: adjuntas.map((item) => item.filepath),
+        reglasBytes: adjuntas.reduce((a, b) => a + Buffer.byteLength(b.content, "utf-8"), 0),
+        reglasN: adjuntas.length,
+      },
+    }
+  })
 
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
@@ -130,7 +177,12 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
               { args },
             )
-            const result = yield* item.execute(args, ctx)
+            const result = yield* conReglas(
+              item.id,
+              args as Record<string, unknown>,
+              ctx,
+              yield* item.execute(args, ctx),
+            )
             const output = {
               ...result,
               attachments: result.attachments?.map((attachment) => ({

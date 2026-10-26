@@ -670,6 +670,23 @@ const scenarios: Scenario[] = [
       check((body as { ok?: unknown }).ok === false, "quitar should report ok:false when the session has no goal")
     }),
   http.protected
+    .get("/experimental/session/{sessionID}/contexto-fijo", "experimental.session.contextoFijo")
+    .seeded((ctx) => ctx.session({ title: "Contexto fijo owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/contexto-fijo", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      const b = body as { tokens?: unknown; aproximado?: unknown; partes?: Record<string, unknown>; reglasPorRuta?: unknown }
+      check(typeof b.tokens === "number" && b.tokens >= 0, "contexto-fijo should report tokens")
+      check(b.aproximado === true, "contexto-fijo should say it is approximate")
+      check(
+        ["agentes", "skills", "mcp", "instrucciones"].every((k) => typeof b.partes?.[k] === "number"),
+        "contexto-fijo should break the total down by part",
+      )
+      check(typeof b.reglasPorRuta === "number", "contexto-fijo should count path rules")
+    }),
+  http.protected
     .get("/experimental/session/{sessionID}/turnos", "experimental.session.turnos")
     .seeded((ctx) => ctx.session({ title: "Turnos route owner" }))
     .at((ctx) => ({

@@ -288,4 +288,35 @@ describe("reinyección <contexto-vigente> tras compactar", () => {
       }),
     { git: true },
   )
+
+  it.instance(
+    "reglas por ruta (4D): la regla cargada vuelve al bloque solo si hoy sigue siendo una regla válida dentro del proyecto",
+    () =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        const fuera = fs.mkdtempSync(path.join(path.dirname(directory), "fuera-"))
+        fs.mkdirSync(path.join(directory, ".opencode", "rules"), { recursive: true })
+        const r = (nombre: string, cuerpo: string) => {
+          fs.writeFileSync(path.join(directory, ".opencode", "rules", nombre), `---\npaths: src/**\n---\n${cuerpo}\n`)
+          return path.join(directory, ".opencode", "rules", nombre)
+        }
+        const buena = r("buena.md", "REGLA-POR-RUTA-BUENA")
+        const borrada = r("borrada.md", "REGLA-BORRADA")
+        fs.rmSync(borrada)
+        fs.writeFileSync(path.join(fuera, "externa.md"), "---\npaths: **\n---\nREGLA-EXTERNA-ENLAZADA\n")
+        fs.symlinkSync(path.join(fuera, "externa.md"), path.join(directory, ".opencode", "rules", "enlazada.md"))
+        // Un .md con encabezado pero FUERA de las carpetas de reglas no es una regla.
+        fs.writeFileSync(path.join(directory, "notas.md"), "---\npaths: **\n---\nNOTAS-NO-ES-REGLA\n")
+        const { bloque } = yield* compactarConCarga({
+          dir: directory,
+          cargados: [buena, borrada, path.join(directory, ".opencode", "rules", "enlazada.md"), path.join(directory, "notas.md")],
+        })
+        expect(bloque!.text).toContain("REGLA-POR-RUTA-BUENA")
+        expect(bloque!.text).not.toContain("paths:")
+        for (const x of ["REGLA-BORRADA", "REGLA-EXTERNA-ENLAZADA", "NOTAS-NO-ES-REGLA"]) expect(bloque!.text).not.toContain(x)
+        expect(Buffer.byteLength(bloque!.text)).toBeLessThanOrEqual(BLOQUE_MAX_BYTES)
+        fs.rmSync(fuera, { recursive: true, force: true })
+      }),
+    { git: true },
+  )
 })

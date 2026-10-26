@@ -40,6 +40,7 @@ import { Session } from "@/session/session"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { SessionTurnos } from "@/session/turnos"
+import { SessionContextoFijo } from "@/session/contexto-fijo"
 import { SessionRebobinar } from "@/session/rebobinar"
 import { Todo } from "@/session/todo"
 import { SessionShare } from "@/share/session"
@@ -247,6 +248,7 @@ const app = LayerNode.group([
   SessionRevert.node,
   SessionSummary.node,
   SessionTurnos.node,
+  SessionContextoFijo.node,
   SessionRebobinar.node,
   SessionPrompt.node,
   Instruction.node,
