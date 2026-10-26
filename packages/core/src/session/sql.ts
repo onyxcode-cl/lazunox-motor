@@ -107,6 +107,9 @@ export const TodoTable = sqliteTable(
     content: text().notNull(),
     status: text().notNull(),
     priority: text().notNull(),
+    // Lazunox (2D): criterio de verificación y marca de bloqueo (ambas opcionales; las filas viejas quedan en null).
+    verificar: text(),
+    bloqueado: integer({ mode: "boolean" }),
     position: integer().notNull(),
     ...Timestamps,
   },

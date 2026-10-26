@@ -160,13 +160,13 @@ it.instance(
   },
 )
 
-it.instance("general agent denies todo tools", () =>
+it.instance("general agent can keep its own plan (Lazunox 2D)", () =>
   Effect.gen(function* () {
     const general = yield* load((svc) => svc.get("general"))
     expect(general).toBeDefined()
     expect(general?.mode).toBe("subagent")
     expect(general?.hidden).toBeUndefined()
-    expect(evalPerm(general, "todowrite")).toBe("deny")
+    expect(evalPerm(general, "todowrite")).toBe("allow")
   }),
 )
 

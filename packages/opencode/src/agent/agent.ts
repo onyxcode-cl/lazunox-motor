@@ -191,10 +191,13 @@ const layer = Layer.effect(
           general: {
             name: "general",
             description: `General-purpose agent for researching complex questions and executing multi-step tasks. Use this agent to execute multiple units of work in parallel.`,
+            // Lazunox (2D, P09): el ayudante general puede llevar su propio plan (la lista es de SU sesión; no toca la del padre).
+            // La regla explícita evita además que `task` le agregue el deny por omisión. El `verificar` con `$ ` sigue pasando por
+            // el permiso normal de shell de ESTA sesión hija (con los topes del padre), nunca por otra vía.
             permission: Permission.merge(
               defaults,
               Permission.fromConfig({
-                todowrite: "deny",
+                todowrite: "allow",
               }),
               user,
             ),
