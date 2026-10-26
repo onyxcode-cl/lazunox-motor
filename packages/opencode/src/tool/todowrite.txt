@@ -24,6 +24,7 @@ Skip when:
 ## Optional fields (Lazunox)
 - `verificar`: how to prove the task is done. If it starts with `$ ` the rest is a shell command (for example `$ bun test src/foo.test.ts`): when you mark the task `completed` the engine runs it with the normal shell permissions (the user may be asked, and plan mode or helper limits still apply). Exit code 0 keeps it `completed`; any other result leaves it `in_progress` and shows you the output so you can fix it and mark it again. Without the `$ ` prefix it is plain text and you must check it yourself.
 - `bloqueado`: set `true` when the task cannot move (waiting on the user or on something you cannot solve now), and say why in a follow-up todo.
+- `id` and `depende_de`: give a todo a short `id` (letters, digits, `-`, `_`, `.`; unique in the list) and list in `depende_de` the ids of todos of THIS list (max 10) that must be `completed` first. A todo may only be `in_progress` or `completed` once all its dependencies are `completed`. The whole list is rejected (nothing is saved) if there is a cycle, an unknown id, a duplicate id, or a todo that is `in_progress`/`completed` with unfinished dependencies. Todos with no unfinished dependencies can be done in any order or in parallel by helpers.
 - At most ONE todo may be `in_progress`; a list with more is rejected.
 
 ## Rules

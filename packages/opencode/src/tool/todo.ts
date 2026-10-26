@@ -38,6 +38,69 @@ export function validarEnCurso(todos: ReadonlyArray<Todo.Info>): string | undefi
   return `Solo una tarea puede estar in_progress a la vez y hay ${en.length}: ${en.map((t) => `«${t.content}»`).join(", ")}. Deja una sola in_progress y vuelve a llamar a todowrite.`
 }
 
+// ---------------------------------------------------------------------------------------------------------------------
+// Lazunox (6.6, H11): dependencias entre tareas de la MISMA lista. Pura. Rechaza la lista entera (nada se guarda) si hay ids
+// repetidos o mal formados, más de 10 dependencias, ids inexistentes, ciclos, o una tarea `in_progress`/`completed` cuyas
+// dependencias no están `completed`.
+// ---------------------------------------------------------------------------------------------------------------------
+
+export const DEPENDENCIAS_MAX = 10
+const ID_VALIDO = /^[A-Za-z0-9_.-]{1,40}$/
+
+/** `undefined` si las dependencias son válidas; si no, el motivo (siempre dice qué corregir). */
+export function validarDependencias(todos: ReadonlyArray<Todo.Info>): string | undefined {
+  const porId = new Map<string, number>()
+  for (let i = 0; i < todos.length; i++) {
+    const id = todos[i]!.id
+    if (id === undefined) continue
+    if (!ID_VALIDO.test(id)) return `El id «${id.slice(0, 60)}» no es válido: usa letras, números, «-», «_» o «.» (máximo 40). Corrige y vuelve a llamar a todowrite.`
+    if (porId.has(id)) return `El id «${id}» está repetido en la lista: cada id debe ser único. Corrige y vuelve a llamar a todowrite.`
+    porId.set(id, i)
+  }
+  const nombre = (i: number) => `«${todos[i]!.content}»`
+  for (let i = 0; i < todos.length; i++) {
+    const deps = todos[i]!.depende_de ?? []
+    if (deps.length > DEPENDENCIAS_MAX)
+      return `La tarea ${nombre(i)} depende de ${deps.length} tareas y el máximo es ${DEPENDENCIAS_MAX}. Agrupa o reparte el trabajo y vuelve a llamar a todowrite.`
+    for (const d of deps) {
+      if (!porId.has(d))
+        return `La tarea ${nombre(i)} depende de «${String(d).slice(0, 60)}», que no es el id de ninguna tarea de esta lista. Dale ese id a la tarea (campo id) o quita la dependencia, y vuelve a llamar a todowrite.`
+    }
+  }
+  // Ciclos (incluye la dependencia de una tarea consigo misma): búsqueda en profundidad con tres colores.
+  const color = new Array<0 | 1 | 2>(todos.length).fill(0)
+  const pila: number[] = []
+  const visitar = (i: number): number[] | undefined => {
+    color[i] = 1
+    pila.push(i)
+    for (const d of todos[i]!.depende_de ?? []) {
+      const j = porId.get(d)!
+      if (color[j] === 1) return [...pila.slice(pila.indexOf(j)), j]
+      if (color[j] === 0) {
+        const c = visitar(j)
+        if (c) return c
+      }
+    }
+    pila.pop()
+    color[i] = 2
+    return undefined
+  }
+  for (let i = 0; i < todos.length; i++) {
+    if (color[i] !== 0) continue
+    const ciclo = visitar(i)
+    if (ciclo) return `Hay un ciclo de dependencias: ${ciclo.map(nombre).join(" -> ")}. Rompe el ciclo y vuelve a llamar a todowrite.`
+  }
+  // Orden: no se empieza ni se termina una tarea antes que sus dependencias.
+  for (let i = 0; i < todos.length; i++) {
+    const t = todos[i]!
+    if (t.status !== "in_progress" && t.status !== "completed") continue
+    const faltan = (t.depende_de ?? []).filter((d) => todos[porId.get(d)!]!.status !== "completed")
+    if (faltan.length > 0)
+      return `La tarea ${nombre(i)} está ${t.status} pero depende de tareas que aún no están completed: ${faltan.map((d) => `«${todos[porId.get(d)!]!.content}» (${d}, ${todos[porId.get(d)!]!.status})`).join(", ")}. Completa primero esas tareas (o quita la dependencia) y vuelve a llamar a todowrite.`
+  }
+  return undefined
+}
+
 export interface PorVerificar {
   indice: number
   comando: string
@@ -125,6 +188,8 @@ export const TodoWriteTool = Tool.define(
 
               const invalida = validarEnCurso(params.todos)
               if (invalida) throw new Error(invalida)
+              const dependencias = validarDependencias(params.todos)
+              if (dependencias) throw new Error(dependencias)
 
               const previas = yield* todo.get(ctx.sessionID)
               const pendientes = porVerificar(previas, params.todos)

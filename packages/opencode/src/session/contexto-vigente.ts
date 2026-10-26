@@ -7,7 +7,18 @@
 /** Tope absoluto del bloque (el plan: 16 KB o el 10 % de lo usable, lo menor). */
 export const BLOQUE_MAX_BYTES = 16 * 1024
 
-export type Tarea = { status: string; content: string }
+/** `id` y `depende_de` (6.6) son opcionales; se muestran sin tocar el estado para que las dependencias sobrevivan a la compactación. */
+export type Tarea = { status: string; content: string; id?: string; depende_de?: ReadonlyArray<string> }
+
+// Los ids vienen del modelo: solo se muestran si tienen la forma segura (sin saltos de línea ni marcas) y como mucho 10 dependencias.
+const ID_SEGURO = /^[A-Za-z0-9_.-]{1,40}$/
+export const marcaDependencias = (t: Tarea): string => {
+  const partes: string[] = []
+  if (t.id && ID_SEGURO.test(t.id)) partes.push(`id ${t.id}`)
+  const deps = (t.depende_de ?? []).filter((d) => ID_SEGURO.test(d)).slice(0, 10)
+  if (deps.length) partes.push(`depende de ${deps.join(", ")}`)
+  return partes.length ? `(${partes.join("; ")}) ` : ""
+}
 export type Documento = { nombre: string; contenido: string }
 export type Ayudante = { id: string; titulo: string; estado: string }
 
@@ -72,7 +83,7 @@ export const construirBloque = (input: EntradaBloque): Bloque | undefined => {
   if (tareas.length)
     fijas.push({
       titulo: "## Lista de tareas",
-      lineas: tareas.map((t) => `- [${t.status}] ${t.content.replace(/\s+/g, " ").trim().slice(0, 300)}`),
+      lineas: tareas.map((t) => `- [${t.status}] ${marcaDependencias(t)}${t.content.replace(/\s+/g, " ").trim().slice(0, 300)}`),
       etiqueta: `plan:${tareas.length}`,
     })
   // Nota fija (sin texto de la conversación): solo la cifra.

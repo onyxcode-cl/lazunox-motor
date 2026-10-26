@@ -220,6 +220,8 @@ export default {
           \`priority\` text NOT NULL,
           \`verificar\` text,
           \`bloqueado\` integer,
+          \`tarea_id\` text,
+          \`depende_de\` text,
           \`position\` integer NOT NULL,
           \`time_created\` integer NOT NULL,
           \`time_updated\` integer NOT NULL,

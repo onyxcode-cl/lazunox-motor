@@ -162,6 +162,47 @@ describe("DatabaseMigration", () => {
     )
   })
 
+  // Lazunox (6.6): la migración de dependencias es ADITIVA. Una base con la forma que dejó el motor lazunox.10 (todo sin
+  // `tarea_id` ni `depende_de`) debe migrar conservando sus filas, que quedan con las columnas nuevas en null.
+  test("todo_dependencias: añade columnas a una base antigua y conserva sus tareas", async () => {
+    await run(
+      Effect.gen(function* () {
+        const db = yield* makeDb
+        yield* db.run(sql`PRAGMA foreign_keys = OFF`)
+        yield* DatabaseMigration.apply(db)
+        // Se devuelve la base al estado del motor publicado: sin las dos columnas y sin el registro de la migración nueva.
+        yield* db.run(sql`ALTER TABLE todo DROP COLUMN tarea_id`)
+        yield* db.run(sql`ALTER TABLE todo DROP COLUMN depende_de`)
+        yield* db.run(sql`DELETE FROM migration WHERE id = '20261026045424_todo_dependencias'`)
+        expect(
+          yield* db.all(sql`SELECT name FROM pragma_table_info('todo') WHERE name IN ('tarea_id', 'depende_de')`),
+        ).toEqual([])
+        yield* db.run(
+          sql`INSERT INTO todo (session_id, content, status, priority, verificar, bloqueado, position, time_created, time_updated) VALUES ('s1', 'vieja', 'pending', 'high', '$ ls', 1, 0, 1, 1)`,
+        )
+
+        yield* DatabaseMigration.apply(db)
+
+        expect(
+          yield* db.all(
+            sql`SELECT name FROM pragma_table_info('todo') WHERE name IN ('tarea_id', 'depende_de') ORDER BY name`,
+          ),
+        ).toEqual([{ name: "depende_de" }, { name: "tarea_id" }])
+        expect(
+          yield* db.get(sql`SELECT content, status, priority, verificar, bloqueado, tarea_id, depende_de FROM todo WHERE session_id = 's1'`),
+        ).toEqual({ content: "vieja", status: "pending", priority: "high", verificar: "$ ls", bloqueado: 1, tarea_id: null, depende_de: null })
+        // y las columnas nuevas se pueden escribir
+        yield* db.run(sql`UPDATE todo SET tarea_id = 'U1', depende_de = '["U0"]' WHERE session_id = 's1'`)
+        expect(yield* db.get(sql`SELECT tarea_id, depende_de FROM todo WHERE session_id = 's1'`)).toEqual({
+          tarea_id: "U1",
+          depende_de: '["U0"]',
+        })
+        // aplicar otra vez no hace nada
+        yield* DatabaseMigration.apply(db)
+      }),
+    )
+  })
+
   test("rejects a non-empty database without a session table", async () => {
     await expect(
       run(

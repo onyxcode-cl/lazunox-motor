@@ -8,6 +8,7 @@ import { makeLocationNode } from "../effect/app-node"
 import { EventV2 } from "../event"
 import { SessionSchema } from "./schema"
 import { TodoTable } from "./sql"
+import { dependenciasDeFila } from "./todo-dependencias"
 
 export const Info = SessionTodo.Info
 export type Info = typeof Info.Type
@@ -48,6 +49,8 @@ const layer = Layer.effect(
                   priority: todo.priority,
                   verificar: todo.verificar ?? null,
                   bloqueado: todo.bloqueado ?? null,
+                  tarea_id: todo.id ?? null,
+                  depende_de: todo.depende_de && todo.depende_de.length > 0 ? JSON.stringify(todo.depende_de) : null,
                   position,
                 })),
               )
@@ -72,6 +75,8 @@ const layer = Layer.effect(
         priority: row.priority,
         ...(row.verificar ? { verificar: row.verificar } : {}),
         ...(row.bloqueado ? { bloqueado: true } : {}),
+        ...(row.tarea_id ? { id: row.tarea_id } : {}),
+        ...dependenciasDeFila(row.depende_de),
       }))
     })
 

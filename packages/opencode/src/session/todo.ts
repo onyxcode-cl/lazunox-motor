@@ -7,6 +7,7 @@ import { asc } from "drizzle-orm"
 import { TodoTable } from "@opencode-ai/core/session/sql"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { SessionTodo } from "@opencode-ai/schema/session-todo"
+import { dependenciasDeFila } from "@opencode-ai/core/session/todo-dependencias"
 
 export const Info = SessionTodo.Info
 export type Info = SessionTodo.Info
@@ -42,6 +43,8 @@ const layer = Layer.effect(
                   priority: todo.priority,
                   verificar: todo.verificar ?? null,
                   bloqueado: todo.bloqueado ?? null,
+                  tarea_id: todo.id ?? null,
+                  depende_de: todo.depende_de && todo.depende_de.length > 0 ? JSON.stringify(todo.depende_de) : null,
                   position,
                 })),
               )
@@ -66,6 +69,8 @@ const layer = Layer.effect(
         priority: row.priority,
         ...(row.verificar ? { verificar: row.verificar } : {}),
         ...(row.bloqueado ? { bloqueado: true } : {}),
+        ...(row.tarea_id ? { id: row.tarea_id } : {}),
+        ...dependenciasDeFila(row.depende_de),
       }))
     })
 

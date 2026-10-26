@@ -1,9 +1,9 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "1cc9d9e1-91a3-4ed5-8bf6-7d158af7e50e",
+  "id": "89595110-f501-4ccb-8ea4-03b6acede382",
   "prevIds": [
-    "f14a9b18-8207-487e-a3d3-227e629ba9ad"
+    "1cc9d9e1-91a3-4ed5-8bf6-7d158af7e50e"
   ],
   "ddl": [
     {
@@ -1409,6 +1409,26 @@
       "default": null,
       "generated": null,
       "name": "bloqueado",
+      "entityType": "columns",
+      "table": "todo"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "tarea_id",
+      "entityType": "columns",
+      "table": "todo"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "depende_de",
       "entityType": "columns",
       "table": "todo"
     },

@@ -110,6 +110,9 @@ export const TodoTable = sqliteTable(
     // Lazunox (2D): criterio de verificación y marca de bloqueo (ambas opcionales; las filas viejas quedan en null).
     verificar: text(),
     bloqueado: integer({ mode: "boolean" }),
+    // Lazunox (6.6): id de la tarea dentro de su lista y los ids de los que depende (JSON). Nulos en las filas viejas.
+    tarea_id: text(),
+    depende_de: text(),
     position: integer().notNull(),
     ...Timestamps,
   },

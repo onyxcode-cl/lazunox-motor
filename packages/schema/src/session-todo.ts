@@ -21,6 +21,14 @@ export const Info = Schema.Struct({
   bloqueado: Schema.optional(Schema.Boolean).annotate({
     description: "Optional. true when the task is blocked (waiting for the user or something that cannot be solved now).",
   }),
+  // Lazunox (6.6, H11): dependencias entre tareas de la MISMA lista. `id` es opcional y solo hace falta en las tareas de las que otras dependen.
+  id: Schema.optional(Schema.String).annotate({
+    description: "Optional. Short id (letters, digits, - _ .; max 40) so other todos can depend on this one. Unique within the list.",
+  }),
+  depende_de: Schema.optional(Schema.Array(Schema.String)).annotate({
+    description:
+      "Optional. ids of todos in this same list that must be completed before this one can be in_progress or completed (max 10). Cycles and unknown ids reject the whole list.",
+  }),
 }).annotate({ identifier: "Todo" })
 export interface Info extends Schema.Schema.Type<typeof Info> {}
 
