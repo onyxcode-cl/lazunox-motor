@@ -582,3 +582,12 @@ Prueba: `test/lazunox/revisor-git-modos.test.ts` (rulesets de la app copiados de
   del propio agente (`Truncate.GLOB`, skills, temporales). `general` y `build` no cambian. Efecto lateral bueno: antes, en modos que preguntan,
   `Truncate.GLOB` quedaba en `ask` para el revisor.
 - Pruebas: `packages/opencode/test/lazunox/revisor-permisos-hijos.test.ts` (sesiones sueltas y acumuladas).
+
+## Ola 7 — 7.8 (edición más segura)
+
+Plan: `docs/PLAN-MOTOR-OLA7.md` § 7.8. Interruptor `LAZUNOX_EDICION_SEGURA=0` (se lee en cada llamada): apaga las dos cosas y vuelve al comportamiento anterior.
+
+- **Archivos que no son UTF-8** (`util/bom.ts`): `Bom.readFile` decodifica con `fatal`; `edit`, `write` y `apply_patch` (update) se niegan con un error que sugiere un comando de shell (`sed -i`, `perl -pi`, `iconv`) y el archivo no se toca. Excepción: UTF-16 LE con BOM, que se edita y se reescribe en UTF-16 LE (`Bom.salida`; se salta el formateador). `apply_patch delete` y `Bom.syncFile` usan `Bom.readFileLossy` (comportamiento de antes) porque no reescriben el contenido.
+- **`write`** se niega si el contenido nuevo trae U+FFFD que el archivo no tenía (también en archivos nuevos).
+- **Finales de línea por región** (`util/finales.ts`): se edita sobre una vista LF y cada línea conserva su final (CRLF, CR solitario o LF, también en archivos mixtos). Las líneas nuevas heredan el final de la que reemplazan, o el de la anterior. `edit` ya no convierte todo el texto nuevo; `apply_patch` (`deriveNewContentsFromChunks`) conserva CRLF/LF. El BOM se sigue conservando.
+- Pruebas: `test/lazunox/edicion-segura.test.ts`. Limitación: `Patch.applyPatch` (`patch/index.ts`, `applyHunksToFiles`) sigue leyendo con `readFileString`, sin rechazo de no UTF-8 (no lo usa la herramienta).

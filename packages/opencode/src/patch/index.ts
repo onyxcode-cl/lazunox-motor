@@ -2,6 +2,7 @@ import { Effect, Schema } from "effect"
 import * as path from "path"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "../util/bom"
+import * as Finales from "../util/finales"
 
 export const PatchSchema = Schema.Struct({
   patchText: Schema.String.annotate({ description: "The full patch text that describes all changes to be made" }),
@@ -311,7 +312,10 @@ export function deriveNewContentsFromChunks(
 ): ApplyPatchFileUpdate {
   const originalContent = Bom.split(originalText)
 
-  let originalLines = originalContent.text.split("\n")
+  // Lazunox (7.8): se aplica sobre una vista LF y cada línea conserva su final (CRLF/CR/LF), como Codex.
+  const finales = Bom.edicionSegura() ? Finales.dividir(originalContent.text) : undefined
+  const textoOriginal = finales ? finales.vista : originalContent.text
+  let originalLines = textoOriginal.split("\n")
 
   // Drop trailing empty element for consistent line counting
   if (originalLines.length > 0 && originalLines[originalLines.length - 1] === "") {
@@ -327,10 +331,11 @@ export function deriveNewContentsFromChunks(
   }
 
   const next = Bom.split(newLines.join("\n"))
-  const newContent = next.text
+  const vistaNueva = next.text
 
   // Generate unified diff
-  const unifiedDiff = generateUnifiedDiff(originalContent.text, newContent)
+  const unifiedDiff = generateUnifiedDiff(textoOriginal, vistaNueva)
+  const newContent = finales ? Finales.restaurar(vistaNueva, finales) : vistaNueva
 
   return {
     unified_diff: unifiedDiff,
