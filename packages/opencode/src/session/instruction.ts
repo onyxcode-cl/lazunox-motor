@@ -13,12 +13,18 @@ import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@opencode-ai/core/global"
 import type { MessageV2 } from "./message-v2"
 import type { MessageID } from "./schema"
+import fsp from "fs/promises"
+import * as ReglasRuta from "./reglas-ruta"
 
-function extract(messages: SessionV1.WithParts[]) {
+// Herramientas cuyo resultado puede llevar instrucciones adjuntas (`metadata.loaded`). `edit`/`write`/`apply_patch`
+// solo adjuntan reglas por ruta (Lazunox 4D); `read` también AGENTS.md de subcarpetas.
+const ADJUNTAN = new Set(["read", "edit", "write", "apply_patch"])
+
+function extract(messages: SessionV1.WithParts[], root?: string) {
   const paths = new Set<string>()
   for (const msg of messages) {
     for (const part of msg.parts) {
-      if (part.type === "tool" && part.tool === "read" && part.state.status === "completed") {
+      if (part.type === "tool" && ADJUNTAN.has(part.tool) && part.state.status === "completed") {
         if (part.state.time.compacted) continue
         const loaded = part.state.metadata?.loaded
         if (!loaded || !Array.isArray(loaded)) continue
@@ -26,9 +32,101 @@ function extract(messages: SessionV1.WithParts[]) {
           if (typeof p === "string") paths.add(p)
         }
       }
+      // Lazunox: lo que el bloque `<contexto-vigente>` de una compactación ya reinyectó (nombres relativos al proyecto).
+      if (root && part.type === "text" && msg.info.role === "user") {
+        const meta = part.metadata?.["lazunoxContextoVigente"] as { instrucciones?: unknown } | undefined
+        if (Array.isArray(meta?.instrucciones)) {
+          for (const n of meta.instrucciones) if (typeof n === "string" && n) paths.add(path.resolve(root, n))
+        }
+      }
     }
   }
   return paths
+}
+
+/** Reglas por ruta ya entregadas en el turno actual de la persona (después de su último mensaje): bytes y cantidad. */
+function reglasDelTurno(messages: SessionV1.WithParts[]) {
+  let bytes = 0
+  let cuantas = 0
+  for (let i = messages.length - 1; i >= 0; i--) {
+    const msg = messages[i]!
+    if (msg.info.role === "user") break
+    for (const part of msg.parts) {
+      if (part.type !== "tool" || !ADJUNTAN.has(part.tool) || part.state.status !== "completed") continue
+      const b = part.state.metadata?.reglasBytes
+      const n = part.state.metadata?.reglasN
+      if (typeof b === "number") bytes += b
+      if (typeof n === "number") cuantas += n
+    }
+  }
+  return { bytes, cuantas }
+}
+
+/** realpath que tolera un destino que aún no existe (un `write` crea el archivo): resuelve el padre más cercano. */
+async function realpathTolerante(p: string): Promise<string | undefined> {
+  const resto: string[] = []
+  let actual = path.resolve(p)
+  for (let i = 0; i < 64; i++) {
+    try {
+      const real = await fsp.realpath(actual)
+      return resto.length ? path.join(real, ...resto.reverse()) : real
+    } catch {
+      const padre = path.dirname(actual)
+      if (padre === actual) return undefined
+      resto.push(path.basename(actual))
+      actual = padre
+    }
+  }
+  return undefined
+}
+
+const dentro = (raiz: string, p: string) => p === raiz || p.startsWith(raiz.endsWith(path.sep) ? raiz : raiz + path.sep)
+
+interface ReglaEnDisco {
+  /** Ruta real del archivo de regla (dentro del proyecto). */
+  real: string
+  patrones: string[]
+  cuerpo: string
+}
+
+/** Lee un archivo de regla si es un archivo normal dentro del proyecto (tras realpath); `undefined` si no. */
+async function leerRegla(raiz: string, archivo: string): Promise<ReglaEnDisco | undefined> {
+  const real = await fsp.realpath(archivo).catch(() => undefined)
+  if (!real || !dentro(raiz, real) || !real.toLowerCase().endsWith(".md")) return undefined
+  const st = await fsp.stat(real).catch(() => undefined)
+  if (!st?.isFile()) return undefined
+  const fh = await fsp.open(real, "r").catch(() => undefined)
+  if (!fh) return undefined
+  try {
+    const buf = Buffer.alloc(Math.min(Number(st.size), ReglasRuta.REGLA_LECTURA_MAX_BYTES))
+    const { bytesRead } = await fh.read(buf, 0, buf.length, 0)
+    const leida = ReglasRuta.parsearRegla(buf.subarray(0, bytesRead).toString("utf-8"))
+    return leida ? { real, ...leida } : undefined
+  } catch {
+    return undefined
+  } finally {
+    await fh.close().catch(() => {})
+  }
+}
+
+/** Archivos `.md` de una carpeta de reglas (recursivo, con tope); la carpeta debe quedar dentro del proyecto tras realpath. */
+async function listarArchivosRegla(raiz: string, carpeta: string) {
+  const base = await fsp.realpath(carpeta).catch(() => undefined)
+  if (!base || !dentro(raiz, base)) return []
+  const out: string[] = []
+  const visitar = async (dir: string, nivel: number): Promise<void> => {
+    if (out.length >= ReglasRuta.REGLAS_ARCHIVOS_MAX || nivel > ReglasRuta.PROFUNDIDAD_MAX) return
+    const items = await fsp.readdir(dir, { withFileTypes: true }).catch(() => [])
+    items.sort((a, b) => a.name.localeCompare(b.name))
+    for (const item of items) {
+      if (out.length >= ReglasRuta.REGLAS_ARCHIVOS_MAX) return
+      const completa = path.join(dir, item.name)
+      if (item.isDirectory()) await visitar(completa, nivel + 1)
+      else if (item.name.toLowerCase().endsWith(".md")) out.push(completa)
+    }
+  }
+  await visitar(base, 0)
+  return out
 }
 
 export interface Interface {
@@ -40,7 +138,17 @@ export interface Interface {
     messages: SessionV1.WithParts[],
     filepath: string,
     messageID: MessageID,
-  ) => Effect.Effect<{ filepath: string; content: string }[], FSUtil.Error>
+  ) => Effect.Effect<{ filepath: string; content: string; regla?: boolean }[], FSUtil.Error>
+  /** Lazunox (4D): solo las reglas por ruta que coinciden con el archivo (para `edit`, `write` y `apply_patch`). */
+  readonly reglas: (
+    messages: SessionV1.WithParts[],
+    filepath: string,
+    messageID: MessageID,
+  ) => Effect.Effect<{ filepath: string; content: string; regla: true }[]>
+  /** Lazunox (4D): comprueba que `filepath` sea hoy una regla por ruta válida del proyecto y devuelve su cuerpo acotado. */
+  readonly regla: (filepath: string) => Effect.Effect<{ nombre: string; contenido: string } | undefined>
+  /** Lazunox (4D): cuántas reglas por ruta válidas tiene el proyecto (dato informativo del contexto fijo). */
+  readonly contarReglas: () => Effect.Effect<number>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Instruction") {}
@@ -72,6 +180,8 @@ const layer: Layer.Layer<
         Effect.succeed({
           // Track which instruction files have already been attached for a given assistant message.
           claims: new Map<MessageID, Set<string>>(),
+          // Lazunox (4D): bytes y cantidad de reglas por ruta entregadas en cada mensaje del asistente.
+          reglas: new Map<MessageID, { bytes: number; n: number }>(),
         }),
       ),
     )
@@ -105,6 +215,7 @@ const layer: Layer.Layer<
     const clear = Effect.fn("Instruction.clear")(function* (messageID: MessageID) {
       const s = yield* InstanceState.get(state)
       s.claims.delete(messageID)
+      s.reglas.delete(messageID)
     })
 
     const systemPaths = Effect.fn("Instruction.systemPaths")(function* () {
@@ -176,14 +287,130 @@ const layer: Layer.Layer<
       return undefined
     })
 
+    // --- Lazunox (4D): reglas por ruta ---
+    const carpetasDeReglas = () => {
+      if (Flag.OPENCODE_DISABLE_PROJECT_CONFIG) return [] as string[]
+      return [".opencode/rules", ...(!flags.disableClaudeCodePrompt ? [".claude/rules"] : [])]
+    }
+
+    const raizReal = Effect.fnUntraced(function* () {
+      const directorio = yield* InstanceState.directory
+      return yield* Effect.promise(() => fsp.realpath(directorio).catch(() => path.resolve(directorio)))
+    })
+
+    const reglas = Effect.fn("Instruction.reglas")(function* (
+      messages: SessionV1.WithParts[],
+      filepath: string,
+      messageID: MessageID,
+    ) {
+      const vacio = [] as { filepath: string; content: string; regla: true }[]
+      if (!ReglasRuta.activo()) return vacio
+      const carpetas = carpetasDeReglas()
+      if (carpetas.length === 0) return vacio
+      const raiz = yield* raizReal()
+      const destino = yield* Effect.promise(() => realpathTolerante(filepath))
+      // Sin seguir enlaces hacia afuera: si el destino real queda fuera del proyecto no se carga nada.
+      if (!destino || !dentro(raiz, destino) || destino === raiz) return vacio
+      const rel = path.relative(raiz, destino).split(path.sep).join("/")
+
+      const candidatas = yield* Effect.promise(async () => {
+        const out: ReglaEnDisco[] = []
+        const vistas = new Set<string>()
+        for (const carpeta of carpetas) {
+          for (const archivo of await listarArchivosRegla(raiz, path.join(raiz, carpeta))) {
+            const regla = await leerRegla(raiz, archivo)
+            if (!regla || vistas.has(regla.real) || regla.real === destino) continue
+            vistas.add(regla.real)
+            if (ReglasRuta.coincide(rel, regla.patrones)) out.push(regla)
+          }
+        }
+        return out
+      })
+      if (candidatas.length === 0) return vacio
+
+      const sys = yield* systemPaths().pipe(Effect.orElseSucceed(() => new Set<string>()))
+      const already = extract(messages, raiz)
+      const s = yield* InstanceState.get(state)
+      const previo = reglasDelTurno(messages)
+      const tope = ReglasRuta.turnoMaxBytes()
+      const resultados: { filepath: string; content: string; regla: true }[] = []
+      // Sección sin esperas: la reserva del tope y las reclamaciones no se pisan entre llamadas en paralelo.
+      let set = s.claims.get(messageID)
+      if (!set) {
+        set = new Set()
+        s.claims.set(messageID, set)
+      }
+      const uso = s.reglas.get(messageID) ?? { bytes: 0, n: 0 }
+      for (const regla of candidatas) {
+        if (sys.has(regla.real) || already.has(regla.real) || set.has(regla.real)) continue
+        const contenido = ReglasRuta.formatear(regla.real, regla.cuerpo)
+        const tamano = Buffer.byteLength(contenido, "utf-8")
+        if (
+          uso.n + previo.cuantas >= ReglasRuta.REGLAS_TURNO_MAX ||
+          uso.bytes + previo.bytes + tamano > tope
+        )
+          break
+        set.add(regla.real)
+        uso.bytes += tamano
+        uso.n += 1
+        resultados.push({ filepath: regla.real, content: contenido, regla: true })
+      }
+      s.reglas.set(messageID, uso)
+      return resultados
+    })
+
+    const regla = Effect.fn("Instruction.regla")(function* (filepath: string) {
+      if (!ReglasRuta.activo()) return undefined
+      const carpetas = carpetasDeReglas()
+      if (carpetas.length === 0) return undefined
+      const raiz = yield* raizReal()
+      return yield* Effect.promise(async () => {
+        const abs = path.resolve(filepath)
+        const real = await fsp.realpath(abs).catch(() => undefined)
+        if (!real) return undefined
+        // Debe estar de verdad dentro de una carpeta de reglas del proyecto (no cualquier .md con encabezado).
+        let valida = false
+        for (const carpeta of carpetas) {
+          const base = await fsp.realpath(path.join(raiz, carpeta)).catch(() => undefined)
+          if (base && dentro(raiz, base) && real.startsWith(base + path.sep)) valida = true
+        }
+        if (!valida) return undefined
+        const leida = await leerRegla(raiz, real)
+        if (!leida) return undefined
+        return {
+          nombre: path.relative(raiz, leida.real) || leida.real,
+          contenido: ReglasRuta.recortar(ReglasRuta.neutralizar(leida.cuerpo.trim()), ReglasRuta.REGLA_MAX_BYTES).texto,
+        }
+      })
+    })
+
+    const contarReglas = Effect.fn("Instruction.contarReglas")(function* () {
+      if (!ReglasRuta.activo()) return 0
+      const raiz = yield* raizReal()
+      return yield* Effect.promise(async () => {
+        let n = 0
+        const vistas = new Set<string>()
+        for (const carpeta of carpetasDeReglas()) {
+          for (const archivo of await listarArchivosRegla(raiz, path.join(raiz, carpeta))) {
+            const leida = await leerRegla(raiz, archivo)
+            if (leida && !vistas.has(leida.real)) {
+              vistas.add(leida.real)
+              n++
+            }
+          }
+        }
+        return n
+      })
+    })
+
     const resolve = Effect.fn("Instruction.resolve")(function* (
       messages: SessionV1.WithParts[],
       filepath: string,
       messageID: MessageID,
     ) {
       const sys = yield* systemPaths()
-      const already = extract(messages)
-      const results: { filepath: string; content: string }[] = []
+      const already = extract(messages, path.resolve(yield* InstanceState.directory))
+      const results: { filepath: string; content: string; regla?: boolean }[] = []
       const s = yield* InstanceState.get(state)
       const root = path.resolve(yield* InstanceState.directory)
 
@@ -217,10 +444,12 @@ const layer: Layer.Layer<
         current = path.dirname(current)
       }
 
+      // Lazunox (4D): además, las reglas por ruta que coinciden con el archivo.
+      results.push(...(yield* reglas(messages, filepath, messageID)))
       return results
     })
 
-    return Service.of({ clear, systemPaths, system, find, resolve })
+    return Service.of({ clear, systemPaths, system, find, resolve, reglas, regla, contarReglas })
   }),
 )
 

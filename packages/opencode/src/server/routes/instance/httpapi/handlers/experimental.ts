@@ -10,6 +10,7 @@ import { Session } from "@/session/session"
 import type { Snapshot } from "@/snapshot"
 import { SessionRebobinar } from "@/session/rebobinar"
 import { SessionTurnos } from "@/session/turnos"
+import { SessionContextoFijo } from "@/session/contexto-fijo"
 import * as ApiError from "../errors"
 import { SessionID } from "@/session/schema"
 import { ToolJsonSchema } from "@/tool/json-schema"
@@ -218,6 +219,15 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
     })
 
     const turnosSvc = yield* SessionTurnos.Service
+    const contextoFijoSvc = yield* SessionContextoFijo.Service
+
+    const sessionContextoFijo = Effect.fn("ExperimentalHttpApi.sessionContextoFijo")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      return yield* contextoFijoSvc
+        .calcular(ctx.params.sessionID)
+        .pipe(Effect.catchTag("NotFoundError", (error) => Effect.fail(ApiError.notFound(error.message))))
+    })
 
     const apagado = () => ApiError.notFound("Rebobinar por turno está desactivado (LAZUNOX_REBOBINAR=0)")
 
@@ -328,6 +338,7 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("sessionTrabajos", sessionTrabajos)
       .handle("sessionTrabajoTerminar", sessionTrabajoTerminar)
       .handle("sessionTrabajoReanudar", sessionTrabajoReanudar)
+      .handle("sessionContextoFijo", sessionContextoFijo)
       .handle("sessionTurnos", sessionTurnos)
       .handle("sessionTurnoDiff", sessionTurnoDiff)
       .handle("sessionRebobinarRevision", sessionRebobinarRevision)

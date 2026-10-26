@@ -255,7 +255,8 @@ function cargadoEn(messages: SessionV1.WithParts[]) {
         const nombre = part.state.metadata?.name ?? (part.state.input as { name?: unknown } | undefined)?.name
         if (typeof nombre === "string" && nombre) habilidades.add(nombre)
       }
-      if (part.tool === "read") {
+      // `edit`/`write`/`apply_patch` solo adjuntan reglas por ruta (Lazunox 4D); `read` también AGENTS.md de subcarpetas.
+      if (part.tool === "read" || part.tool === "edit" || part.tool === "write" || part.tool === "apply_patch") {
         const loaded = part.state.metadata?.loaded
         if (Array.isArray(loaded)) for (const p of loaded) if (typeof p === "string" && p) instrucciones.add(p)
       }
@@ -554,6 +555,12 @@ const layer = Layer.effect(
         if (instrucciones.length >= MAX_DOCUMENTOS) break
         const abs = path.resolve(ruta)
         if (delSistema.has(abs)) continue
+        // Lazunox (4D): una regla por ruta se vuelve a validar HOY (sigue existiendo, dentro del proyecto, con `paths`).
+        const regla = yield* instruction.regla(abs).pipe(Effect.orElseSucceed(() => undefined))
+        if (regla) {
+          if (regla.contenido.trim()) instrucciones.push({ nombre: regla.nombre, contenido: regla.contenido })
+          continue
+        }
         const autentico = yield* instruction.find(path.dirname(abs)).pipe(Effect.orElseSucceed(() => undefined))
         if (autentico !== abs) continue
         const real = yield* Effect.promise(() => fsp.realpath(abs).catch(() => undefined))

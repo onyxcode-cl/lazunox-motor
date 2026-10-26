@@ -120,6 +120,19 @@ export const TrabajoReanudarResponse = Schema.Struct({
   identifier: "TrabajoReanudarResponse",
 })
 
+// Lazunox (4D, P36): peso aproximado del contexto fijo (lo que viaja en cada petición) en tokens (caracteres / 4).
+export const ContextoFijoResponse = Schema.Struct({
+  tokens: NonNegativeInt,
+  aproximado: Schema.Boolean,
+  partes: Schema.Struct({
+    agentes: NonNegativeInt,
+    skills: NonNegativeInt,
+    mcp: NonNegativeInt,
+    instrucciones: NonNegativeInt,
+  }),
+  reglasPorRuta: NonNegativeInt,
+}).annotate({ identifier: "ContextoFijoResponse" })
+
 // Lazunox: rebobinar por turno (plan PLAN-REBOBINAR-Y-COMPACTACION.md, 2.A). Solo rutas y cifras, nunca contenido salvo el diff bajo demanda.
 export const TurnoArchivo = Schema.Struct({
   file: Schema.String,
@@ -224,6 +237,7 @@ export const ExperimentalPaths = {
   sessionTrabajos: "/experimental/session/:sessionID/trabajos",
   sessionTrabajoTerminar: "/experimental/session/:sessionID/trabajos/:id/terminar",
   sessionTrabajoReanudar: "/experimental/session/:sessionID/trabajos/:id/reanudar",
+  sessionContextoFijo: "/experimental/session/:sessionID/contexto-fijo",
   sessionTurnos: "/experimental/session/:sessionID/turnos",
   sessionTurnoDiff: "/experimental/session/:sessionID/turnos/:messageID/diff",
   sessionRebobinarRevision: "/experimental/session/:sessionID/rebobinar/:messageID",
@@ -410,6 +424,19 @@ export const ExperimentalApi = HttpApi.make("experimental")
             summary: "Resume a lost background subagent",
             description:
               "Resume a background subagent of this session that was lost when the engine restarted: starts a new turn in its child session with a fixed continuation message, as a background job. ok is false (with motivo no_existe, ya_en_curso or tope) if it is not a lost subagent of this session, is already running, or the simultaneous subagent limit was reached.",
+          }),
+        ),
+        HttpApiEndpoint.get("sessionContextoFijo", ExperimentalPaths.sessionContextoFijo, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(ContextoFijoResponse, "Approximate size of the fixed context of the session"),
+          error: [ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.contextoFijo",
+            summary: "Approximate fixed context size",
+            description:
+              "Read-only. Approximate tokens (characters / 4) of what travels in every request of the session: agent prompt and subagent list, skills, MCP (instructions and tool definitions) and instructions (AGENTS.md and config). reglasPorRuta counts the path-scoped rules of the project, which load only when a matching file is read or edited and are not included in the total.",
           }),
         ),
         HttpApiEndpoint.get("sessionTurnos", ExperimentalPaths.sessionTurnos, {
