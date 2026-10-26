@@ -4,6 +4,24 @@ import { topeDelPadre } from "./restringir-permisos"
 import { topeDeModoPlan } from "@/session/plan-modo"
 
 /**
+ * Lazunox (privacidad): los agentes nativos de SOLO LECTURA del proyecto no heredan nunca el `external_directory: allow` del padre
+ * («Todo sin preguntar»): leerían fuera del proyecto (historial del shell, otros repos, el almacén de datos) sin tarjeta y ese contenido
+ * iría al proveedor del modelo. Es una restricción del propio agente: gana sobre la herencia.
+ */
+const SOLO_LECTURA_NATIVOS = new Set(["revisor", "verificador", "explore"])
+export const ayudanteDeSoloLectura = (a: Agent.Info) => a.native === true && SOLO_LECTURA_NATIVOS.has(a.name)
+
+/** `external_directory: *` en ask (deny si el agente lo niega) y, DESPUÉS, las reglas concretas del propio agente (salidas truncadas, skills, temporales). */
+export function topeExternos(a: Agent.Info): PermissionV1.Ruleset {
+  const propias = a.permission.filter((r) => r.permission === "external_directory")
+  const comodin = propias.findLast((r) => r.pattern === "*")
+  return [
+    { permission: "external_directory", pattern: "*", action: comodin?.action === "deny" ? "deny" : "ask" },
+    ...propias.filter((r) => r.pattern !== "*"),
+  ]
+}
+
+/**
  * Build the `permission` ruleset for a subagent's session when it's spawned
  * via the task tool. Combines:
  *
@@ -24,6 +42,7 @@ export function deriveSubagentSessionPermission(input: {
   subagent: Agent.Info
 }): PermissionV1.Ruleset {
   const canTask = input.subagent.permission.some((rule) => rule.permission === "task")
+  const externos = ayudanteDeSoloLectura(input.subagent) ? topeExternos(input.subagent) : []
   const canTodo = input.subagent.permission.some((rule) => rule.permission === "todowrite")
   return [
     ...input.parentSessionPermission.filter(
@@ -40,5 +59,6 @@ export function deriveSubagentSessionPermission(input: {
     ...(topeDeModoPlan(input.parentAgentPermission, input.parentSessionPermission) as PermissionV1.Ruleset),
     ...(canTodo ? [] : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
     ...(canTask ? [] : [{ permission: "task" as const, pattern: "*" as const, action: "deny" as const }]),
+    ...externos,
   ]
 }

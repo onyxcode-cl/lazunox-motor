@@ -73,7 +73,14 @@ export function colaDeLaBase(base: readonly Regla[], declarado: readonly Regla[]
       return
     }
     // El agente solo puede dejarlo igual o más estricto.
-    cola.push({ ...r, action: accionLiteral(r.permission, r.pattern, declarado) ?? "allow" })
+    const acotada = accionLiteral(r.permission, r.pattern, declarado) ?? "allow"
+    cola.push({ ...r, action: acotada })
+    // Lista blanca (`bash *: deny` + `git diff*: ask`): si el `allow` de la base (p. ej. «Todo sin preguntar» tras otro modo en la misma
+    // sesión: `bash *: ask` y luego `bash *: allow`) se acota a `deny`, ese `deny` va DESPUÉS de los `ask` concretos que ya se habían
+    // empujado y los anula (el revisor se quedaba sin shell). Se vuelven a empujar tras él las reglas concretas del agente que no son
+    // `deny`; el padre permite todo ahí, así que lo declarado (ask) es lo más estricto de los dos.
+    if (acotada === "deny")
+      for (const d of declarado) if (d.action !== "deny" && d.pattern !== "*" && cubre(r, d)) cola.push(d)
   })
   return cola
 }

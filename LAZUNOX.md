@@ -570,3 +570,15 @@ Bug de la prueba real con la app: el guardián de subagentes de la app (`lazunox
 Arreglo: (1) `parDeOrden` declara SIEMPRE `ask` (nunca `allow`) tras `bash *: deny`: la persona decide cada orden y «siempre» la hace persistente; el resto de bash sigue `deny` y el shell sigue pasando por `comandoDeSoloLectura`. (2) `read` declara `mcp:*: ask` (la app lo pone en `ask`; con solo `read: allow` el guardián veía `read mcp:*` con más libertad que el padre). (3) `colaDeLaBase` ya reponía como `ask` las entradas `allow` de la lista blanca del agente bajo un `ask` del padre; ahora también las que el agente declara ya en `ask`. Con padre «Todo sin preguntar» el revisor/verificador quedan en `ask` (antes `allow`): es lo pedido, nunca más libertad que cualquier padre.
 
 Prueba: `test/lazunox/revisor-git-modos.test.ts` (rulesets de la app copiados de `permission-rules.ts` para Preguntar siempre, Editar sin preguntar, Solo explorar, Automático, Todo sin preguntar; `/review` real + copia del comparador del guardián). Chequeo equivalente para la familia `revisor` del probe (vive en la app, `scripts/engine-probe/checks-ola3.mjs`): por cada ruleset de modo, `session.update({permission})`, leer `GET /agent` y comprobar que `escalations(padre=build+sesión, hija=revisor declarado)` es vacío y que `/review` ofrece `bash` y `git diff` evalúa a `ask`.
+
+## Fix revisor 2: «Todo sin preguntar» y lectura fuera del proyecto
+
+- **Bug 1 (revisor sin shell):** la sesión del padre acumula los bloques de modo. Con `bash *: ask` (modo anterior) y luego `bash *: allow`
+  («Todo sin preguntar»), `colaDeLaBase` emitía el `ask` como `deny` + los `git …: ask` del agente, y el `allow` posterior (que «pisa» al `ask`)
+  como `bash *: deny` DESPUÉS de ellos: la última regla ganaba y el revisor perdía `git`. Ahora, cuando un `allow` de la base se acota a `deny`,
+  se vuelven a empujar tras él las reglas concretas no-deny del agente (`restringir-permisos.ts`). Solo se reproducía con sesiones acumuladas.
+- **Bug 2 (privacidad):** `deriveSubagentSessionPermission` hereda el `external_directory: allow` del padre. Para los nativos de solo lectura
+  (`revisor`, `verificador`, `explore`) se añade AL FINAL `external_directory *: ask` (deny si el agente lo niega) y tras él las reglas concretas
+  del propio agente (`Truncate.GLOB`, skills, temporales). `general` y `build` no cambian. Efecto lateral bueno: antes, en modos que preguntan,
+  `Truncate.GLOB` quedaba en `ask` para el revisor.
+- Pruebas: `packages/opencode/test/lazunox/revisor-permisos-hijos.test.ts` (sesiones sueltas y acumuladas).
