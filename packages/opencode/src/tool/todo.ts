@@ -14,7 +14,7 @@ type Metadata = {
 
 // ---------------------------------------------------------------------------------------------------------------------
 // Lazunox (2D, P09 + P35): plan ejecutable. Funciones PURAS (sin Effect) para que se prueben solas.
-//   - Como mucho una tarea `in_progress`.
+//   - Como mucho una tarea `in_progress` (si llegan más, se normaliza: la primera queda y las demás pasan a `pending`).
 //   - `verificar` que empieza con `$ ` es un comando: al marcar la tarea `completed` se corre con la herramienta `shell`
 //     usando el MISMO contexto de la llamada (permiso normal, topes del plan y del ayudante, soloLectura). Nunca hay otra vía
 //     para ejecutar: si el permiso se niega, el comando no corre y la tarea queda `in_progress` (amenaza S2).
@@ -31,11 +31,24 @@ export function comandoDeVerificar(verificar: string | undefined): string | unde
   return comando === "" ? undefined : comando
 }
 
-/** `undefined` si la lista es válida; si no, el motivo (más de una tarea `in_progress`). */
-export function validarEnCurso(todos: ReadonlyArray<Todo.Info>): string | undefined {
-  const en = todos.filter((t) => t.status === "in_progress")
-  if (en.length <= 1) return undefined
-  return `Solo una tarea puede estar in_progress a la vez y hay ${en.length}: ${en.map((t) => `«${t.content}»`).join(", ")}. Deja una sola in_progress y vuelve a llamar a todowrite.`
+/**
+ * Normaliza en vez de fallar (regresión de tokens, lazunox.11): si llegan varias `in_progress` se queda la PRIMERA y las demás pasan
+ * a `pending`, con un aviso de una línea. Rechazar la llamada entera hacía que el modelo reescribiera toda la lista una y otra vez.
+ */
+export function normalizarEnCurso(todos: ReadonlyArray<Todo.Info>): { todos: Todo.Info[]; aviso?: string } {
+  const indices = todos.flatMap((t, i) => (t.status === "in_progress" ? [i] : []))
+  if (indices.length <= 1) return { todos: todos.map((t) => ({ ...t })) }
+  const resto = new Set(indices.slice(1))
+  return {
+    todos: todos.map((t, i) => (resto.has(i) ? { ...t, status: "pending" } : { ...t })),
+    aviso: `Aviso: había ${indices.length} tareas in_progress; se dejó solo «${todos[indices[0]!]!.content}» y las demás pasaron a pending.`,
+  }
+}
+
+/** Salida corta de una lista sin cambios: no se repite al modelo lo que acaba de enviar. */
+export function resumenLista(todos: ReadonlyArray<Todo.Info>): string {
+  const n = (s: string) => todos.filter((t) => t.status === s).length
+  return `Lista guardada: ${todos.length} tareas (${n("completed")} completed, ${n("in_progress")} in_progress, ${n("pending")} pending).`
 }
 
 // ---------------------------------------------------------------------------------------------------------------------
@@ -186,20 +199,19 @@ export const TodoWriteTool = Tool.define(
                 metadata: {},
               })
 
-              const invalida = validarEnCurso(params.todos)
-              if (invalida) throw new Error(invalida)
-              const dependencias = validarDependencias(params.todos)
+              const { todos: entrantes, aviso } = normalizarEnCurso(params.todos)
+              const dependencias = validarDependencias(entrantes)
               if (dependencias) throw new Error(dependencias)
 
               const previas = yield* todo.get(ctx.sessionID)
-              const pendientes = porVerificar(previas, params.todos)
-              let final: Todo.Info[] = params.todos.map((t) => ({ ...t }))
+              const pendientes = porVerificar(previas, entrantes)
+              let final: Todo.Info[] = entrantes
               const resultados: ResultadoVerificacion[] = []
 
               if (pendientes.length > 0) {
                 // Estado provisional guardado ANTES de correr nada: si el permiso se niega o la llamada se cancela, la tarea
                 // ya quedó en curso (nunca «hecha» sin comprobar).
-                yield* todo.update({ sessionID: ctx.sessionID, todos: provisional(params.todos, pendientes) })
+                yield* todo.update({ sessionID: ctx.sessionID, todos: provisional(entrantes, pendientes) })
                 // El shell recibe el contexto de ESTA llamada: mismas reglas de permiso, mismos topes y `soloLectura`. Su
                 // `metadata` se anula para que su salida no pise la de la lista.
                 const shellCtx = { ...ctx, metadata: () => Effect.void } as unknown as Tool.Context
@@ -208,14 +220,18 @@ export const TodoWriteTool = Tool.define(
                   const exit = (r.metadata as { exit?: number | null }).exit ?? null
                   resultados.push({ indice: p.indice, comando: p.comando, ok: exit === 0, salida: r.output, exit })
                 }
-                final = aplicarFallos(params.todos, new Set(resultados.filter((r) => !r.ok).map((r) => r.indice)))
+                final = aplicarFallos(entrantes, new Set(resultados.filter((r) => !r.ok).map((r) => r.indice)))
               }
 
               yield* todo.update({ sessionID: ctx.sessionID, todos: final })
 
               return {
                 title: `${final.filter((x) => x.status !== "completed").length} todos`,
-                output: JSON.stringify(final, null, 2) + informe(params.todos, resultados),
+                // Sin cambios respecto a lo enviado (ni aviso ni verificación): solo un resumen; si no, la lista final en JSON compacto.
+                output:
+                  (aviso === undefined && resultados.length === 0 ? resumenLista(final) : JSON.stringify(final)) +
+                  (aviso ? `\n${aviso}` : "") +
+                  informe(entrantes, resultados),
                 metadata: {
                   todos: final,
                 },

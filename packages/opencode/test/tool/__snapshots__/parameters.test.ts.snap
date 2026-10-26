@@ -360,7 +360,7 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
       "items": {
         "properties": {
           "bloqueado": {
-            "description": "Optional. true when the task is blocked (waiting for the user or something that cannot be solved now).",
+            "description": "Optional. true when blocked.",
             "type": "boolean",
           },
           "content": {
@@ -368,14 +368,14 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
             "type": "string",
           },
           "depende_de": {
-            "description": "Optional. ids of todos in this same list that must be completed before this one can be in_progress or completed (max 10). Cycles and unknown ids reject the whole list.",
+            "description": "Optional. ids (max 10) of todos in this list to complete first.",
             "items": {
               "type": "string",
             },
             "type": "array",
           },
           "id": {
-            "description": "Optional. Short id (letters, digits, - _ .; max 40) so other todos can depend on this one. Unique within the list.",
+            "description": "Optional. Short unique id, only if another todo depends on this one.",
             "type": "string",
           },
           "priority": {
@@ -387,7 +387,7 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
             "type": "string",
           },
           "verificar": {
-            "description": "Optional check for completion. If it starts with "$ " the rest is a shell command run with normal permissions when you mark the task completed; if it fails the task stays in_progress.",
+            "description": "Optional. "$ cmd" runs a shell command when marked completed; other text is a note.",
             "type": "string",
           },
         },

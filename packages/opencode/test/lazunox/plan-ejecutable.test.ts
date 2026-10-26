@@ -24,7 +24,8 @@ import {
   porVerificar,
   provisional,
   TodoWriteTool,
-  validarEnCurso,
+  normalizarEnCurso,
+  resumenLista,
 } from "../../src/tool/todo"
 import { Truncate } from "@/tool/truncate"
 import { disposeAllInstances, TestInstance, testInstanceStoreLayer } from "../fixture/fixture"
@@ -50,9 +51,12 @@ describe("plan ejecutable: funciones puras", () => {
   })
 
   test("como mucho una tarea in_progress", () => {
-    expect(validarEnCurso([t("a", "in_progress"), t("b")])).toBeUndefined()
-    expect(validarEnCurso([])).toBeUndefined()
-    expect(validarEnCurso([t("a", "in_progress"), t("b", "in_progress")])).toContain("Solo una tarea")
+    expect(normalizarEnCurso([t("a", "in_progress"), t("b")]).aviso).toBeUndefined()
+    expect(normalizarEnCurso([]).todos).toEqual([])
+    const n = normalizarEnCurso([t("a", "in_progress"), t("b", "in_progress"), t("c", "in_progress")])
+    expect(n.todos.map((x) => x.status)).toEqual(["in_progress", "pending", "pending"])
+    expect(n.aviso).toContain("3 tareas in_progress")
+    expect(resumenLista(n.todos)).toBe("Lista guardada: 3 tareas (0 completed, 1 in_progress, 2 pending).")
   })
 
   test("porVerificar: solo lo que pasa a completed con comando; lo ya hecho no se repite", () => {
@@ -331,15 +335,23 @@ describe.skipIf(!posix)("todowrite con verificar (shell real)", () => {
   )
 
   it.instance(
-    "más de una tarea in_progress se rechaza y no se guarda nada",
+    "más de una tarea in_progress se normaliza (queda la primera) y se avisa en una línea, sin fallar",
     Effect.gen(function* () {
       const sessionID = (yield* (yield* Session.Service).create({})).id
       const tool = yield* herramienta
-      const error = yield* fallo(
-        tool.execute({ todos: [t("a", "in_progress"), t("b", "in_progress")] }, contexto(sessionID)),
-      )
-      expect(error.message).toContain("Solo una tarea")
-      expect(yield* estados(sessionID)).toEqual([])
+      const r = yield* tool.execute({ todos: [t("a", "in_progress"), t("b", "in_progress")] }, contexto(sessionID))
+      expect(r.output).toContain("Aviso: había 2 tareas in_progress")
+      expect(yield* estados(sessionID)).toEqual(["in_progress", "pending"])
+    }),
+  )
+
+  it.instance(
+    "una lista sin cambios devuelve solo un resumen corto (no repite la lista)",
+    Effect.gen(function* () {
+      const sessionID = (yield* (yield* Session.Service).create({})).id
+      const tool = yield* herramienta
+      const r = yield* tool.execute({ todos: [t("a", "completed"), t("b", "in_progress")] }, contexto(sessionID))
+      expect(r.output).toBe("Lista guardada: 2 tareas (1 completed, 1 in_progress, 0 pending).")
     }),
   )
 

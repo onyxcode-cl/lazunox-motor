@@ -184,7 +184,7 @@ describe("todowrite con dependencias (base de datos real)", () => {
         },
         contexto(sessionID),
       )
-      expect(r.output).toContain('"depende_de"')
+      expect(r.output).toContain("Lista guardada: 4 tareas")
       const guardadas = yield* (yield* Todo.Service).get(sessionID)
       expect(guardadas[0]).toEqual({ content: "esquema", status: "completed", priority: "medium", id: "U1" })
       expect(guardadas[1]).toEqual({ content: "rutas", status: "in_progress", priority: "medium", id: "U2", depende_de: ["U1"] })

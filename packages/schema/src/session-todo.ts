@@ -16,18 +16,18 @@ export const Info = Schema.Struct({
   // (con su permiso normal); si no, es texto que el modelo debe comprobar él mismo.
   verificar: Schema.optional(Schema.String).annotate({
     description:
-      'Optional check for completion. If it starts with "$ " the rest is a shell command run with normal permissions when you mark the task completed; if it fails the task stays in_progress.',
+      "Optional. \"$ cmd\" runs a shell command when marked completed; other text is a note.",
   }),
   bloqueado: Schema.optional(Schema.Boolean).annotate({
-    description: "Optional. true when the task is blocked (waiting for the user or something that cannot be solved now).",
+    description: "Optional. true when blocked.",
   }),
   // Lazunox (6.6, H11): dependencias entre tareas de la MISMA lista. `id` es opcional y solo hace falta en las tareas de las que otras dependen.
   id: Schema.optional(Schema.String).annotate({
-    description: "Optional. Short id (letters, digits, - _ .; max 40) so other todos can depend on this one. Unique within the list.",
+    description: "Optional. Short unique id, only if another todo depends on this one.",
   }),
   depende_de: Schema.optional(Schema.Array(Schema.String)).annotate({
     description:
-      "Optional. ids of todos in this same list that must be completed before this one can be in_progress or completed (max 10). Cycles and unknown ids reject the whole list.",
+      "Optional. ids (max 10) of todos in this list to complete first.",
   }),
 }).annotate({ identifier: "Todo" })
 export interface Info extends Schema.Schema.Type<typeof Info> {}
