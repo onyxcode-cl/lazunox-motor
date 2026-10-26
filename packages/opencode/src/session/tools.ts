@@ -37,6 +37,8 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { marcaModoPlan } from "./plan-modo"
+import { conCandado, esSoloLectura, mcpSoloLectura } from "./paralelismo"
+import { activa as repararActiva, repararEntrada } from "@/tool/reparar-entrada"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -457,7 +459,28 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  if (flags.experimentalCodeMode) return tools
+  // Lazunox (Ola 7 — 7.3): candado de lectura/escritura por sesión alrededor de cada `execute` (ver paralelismo.ts).
+  // Se envuelve al final, en un solo punto: las de solo lectura comparten el candado; el resto es exclusivo y en orden.
+  const conParalelismoSeguro = (mcpLectura: (key: string, args: unknown) => boolean) => {
+    for (const [key, def] of Object.entries(tools)) {
+      const original = def.execute
+      if (!original) continue
+      const bruto: unknown = repararActiva() ? asSchema(def.inputSchema).jsonSchema : undefined
+      const esquema = bruto && typeof (bruto as { then?: unknown }).then !== "function" ? bruto : undefined
+      def.execute = ((rawArgs: unknown, opts: ToolExecutionOptions) => {
+        // Lazunox (7.13): la entrada se repara ANTES de ganchos, permisos y candado; lo reparado es lo que se muestra y evalúa.
+        const reparada = esquema && repararActiva() ? repararEntrada(rawArgs, esquema) : undefined
+        // Sin cambios se conserva la MISMA referencia (los ganchos mutan `args` y la herramienta debe verlo).
+        const args = reparada && reparada.cambios.length > 0 ? reparada.valor : rawArgs
+        return conCandado(input.session.id, esSoloLectura(key) || mcpLectura(key, args), opts.abortSignal, async () =>
+          original(args as never, opts),
+        )
+      }) as typeof def.execute
+    }
+    return tools
+  }
+
+  if (flags.experimentalCodeMode) return conParalelismoSeguro(() => false)
 
   // Lazunox: búsqueda diferida (ver tool/tool-search.ts). Las herramientas MCP diferibles salen de la lista y se
   // alcanzan con tool_search + mcp_call; todo pasa por McpInvocar.run, igual que la llamada directa.
@@ -567,7 +590,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             const params = toRecord(args)
             const name = params.tool
             if (typeof name !== "string" || name === "") fail("tool is required (string)")
-            const callArgs = params.arguments === undefined || params.arguments === null ? {} : params.arguments
+            let callArgs = params.arguments === undefined || params.arguments === null ? {} : params.arguments
             if (!isRecord(callArgs)) fail("arguments must be an object")
             // Se recalcula el catálogo AHORA con las reglas del agente y la sesión y user.tools del mensaje:
             // lo que no esté visible o no sea diferido no se ejecuta (coincidencia exacta, sin comodines).
@@ -583,6 +606,11 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               )
             }
             const entry = found!
+            // Lazunox (7.13): los argumentos de la herramienta diferida se reparan con SU esquema.
+            if (repararActiva()) {
+              const rep = repararEntrada(callArgs, entry.def.inputSchema)
+              if (rep.cambios.length > 0 && isRecord(rep.valor)) callArgs = rep.valor
+            }
             const invalid = ToolSearch.validateArguments(entry.def, callArgs as Record<string, unknown>)
             if (invalid) fail(`${invalid} Revisa el esquema con tool_search { query: "select:${name}" }.`)
             return yield* McpInvocar.run({
@@ -606,7 +634,15 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  return tools
+  const lecturaMcp = (key: string, args: unknown) => {
+    const directa = decision.direct.find((e) => e.key === key)
+    if (directa) return mcpSoloLectura(directa.source.def)
+    if (key !== ToolSearch.MCP_CALL) return false
+    const nombre = toRecord(args).tool
+    const diferida = typeof nombre === "string" ? decision.deferred.find((e) => e.key === nombre) : undefined
+    return !!diferida && mcpSoloLectura(diferida.source.def)
+  }
+  return conParalelismoSeguro(lecturaMcp)
 })
 
 function toRecord(value: unknown) {

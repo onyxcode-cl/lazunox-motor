@@ -276,7 +276,7 @@ describe("5B: lecturas de un mismo paso", () => {
   )
 
   it.instance(
-    "medición: una escritura (edit) pedida junto a lecturas TAMBIÉN se solapa (la serialización de escrituras no es de este nivel)",
+    "7.3: una escritura (edit) pedida junto a una lectura YA NO se solapa (candado de lectura/escritura; ver paralelismo-seguro.test.ts)",
     () =>
       Effect.gen(function* () {
         const { llm, chat, prompt } = yield* arrancarLento(["edit", "read"])
@@ -292,7 +292,8 @@ describe("5B: lecturas de un mismo paso", () => {
         const inicios = r.filter((e) => e.ev === "inicio").map((e) => e.t)
         const fines = r.filter((e) => e.ev === "fin").map((e) => e.t)
         expect(inicios.length).toBe(2)
-        expect(Math.max(...inicios)).toBeLessThan(Math.min(...fines))
+        // Con el candado (LAZUNOX_PARALELISMO_SEGURO != 0) la segunda empieza cuando la primera ya terminó.
+        expect(Math.max(...inicios)).toBeGreaterThanOrEqual(Math.min(...fines))
       }),
     60_000,
   )
