@@ -9,6 +9,7 @@ import { MCP } from "../mcp"
 import { Skill } from "../skill"
 import PROMPT_INITIALIZE from "./template/initialize.txt"
 import PROMPT_REVIEW from "./template/review.txt"
+import PROMPT_LOTE from "./template/lote.txt"
 import { LegacyEvent } from "@opencode-ai/schema/legacy-event"
 
 type State = {
@@ -46,6 +47,7 @@ export function hints(template: string) {
 export const Default = {
   INIT: "init",
   REVIEW: "review",
+  LOTE: "lote",
 } as const
 
 export interface Interface {
@@ -87,6 +89,16 @@ const layer = Layer.effect(
         },
         subtask: true,
         hints: hints(PROMPT_REVIEW),
+      }
+      // Lazunox (4C, P12): `/lote` es una plantilla para el agente actual (NO subtarea): él lanza los ayudantes, espera y verifica.
+      commands[Default.LOTE] = {
+        name: Default.LOTE,
+        description: "run a big job as independent units in background helpers, verify each [job]",
+        source: "command",
+        get template() {
+          return PROMPT_LOTE
+        },
+        hints: hints(PROMPT_LOTE),
       }
 
       for (const [name, command] of Object.entries(cfg.command ?? {})) {
