@@ -84,6 +84,7 @@ export const EditTool = Tool.define(
 
           let diff = ""
           let contentOld = ""
+          let unicodeTolerant = false
           let contentNew = ""
           yield* lock(filePath).withPermits(1)(
             Effect.gen(function* () {
@@ -130,7 +131,9 @@ export const EditTool = Tool.define(
               const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
               const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
 
-              const next = Bom.split(replace(contentOld, old, replacement, params.replaceAll))
+              const replaced = replaceDetailed(contentOld, old, replacement, params.replaceAll)
+              unicodeTolerant = replaced.unicodeTolerant
+              const next = Bom.split(replaced.text)
               const desiredBom = source.bom || next.bom
               contentNew = next.text
 
@@ -194,6 +197,9 @@ export const EditTool = Tool.define(
           })
 
           let output = "Edit applied successfully."
+          if (unicodeTolerant)
+            output +=
+              "\nNote: oldString matched with typographic quotes/dashes/spaces normalized; newString was written exactly as given (the file's original characters outside the replaced span were kept)."
           yield* lsp.touchFile(filePath, "document")
           const diagnostics = yield* lsp.diagnostics(filePath) // Lazunox (4B): con LAZUNOX_LSP=1 solo este archivo
           const normalizedFilePath = FSUtil.normalizePath(filePath)
@@ -545,6 +551,47 @@ export const EscapeNormalizedReplacer: Replacer = function* (content, find) {
   }
 }
 
+// Lazunox (6.5, H12): coincidencia tolerante a Unicode. Lista CERRADA; nada fuera de ella (p. ej. cirílico) se toca.
+const UNICODE_MAP: Record<string, string> = {}
+for (const c of "\u2018\u2019\u201A\u201B") UNICODE_MAP[c] = "'"
+for (const c of "\u201C\u201D\u201E\u201F\u00AB\u00BB") UNICODE_MAP[c] = '"'
+for (const c of "\u2010\u2011\u2012\u2013\u2014\u2015") UNICODE_MAP[c] = "-"
+for (const c of "\u00A0\u2002\u2003\u2004\u2005\u2006\u2007\u2008\u2009\u200A\u202F\u205F\u3000") UNICODE_MAP[c] = " "
+UNICODE_MAP["\u2026"] = "..."
+
+function unicodeNormalize(text: string) {
+  let out = ""
+  const origStart: number[] = [] // por cada unidad normalizada: inicio del carácter original
+  const origEnd: number[] = [] // y fin (exclusivo)
+  const first: boolean[] = []
+  const last: boolean[] = []
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i]
+    const rep = UNICODE_MAP[ch] ?? ch
+    for (let k = 0; k < rep.length; k++) {
+      out += rep[k]
+      origStart.push(i)
+      origEnd.push(i + 1)
+      first.push(k === 0)
+      last.push(k === rep.length - 1)
+    }
+  }
+  return { out, origStart, origEnd, first, last }
+}
+
+export const UnicodeNormalizedReplacer: Replacer = function* (content, find) {
+  if (content.includes("\0")) return // binario: nunca
+  const nf = unicodeNormalize(find).out
+  if (nf.length === 0) return
+  const n = unicodeNormalize(content)
+  const idx = n.out.indexOf(nf)
+  if (idx === -1) return
+  if (n.out.indexOf(nf, idx + 1) !== -1) return // varias: no adivinar
+  const end = idx + nf.length - 1
+  if (!n.first[idx] || !n.last[end]) return
+  yield content.substring(n.origStart[idx], n.origEnd[end])
+}
+
 export const MultiOccurrenceReplacer: Replacer = function* (content, find) {
   // This replacer yields all exact matches, allowing the replace function
   // to handle multiple occurrences based on replaceAll parameter
@@ -680,6 +727,15 @@ export function trimDiff(diff: string): string {
 }
 
 export function replace(content: string, oldString: string, newString: string, replaceAll = false): string {
+  return replaceDetailed(content, oldString, newString, replaceAll).text
+}
+
+export function replaceDetailed(
+  content: string,
+  oldString: string,
+  newString: string,
+  replaceAll = false,
+): { text: string; unicodeTolerant: boolean } {
   if (oldString === newString) {
     throw new Error("No changes to apply: oldString and newString are identical.")
   }
@@ -700,6 +756,7 @@ export function replace(content: string, oldString: string, newString: string, r
     EscapeNormalizedReplacer,
     TrimmedBoundaryReplacer,
     ContextAwareReplacer,
+    UnicodeNormalizedReplacer,
     MultiOccurrenceReplacer,
   ]) {
     for (const search of replacer(content, oldString)) {
@@ -711,12 +768,13 @@ export function replace(content: string, oldString: string, newString: string, r
           "Refusing replacement because the matched span is much larger than oldString. Re-read the file and provide the full exact oldString for the intended replacement.",
         )
       }
+      const unicodeTolerant = replacer === UnicodeNormalizedReplacer
       if (replaceAll) {
-        return content.replaceAll(search, newString)
+        return { text: content.replaceAll(search, newString), unicodeTolerant }
       }
       const lastIndex = content.lastIndexOf(search)
       if (index !== lastIndex) continue
-      return content.substring(0, index) + newString + content.substring(index + search.length)
+      return { text: content.substring(0, index) + newString + content.substring(index + search.length), unicodeTolerant }
     }
   }
 
