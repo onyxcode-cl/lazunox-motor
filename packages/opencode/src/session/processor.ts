@@ -16,6 +16,7 @@ import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
+import * as Presupuesto from "./presupuesto"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
@@ -72,6 +73,10 @@ interface ProcessorContext extends Input {
   needsCompaction: boolean
   currentText: SessionV1.TextPart | undefined
   reasoningMap: Record<string, SessionV1.ReasoningPart>
+  // Lazunox (3B): presupuesto de la sesión (metadata.presupuesto). Sin él, todo esto queda inerte.
+  presupuesto: { cfg: Presupuesto.Config; est: Presupuesto.Estado } | undefined
+  agotado: Presupuesto.Dimension | undefined
+  textoPaso: string
 }
 
 type StreamEvent = LLMEvent
@@ -111,6 +116,9 @@ const layer = Layer.effect(
         needsCompaction: false,
         currentText: undefined,
         reasoningMap: {},
+        presupuesto: undefined,
+        agotado: undefined,
+        textoPaso: "",
       }
       let aborted = false
 
@@ -274,6 +282,23 @@ const layer = Layer.effect(
             typeof value.result.value === "string" ? value.result.value : (JSON.stringify(value.result.value) ?? ""),
         }
       }
+
+      // Lazunox (3B): texto visible de la propia sesión (aviso al 80 % y «presupuesto agotado»), marcado en metadata para que la app lo pinte.
+      const textoPresupuesto = Effect.fn("SessionProcessor.textoPresupuesto")(function* (
+        texto: string,
+        tipo: "aviso" | "agotado",
+      ) {
+        const now = Date.now()
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: ctx.assistantMessage.id,
+          sessionID: ctx.assistantMessage.sessionID,
+          type: "text",
+          text: texto,
+          time: { start: now, end: now },
+          metadata: { lazunox_presupuesto: tipo },
+        })
+      })
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
@@ -488,6 +513,15 @@ const layer = Layer.effect(
                 messageID: ctx.assistantMessage.parentID,
               })
               .pipe(Effect.ignore, Effect.forkIn(scope))
+            if (ctx.presupuesto) {
+              const { cfg, est } = ctx.presupuesto
+              const nuevas = Presupuesto.registrarPaso(est, cfg, Presupuesto.tokensDelPaso(usage.tokens))
+              // Solo se corta o se avisa si la ejecución iba a seguir (otro paso o continuación por longitud).
+              const seguiria = value.reason === "tool-calls" || (value.reason === "length" && cfg.continuar)
+              const dim = seguiria ? Presupuesto.agotada(est, cfg) : undefined
+              if (dim) ctx.agotado = dim
+              else if (seguiria && nuevas.length) yield* textoPresupuesto(Presupuesto.textoAviso(est, cfg, nuevas), "aviso")
+            }
             if (
               !ctx.assistantMessage.summary &&
               isOverflow({ cfg: yield* config.get(), tokens: usage.tokens, model: ctx.model })
@@ -542,6 +576,7 @@ const layer = Layer.effect(
             }
             if (value.providerMetadata) ctx.currentText.metadata = value.providerMetadata
             yield* session.updatePart(ctx.currentText)
+            ctx.textoPaso += ctx.currentText.text
             ctx.currentText = undefined
             return
 
@@ -644,6 +679,14 @@ const layer = Layer.effect(
           messageID: input.assistantMessage.id,
         })
         ctx.needsCompaction = false
+        ctx.agotado = undefined
+        ctx.presupuesto = undefined
+        {
+          const cfg = Presupuesto.leer(
+            (yield* session.get(ctx.sessionID).pipe(Effect.catch(() => Effect.succeed(undefined))))?.metadata,
+          )
+          if (cfg) ctx.presupuesto = { cfg, est: Presupuesto.estado(ctx.sessionID, cfg) }
+        }
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
         return yield* Effect.gen(function* () {
@@ -651,13 +694,50 @@ const layer = Layer.effect(
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
-            const stream = llm.stream(streamInput)
-
-            yield* stream.pipe(
-              Stream.tap((event) => handleEvent(event)),
-              Stream.takeUntil(() => ctx.needsCompaction),
-              Stream.runDrain,
-            )
+            // Lazunox (3B): si el presupuesto ya estaba agotado, ni se llama al modelo.
+            if (ctx.presupuesto) ctx.agotado = Presupuesto.agotada(ctx.presupuesto.est, ctx.presupuesto.cfg)
+            let entrada = streamInput
+            let continuaciones = 0
+            while (!ctx.agotado) {
+              ctx.textoPaso = ""
+              yield* llm.stream(entrada).pipe(
+                Stream.tap((event) => handleEvent(event)),
+                Stream.takeUntil(() => ctx.needsCompaction || ctx.agotado !== undefined),
+                Stream.runDrain,
+              )
+              // Lazunox (3B, P11): respuesta cortada por longitud -> continuar (máx. 2) con un mensaje fijo.
+              if (
+                !ctx.presupuesto?.cfg.continuar ||
+                ctx.assistantMessage.finish !== "length" ||
+                ctx.agotado ||
+                ctx.needsCompaction ||
+                ctx.assistantMessage.error ||
+                Object.keys(ctx.toolcalls).length > 0 ||
+                continuaciones >= Presupuesto.MAX_CONTINUACIONES
+              )
+                break
+              continuaciones++
+              const abierto = ctx.currentText as SessionV1.TextPart | undefined
+              if (abierto) {
+                const end = Date.now()
+                abierto.time = { start: abierto.time?.start ?? end, end }
+                yield* session.updatePart(abierto)
+                ctx.textoPaso += abierto.text
+                ctx.currentText = undefined
+              }
+              entrada = {
+                ...streamInput,
+                messages: [
+                  ...streamInput.messages,
+                  ...(ctx.textoPaso ? [{ role: "assistant" as const, content: ctx.textoPaso }] : []),
+                  { role: "user" as const, content: Presupuesto.MENSAJE_CONTINUACION },
+                ],
+              }
+            }
+            if (ctx.agotado && ctx.presupuesto) {
+              yield* textoPresupuesto(Presupuesto.textoAgotado(ctx.presupuesto.est, ctx.presupuesto.cfg, ctx.agotado), "agotado")
+              ctx.assistantMessage.finish = "stop"
+            }
           }).pipe(
             Effect.onInterrupt(() =>
               Effect.gen(function* () {
@@ -690,6 +770,7 @@ const layer = Layer.effect(
             Effect.ensuring(cleanup()),
           )
 
+          if (ctx.agotado) return "stop"
           if (ctx.needsCompaction) return "compact"
           if (ctx.blocked || ctx.assistantMessage.error) return "stop"
           return "continue"
