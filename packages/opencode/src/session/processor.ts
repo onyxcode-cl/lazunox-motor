@@ -16,6 +16,7 @@ import { isOverflow } from "./overflow"
 import { PartID } from "./schema"
 import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
+import * as Respaldo from "./respaldo"
 import * as Presupuesto from "./presupuesto"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
@@ -52,6 +53,8 @@ type Input = {
   assistantMessage: SessionV1.Assistant
   sessionID: SessionID
   model: Provider.Model
+  /** Lazunox (6.10): respaldos válidos (solo config GLOBAL, coste cero). Sin él no hay respaldo. */
+  respaldo?: Respaldo.Resolutor
 }
 
 export interface Interface {
@@ -124,7 +127,7 @@ const layer = Layer.effect(
 
       const parse = (e: unknown) =>
         MessageV2.fromError(e, {
-          providerID: input.model.providerID,
+          providerID: ctx.model.providerID,
           aborted,
         })
 
@@ -298,6 +301,27 @@ const layer = Layer.effect(
           time: { start: now, end: now },
           metadata: { lazunox_presupuesto: tipo },
         })
+      })
+
+      // Lazunox (6.10): aviso visible de que este turno se hizo con el modelo de respaldo; la app lo pinta con `lazunox_respaldo`.
+      const avisoRespaldo = Effect.fn("SessionProcessor.avisoRespaldo")(function* (
+        de: Provider.Model,
+        a: Provider.Model,
+        motivo: Respaldo.Motivo,
+      ) {
+        const now = Date.now()
+        yield* session.updatePart({
+          id: PartID.ascending(),
+          messageID: ctx.assistantMessage.id,
+          sessionID: ctx.assistantMessage.sessionID,
+          type: "text",
+          text: Respaldo.textoAviso(de, a),
+          time: { start: now, end: now },
+          metadata: {
+            lazunox_respaldo: { de: `${de.providerID}/${de.id}`, a: `${a.providerID}/${a.id}`, motivo },
+          },
+        })
+        yield* session.updateMessage(ctx.assistantMessage)
       })
 
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
@@ -689,8 +713,31 @@ const layer = Layer.effect(
         }
         ctx.shouldBreak = (yield* config.get()).experimental?.continue_loop_on_deny !== true
 
+        // Lazunox (6.10): respaldos válidos (config GLOBAL, coste cero). Si ya hubo un cambio en este turno de la persona,
+        // los pasos siguientes siguen con ese modelo y no hay un segundo cambio.
+        let candidatos: Provider.Model[] = []
+        let consentido = false
+        if (input.respaldo) {
+          const r = yield* input.respaldo(ctx.model)
+          candidatos = r.modelos
+          consentido = r.otroProveedor
+        }
+        let conmutado = false
+        const previo = candidatos.length ? Respaldo.modeloVigente(ctx.sessionID, streamInput.user.id) : undefined
+        if (previo) {
+          const cand = candidatos.find((m) => `${m.providerID}/${m.id}` === previo)
+          if (cand && Respaldo.admitir(cand, ctx.model, consentido)) {
+            ctx.model = cand
+            ctx.assistantMessage.providerID = cand.providerID
+            ctx.assistantMessage.modelID = cand.id
+            streamInput = { ...streamInput, model: cand }
+          }
+          conmutado = true
+          candidatos = []
+        }
+
         return yield* Effect.gen(function* () {
-          yield* Effect.gen(function* () {
+          const intento = (parar: (e: SessionRetry.Err) => boolean) => Effect.gen(function* () {
             ctx.currentText = undefined
             ctx.reasoningMap = {}
             yield* status.set(ctx.sessionID, { type: "busy" })
@@ -753,8 +800,9 @@ const layer = Layer.effect(
             ),
             Effect.retry(
               SessionRetry.policy({
-                provider: input.model.providerID,
+                provider: ctx.model.providerID,
                 parse,
+                stop: parar,
                 set: (info) => {
                   return status.set(ctx.sessionID, {
                     type: "retry",
@@ -764,6 +812,38 @@ const layer = Layer.effect(
                     next: info.next,
                   })
                 },
+              }),
+            ),
+          )
+          // Lazunox (6.10): con respaldo disponible, la cuota agotada no espera horas: se pasa al respaldo de inmediato.
+          // El segundo intento (ya con el respaldo) no vuelve a conmutar y tampoco espera por cuota.
+          yield* intento((e) => candidatos.length > 0 && Respaldo.esCuota(e, ctx.model.providerID)).pipe(
+            Effect.catch((e) =>
+              Effect.gen(function* () {
+                const error = parse(e)
+                const original = ctx.model
+                const motivo = aborted ? undefined : Respaldo.motivoDe(error, original.providerID)
+                const otro = motivo
+                  ? candidatos.find((m) => Respaldo.admitir(m, original, consentido))
+                  : undefined
+                if (!motivo || !otro || conmutado) return yield* Effect.fail(e)
+                conmutado = true
+                yield* Effect.logWarning("respaldo de modelo", {
+                  "session.id": ctx.sessionID,
+                  de: `${original.providerID}/${original.id}`,
+                  a: `${otro.providerID}/${otro.id}`,
+                  motivo,
+                })
+                // Estado del intento caído: texto/razonamiento abiertos y llamadas a herramientas sin cerrar.
+                ctx.currentText = undefined
+                ctx.reasoningMap = {}
+                ctx.model = otro
+                ctx.assistantMessage.providerID = otro.providerID
+                ctx.assistantMessage.modelID = otro.id
+                streamInput = { ...streamInput, model: otro }
+                Respaldo.recordar(ctx.sessionID, streamInput.user.id, otro)
+                yield* intento((er) => Respaldo.esCuota(er, ctx.model.providerID))
+                yield* avisoRespaldo(original, otro, motivo)
               }),
             ),
             Effect.catch(halt),

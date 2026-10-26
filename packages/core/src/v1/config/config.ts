@@ -182,6 +182,18 @@ export const Info = Schema.Struct({
       }),
     }),
   ),
+  respaldo: Schema.optional(
+    Schema.Struct({
+      modelos: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
+        description:
+          "Lazunox: up to 3 \"provider/model\" fallbacks tried ONCE per turn when the session model is down or its free quota is exhausted. Only zero-cost models are accepted. Only read from the GLOBAL config (ignored in a project's opencode.json). Off by default.",
+      }),
+      otro_proveedor: Schema.optional(Schema.Boolean).annotate({
+        description:
+          "Lazunox: consent to use a fallback from ANOTHER provider (the conversation text is sent to that provider). Default false: same provider only.",
+      }),
+    }),
+  ),
   experimental: Schema.optional(
     Schema.Struct({
       disable_paste_summary: Schema.optional(Schema.Boolean),

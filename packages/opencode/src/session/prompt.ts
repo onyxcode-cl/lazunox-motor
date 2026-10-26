@@ -31,6 +31,7 @@ import { Config } from "@/config/config"
 import { ConfigMarkdown } from "@/config/markdown"
 import { SessionSummary } from "./summary"
 import { NamedError } from "@opencode-ai/core/util/error"
+import * as Respaldo from "./respaldo"
 import { SessionProcessor } from "./processor"
 import { Tool } from "@/tool/tool"
 import { Permission } from "@/permission"
@@ -1528,6 +1529,7 @@ const layer = Layer.effect(
               assistantMessage: msg,
               sessionID,
               model,
+              respaldo: Respaldo.resolutor({ config, provider }),
             })
             .pipe(Effect.onInterrupt(() => finalizeInterruptedAssistant))
 
