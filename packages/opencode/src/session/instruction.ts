@@ -15,6 +15,7 @@ import type { MessageV2 } from "./message-v2"
 import type { MessageID } from "./schema"
 import fsp from "fs/promises"
 import * as ReglasRuta from "./reglas-ruta"
+import * as Imports from "./imports"
 
 // Herramientas cuyo resultado puede llevar instrucciones adjuntas (`metadata.loaded`). `edit`/`write`/`apply_patch`
 // solo adjuntan reglas por ruta (Lazunox 4D); `read` también AGENTS.md de subcarpetas.
@@ -199,7 +200,12 @@ const layer: Layer.Layer<
     })
 
     const read = Effect.fnUntraced(function* (filepath: string) {
-      return yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+      const texto = yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
+      // Lazunox (Ola 7, 7.9): `@ruta.md` incluye otros archivos del proyecto (LAZUNOX_IMPORTS=0 lo apaga).
+      if (!texto || !Imports.activo()) return texto
+      const ctx = yield* InstanceState.context
+      const raiz = ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory
+      return (yield* Effect.promise(() => Imports.expandir(texto, filepath, raiz))).texto
     })
 
     const fetch = Effect.fnUntraced(function* (url: string) {

@@ -590,3 +590,10 @@ Prueba: `test/lazunox/revisor-git-modos.test.ts` (rulesets de la app copiados de
 - **Seguridad**: lo que `persistible` rechaza (lista de exclusión `external_directory`/`doom_loop`/`LAZUNOX_PERMISSION_NO_PERSIST`, comodín `*` de herramientas propias, patrones con saltos de línea) nunca se guarda ni se lista, aunque se escriba a mano en el archivo (se cuenta en el aviso). Archivo corrupto: se informa con `aviso` y no se toca al borrar uno; borrar todos lo elimina. El valor por defecto de `LAZUNOX_PERMISSION_PERSIST` no cambia (apagado).
 - **Nota**: el nombre `NEVER_ALONE_PERMISSIONS` no existe en este fork; su equivalente es la regla `persistible` (lista `SIEMPRE_NO` + exclusiones de la app).
 - Pruebas: `test/lazunox/siempre-gestion.test.ts`.
+
+## Ola 7 — 7.9 (@imports; rama `feat/ola7-permisos`)
+
+- **Qué hace**: en `AGENTS.md`/`CLAUDE.md`/`CONTEXT.md` (y los de subcarpetas que entrega `read`), una línea que sea SOLO `@ruta/relativa.md` se sustituye por el contenido de ese archivo (ruta relativa al archivo que importa), hasta 4 niveles. Módulo `session/imports.ts`, enganchado en la lectura de `session/instruction.ts`. Una línea tipo `@todo` (sin `/` ni `.`) o una mención dentro de una frase no es un import.
+- **Seguridad**: solo archivos dentro del proyecto (raíz = `worktree`, si no `directory`), comprobado con realpath (un symlink que escapa no vale; `~` y rutas absolutas fuera se rechazan); el archivo de partida también debe estar dentro (el AGENTS.md global no importa nada); archivos sensibles rechazados aunque estén dentro o sean enlaces (`.env*`, `auth.json`, `*.pem/.key/.p12…`, `id_rsa…`, `.npmrc`, `credentials*`, carpetas `.ssh/.aws/…`); ciclos detectados; topes de 32 KB por archivo y 128 KB en total; binarios y no-archivos rechazados. Fallo = esa línea queda como `[@import omitido: ruta (motivo)]` y la carga sigue. Nada dentro de un bloque ``` o ~~~ se expande.
+- **Interruptor**: `LAZUNOX_IMPORTS=0` lo apaga (texto tal cual, como antes). Encendido por defecto.
+- Pruebas: `test/lazunox/imports.test.ts`.
