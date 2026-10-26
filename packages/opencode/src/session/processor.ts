@@ -19,6 +19,7 @@ import { SessionRetry } from "./retry"
 import * as Respaldo from "./respaldo"
 import * as Presupuesto from "./presupuesto"
 import * as SalidaCortada from "./salida-cortada"
+import * as Uso from "./uso"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
@@ -742,6 +743,8 @@ const layer = Layer.effect(
           messageID: input.assistantMessage.id,
         })
         ctx.needsCompaction = false
+        // Lazunox (7.18): huella de herramientas y sistema de esta petición, para explicar fallos de caché (solo en memoria).
+        Uso.registrarHuella(String(ctx.assistantMessage.id), Uso.huellaDe({ system: streamInput.system, tools: streamInput.tools }))
         ctx.agotado = undefined
         ctx.presupuesto = undefined
         {
