@@ -138,6 +138,45 @@ export function renderOutput(input: {
   ].join("\n")
 }
 
+/**
+ * Lazunox: los permisos de la sesión hija de un ayudante. UNA sola función para `task` (al crear o reanudar con `task_id`) y para
+ * «Reanudar» (ruta HTTP): así el tope ACTUAL del padre (modo plan, 2A, marca) se impone igual en los dos caminos.
+ */
+export function permisoDeHija(input: {
+  cfg: Effect.Success<ReturnType<Config.Interface["get"]>>
+  parent: Session.Info
+  parentAgent: Agent.Info | undefined
+  next: Agent.Info
+}) {
+  const childPermission = deriveSubagentSessionPermission({
+    parentSessionPermission: input.parent.permission ?? [],
+    parentAgentPermission: input.parentAgent?.permission,
+    subagent: input.next,
+  })
+  const childToolDenies = [
+    ...(input.next.permission.some((rule) => rule.permission === "todowrite")
+      ? []
+      : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
+    ...(input.next.permission.some((rule) => rule.permission === id)
+      ? []
+      : [{ permission: id, pattern: "*" as const, action: "deny" as const }]),
+    ...(input.cfg.experimental?.primary_tools?.map((permission) => ({
+      permission,
+      pattern: "*" as const,
+      action: "deny" as const,
+    })) ?? []),
+  ]
+  return [
+    ...childPermission,
+    ...childToolDenies.filter(
+      (deny) =>
+        !childPermission.some(
+          (rule) => rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action,
+        ),
+    ),
+  ]
+}
+
 export const TaskTool = Tool.define(
   id,
   Effect.gen(function* () {
@@ -217,34 +256,7 @@ export const TaskTool = Tool.define(
             Effect.catchCause(() => Effect.succeed(undefined)),
           )
         : undefined
-      const childPermission = deriveSubagentSessionPermission({
-        parentSessionPermission: parent.permission ?? [],
-        parentAgentPermission: parentAgent?.permission,
-        subagent: next,
-      })
-      const childToolDenies = [
-        ...(next.permission.some((rule) => rule.permission === "todowrite")
-          ? []
-          : [{ permission: "todowrite" as const, pattern: "*" as const, action: "deny" as const }]),
-        ...(next.permission.some((rule) => rule.permission === id)
-          ? []
-          : [{ permission: id, pattern: "*" as const, action: "deny" as const }]),
-        ...(cfg.experimental?.primary_tools?.map((permission) => ({
-          permission,
-          pattern: "*" as const,
-          action: "deny" as const,
-        })) ?? []),
-      ]
-      const permisoHijo = [
-        ...childPermission,
-        ...childToolDenies.filter(
-          (deny) =>
-            !childPermission.some(
-              (rule) =>
-                rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action,
-            ),
-        ),
-      ]
+      const permisoHijo = permisoDeHija({ cfg, parent, parentAgent, next })
       // Al reanudar se vuelve a imponer el tope ACTUAL (modo plan, 2A, marca) sobre la sesión existente: si se creó cuando el padre
       // podía escribir, no conserva esos permisos antiguos.
       if (session) yield* sessions.setPermission({ sessionID: session.id, permission: permisoHijo })

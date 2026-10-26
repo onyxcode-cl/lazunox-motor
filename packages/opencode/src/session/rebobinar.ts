@@ -8,7 +8,7 @@
 //    salvo que la persona los pida en `sobrescribir`.
 //  - Se niega (409) si la sesión, una hija o un trabajo de fondo están en marcha, o hay permiso/pregunta/formulario pendiente.
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
-import { Context, Effect, Layer, Semaphore } from "effect"
+import { Context, Effect, Layer } from "effect"
 import path from "path"
 import { BackgroundJob } from "@/background/job"
 import { Config } from "@/config/config"
@@ -109,15 +109,8 @@ const layer = Layer.effect(
     const question = yield* Question.Service
     const elicitation = yield* McpElicitation.Service
 
-    // Un candado por sesión: la revisión y la aplicación de un rebobinado/deshacer no se intercalan con otro.
-    const candados = new Map<string, Semaphore.Semaphore>()
-    const candado = (sessionID: string) => {
-      const actual = candados.get(sessionID)
-      if (actual) return actual
-      const nuevo = Semaphore.makeUnsafe(1)
-      candados.set(sessionID, nuevo)
-      return nuevo
-    }
+    // El candado por sesión vive en SessionRevert (lo comparten revert/unrevert por HTTP y rebobinar/deshacer).
+    // Aquí se toma UNA vez y se llama a las variantes `*BajoCandado`, que no lo piden de nuevo.
 
     const apagado = () => new NoEncontrado("Rebobinar por turno está desactivado (LAZUNOX_REBOBINAR=0)")
 
@@ -252,7 +245,10 @@ const layer = Layer.effect(
         for (const mensaje of mensajes) {
           for (const part of mensaje.parts) if (part.type === "step-finish" && part.snapshot) ultimo = part.snapshot
         }
-        if (ultimo) {
+        if (!ultimo) {
+          // Falla CERRADO: sin ningún paso con instantánea no se sabe qué cambió la persona después: todo cuenta como conflicto.
+          conflictos = archivos.map((item) => item.file)
+        } else {
           // Falla CERRADO: si el árbol del último paso ya no existe o git no puede compararlo, NO se sabe qué cambió
           // la persona después: todos los archivos cuentan como conflicto (se saltan salvo `sobrescribir`).
           const cambiados = yield* snapshot.patchEstricto(ultimo).pipe(
@@ -290,7 +286,7 @@ const layer = Layer.effect(
     })
 
     const rebobinar: Interface["rebobinar"] = Effect.fn("SessionRebobinar.rebobinar")(function* (input) {
-      return yield* candado(input.sessionID).withPermits(1)(rebobinarSinCandado(input))
+      return yield* revert.conCandado(input.sessionID, rebobinarSinCandado(input))
     })
 
     const rebobinarSinCandado: Interface["rebobinar"] = Effect.fnUntraced(function* (input) {
@@ -332,7 +328,7 @@ const layer = Layer.effect(
       for (const file of r.protegidos) if (!forzar.has(file)) saltar.set(abs(file), "protegido")
 
       const hecho = yield* revert
-        .revertir(
+        .revertirBajoCandado(
           { sessionID: input.sessionID, messageID: input.messageID },
           input.modo === "conversacion"
             ? { files: false }
@@ -360,7 +356,7 @@ const layer = Layer.effect(
     })
 
     const deshacer: Interface["deshacer"] = Effect.fn("SessionRebobinar.deshacer")(function* (input) {
-      return yield* candado(input.sessionID).withPermits(1)(deshacerSinCandado(input))
+      return yield* revert.conCandado(input.sessionID, deshacerSinCandado(input))
     })
 
     const deshacerSinCandado: Interface["deshacer"] = Effect.fnUntraced(function* (input) {
@@ -376,7 +372,7 @@ const layer = Layer.effect(
         (input.sobrescribir ?? []).map((file) => path.join(ctx.worktree, file).replaceAll("\\", "/")),
       )
       const hecho = yield* revert
-        .deshacer({ sessionID: input.sessionID, sobrescribir: forzar })
+        .deshacerBajoCandado({ sessionID: input.sessionID, sobrescribir: forzar })
         .pipe(
           Effect.catchTag("SessionBusyError", () => Effect.fail(new Conflicto("ocupada", mensajeDeBloqueo("ocupada")))),
         )

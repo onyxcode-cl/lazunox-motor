@@ -12,6 +12,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Config } from "@/config/config"
 import { CrossSpawnSpawner } from "@opencode-ai/core/cross-spawn-spawner"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
+import { Permission } from "@/permission"
 import { Session } from "@/session/session"
 import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
@@ -491,6 +492,32 @@ describe("Reanudar un ayudante perdido", () => {
       TrabajosDisco.writeTombstone({ id: hija.id, tipo: "ayudante", sessionID: parentID, directory, titulo: "hija perdida", inicio: Date.now() - 5000 })
       return hija
     })
+
+  // Revisión de seguridad H2 (variante): la hija no conserva permisos de escritura de cuando el padre podía escribir.
+  bg.instance("Reanudar recalcula los permisos de la hija con el tope ACTUAL del padre (modo plan): ya no escribe", () =>
+    Effect.gen(function* () {
+      const ses = yield* Session.Service
+      const directory = yield* InstanceState.directory
+      // El padre ya entró en modo plan; el ayudante se lanzó (y se perdió) cuando el padre podía editar.
+      const chat = yield* ses.create({ title: "Padre en plan", agent: "plan" })
+      const hija = yield* ses.create({
+        parentID: chat.id,
+        title: "hija perdida",
+        agent: "general",
+        permission: [{ permission: "edit", pattern: "*", action: "allow" }],
+      })
+      creados.push(hija.id)
+      TrabajosDisco.writeTombstone({ id: hija.id, tipo: "ayudante", sessionID: chat.id, directory, titulo: "hija perdida", inicio: Date.now() - 5000 })
+      const antes = yield* ses.get(hija.id)
+      expect(Permission.evaluate("edit", "src/a.ts", antes.permission ?? []).action).toBe("allow")
+
+      const scope = yield* Scope.Scope
+      const prompt = { cancel: () => Effect.void, prompt: (input: SessionPrompt.PromptInput) => Effect.succeed(reply(input, "ok")) }
+      expect(yield* reanudarAyudante({ sessionID: chat.id, id: hija.id, prompt, scope })).toEqual({ ok: true })
+      const despues = yield* ses.get(hija.id)
+      expect(Permission.evaluate("edit", "src/a.ts", despues.permission ?? []).action).toBe("deny")
+    }),
+  )
 
   bg.instance("lanza un turno nuevo en la hija con el mensaje fijo, quita la lápida y avisa al padre", () =>
     Effect.gen(function* () {
