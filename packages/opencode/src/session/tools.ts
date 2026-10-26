@@ -69,7 +69,10 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       bypassAgentCheck: input.bypassAgentCheck,
       promptOps: input.promptOps,
       // Lazunox (2C): en modo plan (agente plan o ayudante lanzado desde él) el shell solo puede leer.
-      soloLectura: flags.lazunoxPlan && (input.agent.name === "plan" || marcaModoPlan(input.session.permission)),
+      // Lazunox (3C): el `revisor` también, siempre (no depende de LAZUNOX_PLAN): su shell solo lee, sin redirecciones ni opciones que escriban.
+      soloLectura:
+        input.agent.name === "revisor" ||
+        (flags.lazunoxPlan && (input.agent.name === "plan" || marcaModoPlan(input.session.permission))),
     },
     agent: input.agent.name,
     messages: input.messages,
