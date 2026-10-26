@@ -9,7 +9,9 @@ import * as Truncate from "./truncate"
 import { ShellBackground } from "./shell/background"
 import { TrabajosDisco } from "./shell/trabajos-disco"
 import { neutralizar } from "./neutralizar"
-import { CABECERA_AYUDANTE, acotarResultado, limiteSubagentes, resultadoMaximo, topeAlcanzado } from "./task"
+import { Agent } from "../agent/agent"
+import { Config } from "@/config/config"
+import { CABECERA_AYUDANTE, acotarResultado, limiteSubagentes, permisoDeHija, resultadoMaximo, topeAlcanzado } from "./task"
 
 // Lazunox (2B del plan maestro de paridad, P13 + P14): esperar y gestionar los ayudantes de fondo.
 //   task_wait   - espera a varios ayudantes de fondo con UNA llamada y devuelve sus informes ya acotados.
@@ -281,7 +283,7 @@ export type ReanudarResultado = { ok: true } | { ok: false; motivo: ReanudarMoti
 /**
  * Reanuda un ayudante «perdido» de ESA sesión: nuevo turno en su sesión hija con un mensaje fijo de continuación, como trabajo de fondo
  * (cuenta para `LAZUNOX_MAX_SUBAGENTS`) y con aviso al padre al terminar, igual que un ayudante lanzado con `task`.
- * Sin permisos nuevos: la sesión hija conserva los suyos. `ok:false` si el id no es una lápida de ayudante de esta sesión,
+ * Los permisos de la hija se recalculan con el tope ACTUAL del padre (`permisoDeHija`) antes de lanzar. `ok:false` si el id no es una lápida de ayudante de esta sesión,
  * si la sesión hija no cuelga de ella, si ya está en curso o si se alcanzó el tope.
  */
 export const reanudarAyudante = Effect.fn("TaskGestion.reanudar")(function* (input: {
@@ -312,6 +314,17 @@ export const reanudarAyudante = Effect.fn("TaskGestion.reanudar")(function* (inp
 
   const parent = yield* sessions.get(SessionID.make(sessionID)).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
   if (!parent) return { ok: false, motivo: "no_existe" } as ReanudarResultado
+
+  // Sin permisos «heredados» del pasado: la hija recibe el tope ACTUAL del padre (p. ej. ya entró en modo plan), igual que con `task`.
+  const agents = yield* Agent.Service
+  const cfg = yield* (yield* Config.Service).get()
+  const next = yield* agents.get(child.agent ?? "general")
+  if (!next) return { ok: false, motivo: "no_existe" } as ReanudarResultado
+  const parentAgent = yield* agents.get(parent.agent ?? (yield* agents.defaultAgent()))
+  yield* sessions.setPermission({
+    sessionID: child.id,
+    permission: permisoDeHija({ cfg, parent, parentAgent, next }),
+  })
 
   const titulo = child.title || lapida.titulo
   const metadata = { parentSessionId: sessionID, sessionId: id, background: true, reanudado: true }
