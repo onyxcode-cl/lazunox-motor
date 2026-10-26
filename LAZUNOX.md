@@ -582,3 +582,12 @@ Prueba: `test/lazunox/revisor-git-modos.test.ts` (rulesets de la app copiados de
   del propio agente (`Truncate.GLOB`, skills, temporales). `general` y `build` no cambian. Efecto lateral bueno: antes, en modos que preguntan,
   `Truncate.GLOB` quedaba en `ask` para el revisor.
 - Pruebas: `packages/opencode/test/lazunox/revisor-permisos-hijos.test.ts` (sesiones sueltas y acumuladas).
+
+## Ola 7 — 7.3 Paralelismo seguro (rama `feat/ola7-herramientas`)
+
+- **Qué**: candado de lectura/escritura POR SESIÓN (`session/paralelismo.ts`) alrededor de cada `execute`, cableado en un solo punto al final de `SessionTools.resolve` (`session/tools.ts`). Comparten el candado (siguen en paralelo): `read`, `glob`, `grep`, `skill`, `task_list`, `tool_search`, `list_mcp_resources`, `list_mcp_resource_templates`, `read_mcp_resource`, **`task`** y las herramientas MCP con `annotations.readOnlyHint === true` (directas o vía `mcp_call`). El resto (`bash`, `edit`, `write`, `apply_patch`, `webfetch`, `todowrite`, MCP sin pista…) es exclusivo.
+- **Orden**: cola FIFO. Lo pedido después de una escritura espera a que termine; la escritura espera a las lecturas pedidas antes. Un fallo libera el candado y no cancela a las demás; abortar la sesión saca de la cola a las que esperan.
+- **Permisos**: se piden dentro del `execute`, con el candado ya tomado. Un permiso pendiente en una lectura no bloquea a las otras lecturas; uno pendiente en una herramienta exclusiva retiene el candado hasta que la persona responde (sin interbloqueo: el candado es por sesión y quien espera no retiene nada que el permiso necesite).
+- **Desviación del plan**: `task` comparte el candado (el plan lo pone exclusivo). Si fuera exclusivo, `lote` y los ayudantes simultáneos pasarían a ejecutarse uno tras otro; el ayudante escribe en SU sesión con SU candado. Dos ayudantes que editen el mismo archivo siguen sin protegerse entre sí.
+- **Cambia respecto a 5B**: `edit` + `read` en un mismo paso ya no se solapan (`paralelo-lectura.test.ts` actualizado). Interruptor `LAZUNOX_PARALELISMO_SEGURO=0` = comportamiento anterior.
+- Pruebas: `test/lazunox/paralelismo-seguro.test.ts` (núcleo + motor con proveedor falso).

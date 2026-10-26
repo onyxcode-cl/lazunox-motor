@@ -37,6 +37,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { marcaModoPlan } from "./plan-modo"
+import { conCandado, esSoloLectura, mcpSoloLectura } from "./paralelismo"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -457,7 +458,21 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  if (flags.experimentalCodeMode) return tools
+  // Lazunox (Ola 7 — 7.3): candado de lectura/escritura por sesión alrededor de cada `execute` (ver paralelismo.ts).
+  // Se envuelve al final, en un solo punto: las de solo lectura comparten el candado; el resto es exclusivo y en orden.
+  const conParalelismoSeguro = (mcpLectura: (key: string, args: unknown) => boolean) => {
+    for (const [key, def] of Object.entries(tools)) {
+      const original = def.execute
+      if (!original) continue
+      def.execute = ((args: unknown, opts: ToolExecutionOptions) =>
+        conCandado(input.session.id, esSoloLectura(key) || mcpLectura(key, args), opts.abortSignal, async () =>
+          original(args as never, opts),
+        )) as typeof def.execute
+    }
+    return tools
+  }
+
+  if (flags.experimentalCodeMode) return conParalelismoSeguro(() => false)
 
   // Lazunox: búsqueda diferida (ver tool/tool-search.ts). Las herramientas MCP diferibles salen de la lista y se
   // alcanzan con tool_search + mcp_call; todo pasa por McpInvocar.run, igual que la llamada directa.
@@ -604,7 +619,15 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     })
   }
 
-  return tools
+  const lecturaMcp = (key: string, args: unknown) => {
+    const directa = decision.direct.find((e) => e.key === key)
+    if (directa) return mcpSoloLectura(directa.source.def)
+    if (key !== ToolSearch.MCP_CALL) return false
+    const nombre = toRecord(args).tool
+    const diferida = typeof nombre === "string" ? decision.deferred.find((e) => e.key === nombre) : undefined
+    return !!diferida && mcpSoloLectura(diferida.source.def)
+  }
+  return conParalelismoSeguro(lecturaMcp)
 })
 
 function toRecord(value: unknown) {
