@@ -18,6 +18,7 @@ import { Snapshot } from "@/snapshot"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import * as Bom from "@/util/bom"
+import * as Finales from "@/util/finales"
 
 function normalizeLineEndings(text: string): string {
   return text.replaceAll("\r\n", "\n")
@@ -127,11 +128,23 @@ export const EditTool = Tool.define(
               const source = yield* Bom.readFile(afs, filePath)
               contentOld = source.text
 
-              const ending = detectLineEnding(contentOld)
-              const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
-              const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
-
-              const replaced = replaceDetailed(contentOld, old, replacement, params.replaceAll)
+              let replaced: { text: string; unicodeTolerant: boolean }
+              if (Bom.edicionSegura()) {
+                // Lazunox (7.8): se edita sobre una vista LF y cada línea conserva su final (CRLF, CR o LF), también en archivos mixtos.
+                const origen = Finales.dividir(contentOld)
+                const hecho = replaceDetailed(
+                  origen.vista,
+                  Finales.aVista(params.oldString),
+                  Finales.aVista(params.newString),
+                  params.replaceAll,
+                )
+                replaced = { ...hecho, text: Finales.restaurar(hecho.text, origen) }
+              } else {
+                const ending = detectLineEnding(contentOld)
+                const old = convertToLineEnding(normalizeLineEndings(params.oldString), ending)
+                const replacement = convertToLineEnding(normalizeLineEndings(params.newString), ending)
+                replaced = replaceDetailed(contentOld, old, replacement, params.replaceAll)
+              }
               unicodeTolerant = replaced.unicodeTolerant
               const next = Bom.split(replaced.text)
               const desiredBom = source.bom || next.bom
@@ -155,8 +168,8 @@ export const EditTool = Tool.define(
                 },
               })
 
-              yield* afs.writeWithDirs(filePath, Bom.join(contentNew, desiredBom))
-              if (yield* format.file(filePath)) {
+              yield* afs.writeWithDirs(filePath, Bom.salida(contentNew, desiredBom, source.utf16))
+              if ((yield* format.file(filePath)) && !source.utf16) {
                 contentNew = yield* Bom.syncFile(afs, filePath, desiredBom)
               }
               yield* events.publish(FileSystem.Event.Edited, { file: filePath })

@@ -44,8 +44,15 @@ export const WriteTool = Tool.define(
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
           const exists = yield* fs.existsSafe(filepath)
-          const source = exists ? yield* Bom.readFile(fs, filepath) : { bom: false, text: "" }
+          const source = exists ? yield* Bom.readFile(fs, filepath) : { bom: false, text: "", utf16: false }
           const next = Bom.split(params.content)
+          // Lazunox (7.8): no se escribe texto con U+FFFD que el archivo no tenía (señal de una lectura degradada).
+          if (Bom.edicionSegura() && next.text.includes("\uFFFD") && !source.text.includes("\uFFFD")) {
+            throw new Error(
+              `El contenido nuevo trae el carácter de reemplazo U+FFFD (�), señal de que el texto se leyó con la codificación equivocada. ` +
+                `No se escribió ${filepath}. Vuelve a leer el original y corrige el contenido, o usa un comando de shell que conserve la codificación.`,
+            )
+          }
           const desiredBom = source.bom || next.bom
           const contentOld = source.text
           const contentNew = next.text
@@ -61,8 +68,8 @@ export const WriteTool = Tool.define(
             },
           })
 
-          yield* fs.writeWithDirs(filepath, Bom.join(contentNew, desiredBom))
-          if (yield* format.file(filepath)) {
+          yield* fs.writeWithDirs(filepath, Bom.salida(contentNew, desiredBom, source.utf16))
+          if ((yield* format.file(filepath)) && !source.utf16) {
             yield* Bom.syncFile(fs, filepath, desiredBom)
           }
           yield* events.publish(FileSystem.Event.Edited, { file: filepath })

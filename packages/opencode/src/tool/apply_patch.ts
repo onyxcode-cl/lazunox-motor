@@ -65,6 +65,7 @@ export const ApplyPatchTool = Tool.define(
         additions: number
         deletions: number
         bom: boolean
+        utf16?: boolean
       }> = []
 
       let totalDiff = ""
@@ -152,6 +153,7 @@ export const ApplyPatchTool = Tool.define(
               additions,
               deletions,
               bom,
+              utf16: source.utf16,
             })
 
             totalDiff += diff + "\n"
@@ -159,7 +161,7 @@ export const ApplyPatchTool = Tool.define(
           }
 
           case "delete": {
-            const source = yield* Bom.readFile(afs, filePath).pipe(
+            const source = yield* Bom.readFileLossy(afs, filePath).pipe(
               Effect.catch((error) =>
                 Effect.fail(
                   new Error(
@@ -228,7 +230,7 @@ export const ApplyPatchTool = Tool.define(
             break
 
           case "update":
-            yield* afs.writeWithDirs(change.filePath, Bom.join(change.newContent, change.bom))
+            yield* afs.writeWithDirs(change.filePath, Bom.salida(change.newContent, change.bom, change.utf16))
             updates.push({ file: change.filePath, event: "change" })
             break
 
@@ -236,7 +238,7 @@ export const ApplyPatchTool = Tool.define(
             if (change.movePath) {
               // Create parent directories (recursive: true is safe on existing/root dirs)
 
-              yield* afs.writeWithDirs(change.movePath!, Bom.join(change.newContent, change.bom))
+              yield* afs.writeWithDirs(change.movePath!, Bom.salida(change.newContent, change.bom, change.utf16))
               yield* afs.remove(change.filePath)
               updates.push({ file: change.filePath, event: "unlink" })
               updates.push({ file: change.movePath, event: "add" })
@@ -250,7 +252,7 @@ export const ApplyPatchTool = Tool.define(
         }
 
         if (edited) {
-          if (yield* format.file(edited)) {
+          if ((yield* format.file(edited)) && !change.utf16) {
             yield* Bom.syncFile(afs, edited, change.bom)
           }
           yield* events.publish(FileSystem.Event.Edited, { file: edited })

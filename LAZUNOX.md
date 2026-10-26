@@ -582,3 +582,20 @@ Prueba: `test/lazunox/revisor-git-modos.test.ts` (rulesets de la app copiados de
   del propio agente (`Truncate.GLOB`, skills, temporales). `general` y `build` no cambian. Efecto lateral bueno: antes, en modos que preguntan,
   `Truncate.GLOB` quedaba en `ask` para el revisor.
 - Pruebas: `packages/opencode/test/lazunox/revisor-permisos-hijos.test.ts` (sesiones sueltas y acumuladas).
+
+## Ola 7 — 7.8 (edición más segura)
+
+Plan: `docs/PLAN-MOTOR-OLA7.md` § 7.8. Interruptor `LAZUNOX_EDICION_SEGURA=0` (se lee en cada llamada): apaga las dos cosas y vuelve al comportamiento anterior.
+
+- **Archivos que no son UTF-8** (`util/bom.ts`): `Bom.readFile` decodifica con `fatal`; `edit`, `write` y `apply_patch` (update) se niegan con un error que sugiere un comando de shell (`sed -i`, `perl -pi`, `iconv`) y el archivo no se toca. Excepción: UTF-16 LE con BOM, que se edita y se reescribe en UTF-16 LE (`Bom.salida`; se salta el formateador). `apply_patch delete` y `Bom.syncFile` usan `Bom.readFileLossy` (comportamiento de antes) porque no reescriben el contenido.
+- **`write`** se niega si el contenido nuevo trae U+FFFD que el archivo no tenía (también en archivos nuevos).
+- **Finales de línea por región** (`util/finales.ts`): se edita sobre una vista LF y cada línea conserva su final (CRLF, CR solitario o LF, también en archivos mixtos). Las líneas nuevas heredan el final de la que reemplazan, o el de la anterior. `edit` ya no convierte todo el texto nuevo; `apply_patch` (`deriveNewContentsFromChunks`) conserva CRLF/LF. El BOM se sigue conservando.
+- Pruebas: `test/lazunox/edicion-segura.test.ts`. Limitación: `Patch.applyPatch` (`patch/index.ts`, `applyHunksToFiles`) sigue leyendo con `readFileString`, sin rechazo de no UTF-8 (no lo usa la herramienta).
+
+## Ola 7 — 7.21 (resultados binarios de MCP a archivo y con tope)
+
+Plan: `docs/PLAN-MOTOR-OLA7.md` § 7.21. Interruptor `LAZUNOX_MCP_BINARIOS=0`: vuelve al camino de antes (imagen en base64 al contexto sin tope, audio descartado, blobs por lista).
+
+- **Qué hace** (`mcp/binarios.ts`, usado por `mcp/invocar.ts`): cada imagen, audio o recurso blob de un resultado MCP se guarda en `Truncate.DIR` como `tool_<id>.<ext>` (el prefijo `tool_` lo recoge la misma limpieza de 7 días). El nombre lo genera el motor; el servidor solo influye en la extensión, que sale de una lista cerrada, y los primeros bytes se comprueban contra el tipo declarado (si no coinciden: `.bin`, sin adjuntar y con aviso). Nada se ejecuta. Al modelo le llega en el texto la ruta, el tipo y el tamaño.
+- **Adjuntar al contexto**: la imagen solo se adjunta si el modelo la admite (`model.capabilities.input.image`, nuevo campo `admiteImagen` de `RunInput`, puesto por `session/tools.ts` en la llamada directa y en `mcp_call`) y pesa ≤ `LAZUNOX_MCP_IMAGEN_MAX_BYTES` (256 KiB por defecto; `0` = nunca). Los blobs mantienen su regla (tipos admitidos y ≤ 10 MB; las imágenes además con el tope). El audio se guarda y se avisa. Tope de guardado por pieza: 64 MB (más: se omite con aviso).
+- Pruebas: `test/lazunox/mcp-binarios.test.ts` (con la ruta de salidas aislada por el preload de pruebas).

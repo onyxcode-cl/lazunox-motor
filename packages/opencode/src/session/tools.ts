@@ -498,6 +498,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           truncate,
           agent: input.agent,
           processor: input.processor,
+          admiteImagen: input.model.capabilities?.input?.image,
         }),
       )
     tools[key] = item
@@ -595,6 +596,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               truncate,
               agent: input.agent,
               processor: input.processor,
+              admiteImagen: input.model.capabilities?.input?.image,
               title: entry.key,
               extraMetadata: { lazunoxMcp: { tool: entry.key, server: entry.server } },
             })
