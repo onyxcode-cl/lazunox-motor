@@ -323,6 +323,15 @@ export interface Hooks {
     output: { context: string[] },
   ) => Promise<void>
   /**
+   * Lazunox (ganchos de usuario `Stop` / `SubagentStop`): el bucle de la sesión lo llama justo antes de darla por terminada.
+   * Si un gancho pide seguir trabajando, `continuar` trae la razón y el bucle debe dar otro turno con ella como instrucción.
+   * Cada gancho tiene un tope de 5 continuaciones seguidas (después se ignora). `subagente: true` = sesión de un ayudante.
+   */
+  "experimental.session.stop"?: (
+    input: { sessionID: string; subagente?: boolean; agent?: string },
+    output: { continuar?: string },
+  ) => Promise<void>
+  /**
    * Called after compaction succeeds and before a synthetic user
    * auto-continue message is added.
    *
@@ -347,5 +356,8 @@ export interface Hooks {
   /**
    * Modify tool definitions (description and parameters) sent to LLM
    */
-  "tool.definition"?: (input: { toolID: string }, output: { description: string; parameters: any }) => Promise<void>
+  "tool.definition"?: (
+    input: { toolID: string },
+    output: { description: string; parameters: any; jsonSchema?: any },
+  ) => Promise<void>
 }
