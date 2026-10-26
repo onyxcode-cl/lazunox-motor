@@ -160,9 +160,9 @@ describe("aviso: la línea es dato NO CONFIABLE", () => {
     expect(line.length).toBeLessThanOrEqual(500 + " ...(línea recortada)".length)
   })
   test("saltos de línea y separadores Unicode no parten el sobre", () => {
-    const text = notice(["a\nb\r\nc d‮e"])
+    const text = notice(["a\nb\r\nc\u2028d\u202ee"])
     const line = /<linea_no_confiable>(.*?)<\/linea_no_confiable>/s.exec(text)![1]!
-    expect(line).not.toMatch(/[\n\r ‮]/)
+    expect(line).not.toMatch(/[\n\r\u2028\u202e]/)
   })
   test("el id se sanea y el aviso de tope lo dice", () => {
     const text = LazunoxWake.monitorNotice({ id: "x><y", lines: ["a"], total: 20, stop: "tope", max: 20 })
