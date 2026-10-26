@@ -297,6 +297,10 @@ exports[`tool parameters JSON Schema (wire shape) skill 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "args": {
+      "description": "What the person asked for, in your own words. Required context for skills that run as a helper (context: fork), which cannot see this conversation.",
+      "type": "string",
+    },
     "name": {
       "description": "The name of the skill from available_skills",
       "type": "string",
