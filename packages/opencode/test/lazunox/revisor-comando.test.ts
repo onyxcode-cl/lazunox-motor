@@ -302,22 +302,25 @@ describe("/review (comando -> subtarea) conserva las herramientas del revisor co
   )
 })
 
-describe("límite conocido: sesión con `*: ask` (falla cerrado, igual por /review y por task)", () => {
+describe("sesión con `*: ask`: el revisor conserva la lectura pero en «preguntar» (nunca más que el padre)", () => {
   prueba.instance(
-    "/review con `*: ask`: el revisor queda sin herramientas, exactamente lo mismo que el cálculo de `task` desde esa sesión (2A)",
+    "/review con `*: ask`: ofrece read/grep/glob/bash, ninguno en allow, nada de edit/write/task; igual que el cálculo de `task`",
     () =>
       Effect.gen(function* () {
         const ask = [{ permission: "*", pattern: "*", action: "ask" as const }]
         const { nombres, hijas } = yield* herramientasDelRevisor(ask)
+        for (const t of [...SOLO_LECTURA, "bash"]) expect(nombres).toContain(t)
         for (const t of PROHIBIDAS) expect(nombres).not.toContain(t)
-        // Lo que daría `task` lanzado desde el agente `build` con la misma sesión:
         const agentes = yield* AgentSvc.Service
         const build = yield* agentes.get("build")
         const revisor = yield* agentes.get("revisor")
         const porTask = deriveSubagentSessionPermission({ parentSessionPermission: ask, parentAgentPermission: build!.permission, subagent: revisor! })
-        const ev = (reglas: typeof porTask, p: string) => Permission.evaluate(p, "x", revisor!.permission, reglas).action
-        for (const p of ["read", "grep", "glob", "edit", "task"])
-          expect(ev(hijas[0]!.permission ?? [], p)).toBe(ev(porTask, p))
+        const ev = (reglas: typeof porTask, p: string, pat = "x") => Permission.evaluate(p, pat, revisor!.permission, reglas).action
+        const hija = hijas[0]!.permission ?? []
+        for (const p of ["read", "grep", "glob", "edit", "task", "write"]) expect(ev(hija, p)).toBe(ev(porTask, p))
+        for (const p of ["read", "grep", "glob"]) expect(ev(hija, p)).toBe("ask") // como el padre: la persona decide
+        for (const p of ["edit", "write", "task", "webfetch"]) expect(ev(hija, p)).toBe("deny")
+        expect(ev(hija, "bash", "rm -rf .")).toBe("deny")
       }),
     60_000,
   )

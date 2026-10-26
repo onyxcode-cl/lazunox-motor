@@ -49,7 +49,14 @@ export function colaDeLaBase(base: readonly Regla[], declarado: readonly Regla[]
         // Lista blanca con patrones concretos (p. ej. el revisor: `git diff*`): lo que el agente permite explícitamente queda en
         // «preguntar», igual que el padre (la persona decide), y todo lo demás sigue negado. Nunca más que el «preguntar» del padre.
         for (const d of declarado) {
-          if (d.action === "allow" && d.pattern !== "*" && Wildcard.match(r.permission, d.permission)) cola.push({ ...d, action: "ask" })
+          if (d.action !== "allow") continue
+          // B3 (probe): si el «preguntar» del padre es el comodín `*: ask` (patrón `*`), también cuentan las herramientas concretas que el
+          // agente permite (el emparejamiento era solo en un sentido y `*` no emparejaba con `bash`), incluidas las de patrón `*`
+          // (read, grep, glob): quedan en «preguntar» como el padre, nunca en allow. El comodín del propio agente (`"*": deny`) no
+          // es un allow, así que no entra. Sin esto el revisor lanzado desde una sesión `*: ask` quedaba sin ninguna herramienta.
+          const comodinAsk = r.permission === "*" && r.pattern === "*" && d.permission !== "*"
+          if ((d.pattern !== "*" || comodinAsk) && (Wildcard.match(r.permission, d.permission) || (comodinAsk && Wildcard.match(d.permission, r.permission))))
+            cola.push({ ...d, action: "ask" })
         }
         return
       }
