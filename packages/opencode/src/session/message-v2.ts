@@ -128,6 +128,19 @@ function providerMeta(metadata: Record<string, any> | undefined) {
   return Object.keys(rest).length > 0 ? rest : undefined
 }
 
+/**
+ * Lazunox: `providerMetadata` del AI SDK es `Record<proveedor, Record<clave, JSON>>`. Las partes de texto que marca el motor llevan en `metadata`
+ * valores simples (`lazunox_presupuesto: "aviso"`, `lazunox_objetivo: "cumplido"`, `lazunox_resumen: "incompleto"`…): pasarlos tal cual hace que la
+ * siguiente petición falle con «Invalid prompt: The messages do not match the ModelMessage[] schema». Solo viajan las entradas cuyo valor es un objeto.
+ */
+export function soloMetadataDeProveedor(metadata: Record<string, any> | undefined) {
+  if (!metadata) return undefined
+  const limpio = Object.fromEntries(
+    Object.entries(metadata).filter(([, v]) => v !== null && typeof v === "object" && !Array.isArray(v)),
+  )
+  return Object.keys(limpio).length > 0 ? limpio : undefined
+}
+
 export const toModelMessagesEffect = Effect.fnUntraced(function* (
   input: WithParts[],
   model: Provider.Model,
@@ -290,7 +303,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           assistantMessage.parts.push({
             type: "text",
             text,
-            ...(differentModel ? {} : { providerMetadata: part.metadata }),
+            ...(differentModel ? {} : { providerMetadata: soloMetadataDeProveedor(part.metadata) }),
           })
         }
         if (part.type === "step-start")
@@ -384,7 +397,7 @@ export const toModelMessagesEffect = Effect.fnUntraced(function* (
           assistantMessage.parts.push({
             type: "reasoning",
             text: part.text,
-            providerMetadata: part.metadata,
+            providerMetadata: soloMetadataDeProveedor(part.metadata),
           })
         }
       }
