@@ -13,6 +13,8 @@ import PROMPT_GENERATE from "./generate.txt"
 import PROMPT_COMPACTION from "./prompt/compaction.txt"
 import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
+import PROMPT_VERIFICADOR from "./prompt/verificador.txt"
+import PROMPT_REVISOR from "./prompt/revisor.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
@@ -146,6 +148,19 @@ const layer = Layer.effect(
 
         const user = Permission.fromConfig(cfg.permission ?? {})
 
+        // Lazunox (3C, P18 + P21): `verificador` y `revisor`. Solo lectura + shell restringido, modelo pequeño del mismo proveedor y SIN
+        // poder lanzar otros ayudantes. Se construyen como los agentes de carpeta (2A): sus permisos son la intersección con los del
+        // padre (`usuario: true` + `estricto`), nunca más. Ver `agent/revisor.ts` y LAZUNOX.md (3C).
+        // `X`, `X *` y `X:*` (scripts como `npm run test:unit`). Los comodines solo abren lo que empieza por la orden exacta.
+        const parDeOrden = (...ordenes: string[]) =>
+          Object.fromEntries(ordenes.flatMap((o) => [[o, "allow"], [`${o} *`, "allow"], [`${o}:*`, "allow"]] as const)) as Record<string, "allow">
+        const soloLectura = { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow", task: "deny", todowrite: "deny" } as const
+        const baseNativa = Permission.merge(defaults, user)
+        const nativoRestringido = (declarado: ReturnType<typeof Permission.fromConfig>) => {
+          const r = restringir(baseNativa, declarado)
+          return { permission: r.permission, estricto: r.estricto, usuario: true as const }
+        }
+
         const agents: Record<string, Info> = {
           build: {
             name: "build",
@@ -222,6 +237,56 @@ const layer = Layer.effect(
             description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
             prompt: PROMPT_EXPLORE,
             // Lazunox: lectura barata, modelo pequeño del mismo proveedor que el padre (si no hay, hereda).
+            modelSmall: true,
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          verificador: {
+            name: "verificador",
+            description:
+              "Verifica que un cambio funciona: corre las pruebas, el chequeo de tipos o el linter del proyecto y responde PASA o FALLA con la evidencia (máx. 2 KB). No edita ni escribe archivos. Indica en la orden qué comprobar (por ejemplo «corre las pruebas de src/foo»).",
+            ...nativoRestringido(
+              Permission.fromConfig({
+                ...soloLectura,
+                bash: {
+                  "*": "deny",
+                  ...parDeOrden(
+                    "git status", "git diff", "git log", "git show",
+                    "bun test", "bun run test", "bun run typecheck", "bun run lint", "bun run check",
+                    "npm test", "npm run test", "npm run typecheck", "npm run lint", "npm run check",
+                    "pnpm test", "pnpm run test", "pnpm run typecheck", "pnpm run lint", "pnpm run check",
+                    "yarn test", "yarn run test", "yarn typecheck", "yarn lint",
+                    "npx vitest", "npx jest", "npx tsc", "vitest", "jest", "tsc",
+                    "pytest", "python -m pytest", "python3 -m pytest",
+                    "go test", "go vet", "cargo test", "cargo check", "cargo clippy",
+                    "make test", "make check", "dotnet test", "mvn test", "gradle test", "./gradlew test",
+                  ),
+                },
+                external_directory: readonlyExternalDirectory,
+              }),
+            ),
+            prompt: PROMPT_VERIFICADOR,
+            modelSmall: true,
+            options: {},
+            mode: "subagent",
+            native: true,
+          },
+          revisor: {
+            name: "revisor",
+            description:
+              "Revisa cambios de código (sin confirmar, un commit o una rama) y devuelve solo los errores que el cambio introduce, como JSON `findings[]` con prioridad P0-P3. Solo lectura: no edita nada ni toca el árbol de trabajo. Indica en la orden qué revisar.",
+            ...nativoRestringido(
+              Permission.fromConfig({
+                ...soloLectura,
+                bash: {
+                  "*": "deny",
+                  ...parDeOrden("git status", "git diff", "git log", "git show", "git rev-parse", "git merge-base", "git rev-list", "git ls-files", "git blame"),
+                },
+                external_directory: readonlyExternalDirectory,
+              }),
+            ),
+            prompt: PROMPT_REVISOR,
             modelSmall: true,
             options: {},
             mode: "subagent",

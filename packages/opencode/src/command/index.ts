@@ -80,6 +80,8 @@ const layer = Layer.effect(
         name: Default.REVIEW,
         description: "review changes [commit|branch|pr], defaults to uncommitted",
         source: "command",
+        // Lazunox (3C, P18): la revisión la hace el agente nativo `revisor` (solo lectura, modelo pequeño, salida JSON `findings[]`).
+        agent: "revisor",
         get template() {
           return PROMPT_REVIEW.replace("${path}", ctx.worktree)
         },
