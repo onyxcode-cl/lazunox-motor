@@ -6,8 +6,9 @@ import { aplica, ejecutar, leerConfig, LazunoxGanchosPlugin } from "../../src/pl
 
 describe("ganchos de usuario", () => {
   test("leerConfig descarta lo inválido y acota tiempos y cantidad", () => {
-    expect(leerConfig("no json")).toEqual({ PreToolUse: [], PostToolUse: [], PreCompact: [], PostCompact: [], Stop: [] })
-    expect(leerConfig('{"hooks":7}')).toEqual({ PreToolUse: [], PostToolUse: [], PreCompact: [], PostCompact: [], Stop: [] })
+    const vacio = { PreToolUse: [], PostToolUse: [], PreCompact: [], PostCompact: [], Stop: [], SessionStart: [], UserPromptSubmit: [], SubagentStop: [] }
+    expect(leerConfig("no json")).toEqual(vacio)
+    expect(leerConfig('{"hooks":7}')).toEqual(vacio)
     expect(leerConfig('{"hooks":{"PreCompact":[{"command":"x"}],"Stop":[{"command":"y"}]}}')).toMatchObject({ PreCompact: [{ command: "x" }], Stop: [{ command: "y" }] })
     const c = leerConfig(
       JSON.stringify({
@@ -71,6 +72,35 @@ describe("ganchos de usuario", () => {
       // Sin LAZUNOX_HOOKS_FILE el plugin ni se registra (un proyecto no puede traer sus propios ganchos).
       delete process.env.LAZUNOX_HOOKS_FILE
       expect(await LazunoxGanchosPlugin({ directory: dir } as never)).toEqual({})
+    } finally {
+      if (previo === undefined) delete process.env.LAZUNOX_HOOKS_FILE
+      else process.env.LAZUNOX_HOOKS_FILE = previo
+      fs.rmSync(dir, { recursive: true, force: true })
+    }
+  })
+  test("leerConfig reconoce SessionStart, UserPromptSubmit y SubagentStop y los acota igual", () => {
+    const c = leerConfig(
+      JSON.stringify({ hooks: { SessionStart: [{ command: "a", timeout: 999 }], UserPromptSubmit: [{ command: "" }, { command: "b" }], SubagentStop: Array.from({ length: 30 }, () => ({ command: "x" })) } }),
+    )
+    expect(c.SessionStart).toEqual([{ command: "a", matcher: undefined, timeout: 60 }])
+    expect(c.UserPromptSubmit.map((g) => g.command)).toEqual(["b"])
+    expect(c.SubagentStop.length).toBe(20)
+  })
+  test("PreToolUse: código 2 sigue bloqueando y un gancho que no devuelve nada no cambia los argumentos", async () => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), "lzx-pre-"))
+    const previo = process.env.LAZUNOX_HOOKS_FILE
+    try {
+      const archivo = path.join(dir, "ganchos.json")
+      fs.writeFileSync(
+        archivo,
+        JSON.stringify({ hooks: { PreToolUse: [{ matcher: "bash", command: `"${process.execPath}" -e "console.error('no');process.exit(2)"` }, { matcher: "read", command: `"${process.execPath}" -e "console.log('hola')"` }] } }),
+      )
+      process.env.LAZUNOX_HOOKS_FILE = archivo
+      const hooks = await LazunoxGanchosPlugin({ directory: dir } as never)
+      await expect(hooks["tool.execute.before"]!({ tool: "bash", sessionID: "s", callID: "c" }, { args: { command: "ls" } })).rejects.toThrow("no")
+      const args = { filePath: "/x" }
+      await hooks["tool.execute.before"]!({ tool: "read", sessionID: "s", callID: "c" }, { args })
+      expect(args).toEqual({ filePath: "/x" })
     } finally {
       if (previo === undefined) delete process.env.LAZUNOX_HOOKS_FILE
       else process.env.LAZUNOX_HOOKS_FILE = previo
