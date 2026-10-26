@@ -16,7 +16,14 @@ import { Effect, Layer, Context, Schema } from "effect"
 import path from "node:path"
 import fsp from "node:fs/promises"
 import { InstanceState } from "@/effect/instance-state"
-import { isOverflow as overflow, usable } from "./overflow"
+import {
+  anticipadoPermitido,
+  isOverflow as overflow,
+  preservarPorModelo,
+  prefijoDeSesion,
+  resolverUmbral,
+  usable,
+} from "./overflow"
 import { serviceUse } from "@opencode-ai/core/effect/service-use"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Todo } from "./todo"
@@ -166,8 +173,10 @@ function completedCompactions(messages: SessionV1.WithParts[]) {
   })
 }
 
-function preserveRecentBudget(input: { cfg: ConfigV1.Info; model: Provider.Model }) {
+function preserveRecentBudget(input: { cfg: ConfigV1.Info; model: Provider.Model; global?: ConfigV1.Info }) {
   return (
+    // Lazunox (6.2): valor por modelo, solo de la configuración global.
+    preservarPorModelo(input.global, input.model) ??
     input.cfg.compaction?.preserve_recent_tokens ??
     Math.min(MAX_PRESERVE_RECENT_TOKENS, Math.max(MIN_PRESERVE_RECENT_TOKENS, Math.floor(usable(input) * 0.25)))
   )
@@ -289,6 +298,9 @@ export interface Interface {
   readonly isOverflow: (input: {
     tokens: SessionV1.Assistant["tokens"]
     model: Provider.Model
+    /** Lazunox (6.2): con la sesión y sus mensajes se aplica el umbral anticipado global (si está configurado). */
+    sessionID?: SessionID
+    messages?: SessionV1.WithParts[]
   }) => Effect.Effect<boolean>
   readonly prune: (input: { sessionID: SessionID }) => Effect.Effect<void>
   readonly process: (input: {
@@ -340,13 +352,28 @@ const layer = Layer.effect(
     const isOverflow = Effect.fn("SessionCompaction.isOverflow")(function* (input: {
       tokens: SessionV1.Assistant["tokens"]
       model: Provider.Model
+      sessionID?: SessionID
+      messages?: SessionV1.WithParts[]
     }) {
-      return overflow({
-        cfg: yield* config.get(),
-        tokens: input.tokens,
-        model: input.model,
-        outputTokenMax: flags.outputTokenMax,
-      })
+      const cfg = yield* config.get()
+      const base = { cfg, tokens: input.tokens, model: input.model, outputTokenMax: flags.outputTokenMax }
+      if (!input.sessionID || !input.messages) return overflow(base)
+      // Lazunox (6.2): umbral anticipado, SOLO de la configuración global (nunca del proyecto). Apagado por defecto.
+      const global = yield* config.getGlobal()
+      const umbral = resolverUmbral({ global, model: input.model, usable: usable(base) })
+      if (umbral === undefined) return overflow(base)
+      const prefijo = prefijoDeSesion(input.sessionID, input.messages)
+      const permiso = anticipadoPermitido({ msgs: input.messages, umbral, prefijo })
+      if (!permiso.permitido) {
+        const real = overflow(base)
+        if (!real && overflow({ ...base, umbral, prefijo }))
+          yield* Effect.logInfo("umbral anticipado: no se compacta", { "session.id": input.sessionID, motivo: permiso.motivo })
+        return real
+      }
+      const anticipado = overflow({ ...base, umbral, prefijo })
+      if (anticipado && !overflow(base))
+        yield* Effect.logInfo("umbral anticipado: se compacta", { "session.id": input.sessionID, umbral, prefijo })
+      return anticipado
     })
 
     const estimate = Effect.fn("SessionCompaction.estimate")(function* (input: {
@@ -364,7 +391,7 @@ const layer = Layer.effect(
     }) {
       const limit = input.cfg.compaction?.tail_turns
       if (limit !== undefined && limit <= 0) return { head: input.messages, tail_start_id: undefined }
-      const budget = preserveRecentBudget({ cfg: input.cfg, model: input.model })
+      const budget = preserveRecentBudget({ cfg: input.cfg, model: input.model, global: yield* config.getGlobal() })
       const all = turns(input.messages)
       if (!all.length) return { head: input.messages, tail_start_id: undefined }
       const recent = limit === undefined ? all : all.slice(-limit)

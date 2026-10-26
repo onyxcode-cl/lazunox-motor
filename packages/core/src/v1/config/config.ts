@@ -164,6 +164,22 @@ export const Info = Schema.Struct({
       reserved: Schema.optional(NonNegativeInt).annotate({
         description: "Token buffer for compaction. Leaves enough window to avoid overflow during compaction.",
       }),
+      umbral: Schema.optional(Schema.Union([PositiveInt, Schema.String])).annotate({
+        description:
+          "Lazunox: compact before the window is full. Tokens (integer) or \"NN%\" of the usable window, measured on what grows after the fixed prefix; minimum 16000, never above usable. Only read from the GLOBAL config (ignored in a project's opencode.json). Off by default.",
+      }),
+      por_modelo: Schema.optional(
+        Schema.Record(
+          Schema.String,
+          Schema.Struct({
+            umbral: Schema.optional(Schema.Union([PositiveInt, Schema.String])),
+            preserve_recent_tokens: Schema.optional(NonNegativeInt),
+          }),
+        ),
+      ).annotate({
+        description:
+          "Lazunox: per-model values keyed by \"provider/model\" (win over the global ones). Only read from the GLOBAL config.",
+      }),
     }),
   ),
   experimental: Schema.optional(
