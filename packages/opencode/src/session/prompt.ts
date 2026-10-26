@@ -62,6 +62,7 @@ import * as Presupuesto from "./presupuesto"
 import { SessionProgreso } from "./progreso"
 import { marcaModoPlan } from "./plan-modo"
 import { ContextoMinimo } from "./contexto-minimo"
+import { AvisosCambios } from "./avisos-cambios"
 import * as ExhaustividadExplore from "../agent/exhaustividad"
 import { SessionTurnos } from "./turnos"
 import { LLMEvent } from "@opencode-ai/llm"
@@ -1481,6 +1482,13 @@ const layer = Layer.effect(
             Effect.provideService(FSUtil.Service, fsys),
             Effect.provideService(Session.Service, sessions),
           )
+          // Lazunox (6.7 · H9): aviso de archivos leídos que cambiaron por fuera (apagado por defecto; sin la bandera no hace nada).
+          msgs = yield* AvisosCambios.aplicar({
+            messages: msgs,
+            sessionID,
+            directory: ctx.directory,
+            worktree: ctx.worktree,
+          }).pipe(Effect.provideService(Session.Service, sessions))
 
           const msg: SessionV1.Assistant = {
             id: MessageID.ascending(),
