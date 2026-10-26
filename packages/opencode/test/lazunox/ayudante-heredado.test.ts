@@ -1,4 +1,3 @@
-import "./ayudante-heredado-env"
 import { afterEach, describe, expect, test } from "bun:test"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Database } from "@opencode-ai/core/database/database"
@@ -16,9 +15,8 @@ import type { SessionPrompt } from "../../src/session/prompt"
 import { MessageID, PartID, SessionID } from "../../src/session/schema"
 import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
-import { TaskTool, renderOutput, type TaskPromptOps } from "../../src/tool/task"
+import type { TaskPromptOps } from "../../src/tool/task"
 import { AyudanteHeredado } from "../../src/session/heredado"
-import { camposHeredar, permisoDeHija } from "../../src/tool/task"
 import { Truncate } from "@/tool/truncate"
 import { Provider } from "@/provider/provider"
 import { ToolRegistry } from "@/tool/registry"
@@ -28,6 +26,17 @@ import { testEffect } from "../lib/effect"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { InstanceState } from "@/effect/instance-state"
+
+// El esquema de `task` se decide al cargar el módulo (LAZUNOX_AYUDANTE_HEREDADO). Para no contaminar a otras pruebas que comparten el proceso
+// (p. ej. la instantánea de parámetros), este archivo carga SU PROPIA copia del módulo (consulta `?heredado`) con la bandera encendida y devuelve
+// el entorno a como estaba; cada prueba la enciende o apaga en tiempo de ejecución.
+const bandera = process.env.LAZUNOX_AYUDANTE_HEREDADO
+process.env.LAZUNOX_AYUDANTE_HEREDADO = "1" // solo justo antes de la carga aislada (los import estáticos de arriba ya se evaluaron sin ella)
+const { TaskTool, renderOutput, camposHeredar, permisoDeHija } = (await import(
+  "../../src/tool/task?heredado" as string
+)) as typeof import("../../src/tool/task")
+if (bandera === undefined) delete process.env.LAZUNOX_AYUDANTE_HEREDADO
+else process.env.LAZUNOX_AYUDANTE_HEREDADO = bandera
 
 // Lazunox: regresiones de seguridad de la ola 2B (inyección por el sobre, lápidas forjadas, Terminar por HTTP).
 
