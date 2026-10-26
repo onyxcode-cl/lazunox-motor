@@ -636,6 +636,40 @@ const scenarios: Scenario[] = [
       check((body as { motivo?: unknown }).motivo === "no_existe", "reanudar should say no_existe for an unknown subagent")
     }),
   http.protected
+    .get("/experimental/session/{sessionID}/objetivo", "experimental.session.objetivo.get")
+    .seeded((ctx) => ctx.session({ title: "Objetivo get owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/objetivo", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check((body as { objetivo?: unknown }).objetivo === null, "objetivo should be null (off) for a session without a goal")
+    }),
+  http.protected
+    .post("/experimental/session/{sessionID}/objetivo", "experimental.session.objetivo.crear")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Objetivo crear owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/objetivo", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+      body: { condicion: "que pasen las pruebas", tope: 3 },
+    }))
+    .json(200, (body) => {
+      const objetivo = (body as { objetivo?: { estado?: unknown; tope?: unknown } }).objetivo
+      check(objetivo?.estado === "activo" && objetivo?.tope === 3, "objetivo should be created active with the given tope")
+    }),
+  http.protected
+    .delete("/experimental/session/{sessionID}/objetivo", "experimental.session.objetivo.quitar")
+    .mutating()
+    .seeded((ctx) => ctx.session({ title: "Objetivo quitar owner" }))
+    .at((ctx) => ({
+      path: route("/experimental/session/{sessionID}/objetivo", { sessionID: ctx.state.id }),
+      headers: ctx.headers(),
+    }))
+    .json(200, (body) => {
+      check((body as { ok?: unknown }).ok === false, "quitar should report ok:false when the session has no goal")
+    }),
+  http.protected
     .get("/experimental/session/{sessionID}/turnos", "experimental.session.turnos")
     .seeded((ctx) => ctx.session({ title: "Turnos route owner" }))
     .at((ctx) => ({

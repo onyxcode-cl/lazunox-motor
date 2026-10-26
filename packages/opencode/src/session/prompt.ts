@@ -57,6 +57,11 @@ import { eq } from "drizzle-orm"
 import { SessionTable } from "@opencode-ai/core/session/sql"
 import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
+import { Objetivo } from "./objetivo"
+import * as Presupuesto from "./presupuesto"
+import { SessionProgreso } from "./progreso"
+import { marcaModoPlan } from "./plan-modo"
+import { SessionTurnos } from "./turnos"
 import { LLMEvent } from "@opencode-ai/llm"
 
 // @ts-ignore
@@ -1059,6 +1064,9 @@ const layer = Layer.effect(
       "SessionPrompt.prompt",
     )(function* (input: PromptInput) {
       const session = yield* sessions.get(input.sessionID).pipe(Effect.orDie)
+      // Lazunox (3A): si la persona escribe (algo que no sea texto sintético), el objetivo de la sesión se reevalúa desde cero.
+      if (input.parts.some((p) => !(p.type === "text" && p.synthetic === true)))
+        Objetivo.personaEscribio(String(input.sessionID), MessageID.ascending())
       yield* revert.cleanup(session)
       const message = yield* createUserMessage(input)
       // Lazunox: tras «restaurar solo el código» el modelo recibe UNA vez la lista de archivos que cambiaron de estado.
@@ -1098,8 +1106,270 @@ const layer = Layer.effect(
       throw new Error("Impossible")
     })
 
-    const runLoop: (sessionID: SessionID) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.run")(
-      function* (sessionID: SessionID) {
+
+    // ------------------------------------------------------------------------------------------ Lazunox (3A): modo objetivo + gancho Stop
+    const MAX_CONTINUACIONES_GANCHO = 5
+    const MAX_RAZON_GANCHO = 2000
+    const RECHAZOS = ["The user rejected permission to use this specific tool call.", "The user dismissed this question"]
+
+    /** ¿El último turno terminó porque la persona rechazó un permiso o descartó una pregunta? */
+    const huboRechazo = (asistentes: SessionV1.WithParts[]) =>
+      asistentes.some((m) =>
+        m.parts.some((p) => {
+          if (p.type !== "tool" || p.state.status !== "error") return false
+          const error = p.state.error
+          return RECHAZOS.some((r) => error.startsWith(r))
+        }),
+      )
+
+    const mensajeSintetico = Effect.fn("SessionPrompt.mensajeSintetico")(function* (
+      sessionID: SessionID,
+      lastUser: SessionV1.User,
+      text: string,
+      metadata: Record<string, unknown>,
+    ) {
+      const info = yield* sessions.updateMessage({
+        id: MessageID.ascending(),
+        role: "user",
+        sessionID,
+        time: { created: Date.now() },
+        agent: lastUser.agent,
+        model: lastUser.model,
+        tools: lastUser.tools,
+      })
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: info.id,
+        sessionID,
+        type: "text",
+        text,
+        synthetic: true,
+        metadata,
+      })
+    })
+
+    const anotarObjetivo = Effect.fn("SessionPrompt.anotarObjetivo")(function* (
+      asistente: SessionV1.Assistant,
+      text: string,
+      estado: string,
+    ) {
+      if (!text) return
+      yield* sessions.updatePart({
+        id: PartID.ascending(),
+        messageID: asistente.id,
+        sessionID: asistente.sessionID,
+        type: "text",
+        text,
+        metadata: { lazunox_objetivo: estado },
+      })
+    })
+
+    /** Corre `verificar` con la herramienta shell DEL MISMO agente y con las mismas reglas de permiso (como `todowrite`, 2D). */
+    const correrVerificacion = Effect.fn("SessionPrompt.correrVerificacion")(function* (input: {
+      session: Session.Info
+      lastUser: SessionV1.User
+      asistente: SessionV1.Assistant
+      msgs: SessionV1.WithParts[]
+      comando: string
+    }) {
+      const { session, lastUser, asistente, msgs } = input
+      const agent = yield* agents.get(lastUser.agent)
+      if (!agent) return { corrio: false as const, motivo: "el agente de la sesión ya no existe" }
+      const model = yield* getModel(lastUser.model.providerID, lastUser.model.modelID, session.id).pipe(Effect.orDie)
+      const disponibles = yield* registry.tools({
+        modelID: ModelV2.ID.make(model.api.id),
+        providerID: model.providerID,
+        agent,
+        permission: session.permission,
+      })
+      const shell = disponibles.find((t) => t.id === ShellID.ToolID)
+      if (!shell) return { corrio: false as const, motivo: "el agente no tiene la herramienta shell para correr la comprobación" }
+      let negado = false
+      const ctx: Tool.Context = {
+        sessionID: session.id,
+        abort: new AbortController().signal,
+        messageID: asistente.id,
+        agent: agent.name,
+        extra: {
+          model,
+          bypassAgentCheck: false,
+          soloLectura:
+            agent.name === "revisor" ||
+            (flags.lazunoxPlan && (agent.name === "plan" || marcaModoPlan(session.permission))),
+        },
+        messages: msgs,
+        metadata: () => Effect.void,
+        ask: (req) =>
+          permission
+            .ask({
+              ...req,
+              metadata: { ...req.metadata, lazunox_agente: agent.name, lazunox_objetivo: "verificar" },
+              sessionID: session.id,
+              ruleset: Permission.merge(
+                agent.permission,
+                session.permission ?? [],
+                ...(flags.lazunoxPlan && agent.name === "plan"
+                  ? [agent.permission.filter((rule) => rule.permission === "edit")]
+                  : []),
+              ),
+            })
+            .pipe(
+              Effect.tapError(() => Effect.sync(() => void (negado = true))),
+              Effect.orDie,
+            ),
+      }
+      const exit = yield* shell.execute({ command: input.comando }, ctx).pipe(Effect.exit)
+      if (Exit.isFailure(exit)) {
+        return {
+          corrio: false as const,
+          motivo: negado
+            ? "se negó el permiso para correr la comprobación"
+            : `la comprobación no pudo ejecutarse: ${Cause.pretty(exit.cause).slice(0, 300)}`,
+        }
+      }
+      const codigo = (exit.value.metadata as { exit?: number | null }).exit ?? null
+      return { corrio: true as const, codigo, salida: exit.value.output }
+    })
+
+    /** Juez: modelo pequeño del mismo proveedor, SIN resultados de herramientas. Cualquier fallo = «sigue». */
+    const juzgar = Effect.fn("SessionPrompt.juzgarObjetivo")(function* (input: {
+      session: Session.Info
+      lastUser: SessionV1.User
+      msgs: SessionV1.WithParts[]
+      condicion: string
+    }) {
+      const ag = (yield* agents.get("title")) ?? (yield* agents.get(input.lastUser.agent))
+      if (!ag) return "sigue" as const
+      const { providerID, modelID } = input.lastUser.model
+      const mdl = (yield* provider.getSmallModel(providerID)) ?? (yield* provider.getModel(providerID, modelID).pipe(Effect.orDie))
+      const { pedido, respuesta } = Objetivo.extraerParaJuez(input.msgs)
+      const texto = yield* llm
+        .stream({
+          agent: ag,
+          user: input.lastUser,
+          system: [Objetivo.PROMPT_JUEZ],
+          small: true,
+          tools: {},
+          model: mdl,
+          sessionID: input.session.id,
+          retries: 1,
+          messages: [{ role: "user", content: Objetivo.entradaJuez({ condicion: input.condicion, pedido, respuesta }) }],
+        })
+        .pipe(
+          Stream.filter(LLMEvent.is.textDelta),
+          Stream.map((e) => e.text),
+          Stream.mkString,
+          Effect.catchCause(() => Effect.succeed("")),
+        )
+      return Objetivo.leerVeredicto(texto)
+    })
+
+    /**
+     * Se llama cuando el bucle de un turno terminó. Devuelve `true` si dejó un mensaje sintético nuevo y hay que dar otro turno
+     * (continuación del objetivo o razón de un gancho `Stop`). Sin objetivo y sin ganchos no hace nada.
+     */
+    const despuesDelBucle = Effect.fn("SessionPrompt.despuesDelBucle")(function* (
+      sessionID: SessionID,
+      ganchos: number,
+    ) {
+      const id = String(sessionID)
+      const msgs = yield* MessageV2.filterCompactedEffect(sessionID).pipe(Effect.provideService(Database.Service, database))
+      const { user: lastUser } = MessageV2.latest(msgs)
+      const ultimo = msgs.findLast((m) => m.info.role === "assistant")
+      if (!lastUser || !ultimo || ultimo.info.role !== "assistant") return { seguir: false }
+      const asistente = ultimo.info
+      // Con error, interrumpido o salida estructurada no se continúa nada.
+      if (asistente.error || asistente.parentID !== lastUser.id || lastUser.format?.type === "json_schema")
+        return { seguir: false }
+      const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+      const delTurno = msgs.filter((m) => m.info.role === "assistant" && m.info.parentID === lastUser.id)
+      let sinGancho = false
+
+      const obj = Objetivo.activo(id)
+      if (obj) {
+        const termina = Effect.fnUntraced(function* (estado: Objetivo.Estado, motivo?: string, dim?: Presupuesto.Dimension) {
+          Objetivo.finalizar(id, estado, motivo)
+          yield* anotarObjetivo(asistente, Objetivo.textoFinal(estado, { ...obj, motivo }, dim), estado)
+          if (estado !== "cumplido") sinGancho = true
+        })
+        if (huboRechazo(delTurno)) {
+          yield* termina("pausado", "se rechazó un permiso o se descartó una pregunta")
+        } else if ((yield* permission.list()).some((p) => p.sessionID === sessionID)) {
+          yield* termina("pausado", "hay un permiso pendiente de respuesta")
+        } else {
+          let verificacion: { codigo: number | null; salida: string } | undefined
+          let decidido = false
+          if (obj.verificar) {
+            const r = yield* correrVerificacion({ session, lastUser, asistente, msgs, comando: obj.verificar })
+            if (!r.corrio) {
+              decidido = true
+              yield* termina("pausado", r.motivo)
+            } else if (r.codigo === 0) {
+              decidido = true
+              yield* termina("cumplido", `\`${obj.verificar}\` salió con código 0`)
+            } else {
+              verificacion = { codigo: r.codigo, salida: r.salida }
+              obj.ultimaVerificacion = { codigo: r.codigo, salida: Objetivo.evidencia(r.salida, 500) }
+            }
+          }
+          const agotada = decidido ? undefined : Presupuesto.estaAgotado(id, session.metadata)
+          if (agotada) {
+            decidido = true
+            yield* termina("presupuesto_agotado", undefined, agotada)
+          }
+          let veredicto: Objetivo.Veredicto | undefined
+          if (!decidido && !obj.verificar) {
+            veredicto = yield* juzgar({ session, lastUser, msgs, condicion: obj.condicion })
+            obj.ultimoVeredicto = veredicto
+            if (veredicto === "cumplido") {
+              decidido = true
+              yield* termina("cumplido", "el revisor lo dio por cumplido")
+            } else if (veredicto === "imposible") {
+              decidido = true
+              yield* termina("imposible")
+            }
+          }
+          if (!decidido) {
+            const progreso = SessionProgreso.progresoPorTurno(SessionTurnos.agrupar(msgs))
+            if (Objetivo.sinAvance(obj, progreso)) {
+              decidido = true
+              yield* termina("bloqueado")
+            } else if (obj.iteraciones >= obj.tope) {
+              decidido = true
+              yield* termina("tope")
+            }
+          }
+          if (!decidido) {
+            obj.iteraciones += 1
+            obj.actualizado = Date.now()
+            yield* mensajeSintetico(
+              sessionID,
+              lastUser,
+              Objetivo.plantillaContinuacion({ info: obj, verificacion, veredicto }),
+              { lazunox_objetivo: "continuar" },
+            )
+            return { seguir: true, ganchos: 0 }
+          }
+        }
+      }
+
+      // Gancho Stop (3D): solo si la sesión iba a terminar de verdad; nunca después de agotar el presupuesto ni tras un rechazo.
+      if (sinGancho || huboRechazo(delTurno) || Presupuesto.estaAgotado(id, session.metadata)) return { seguir: false }
+      if (ganchos >= MAX_CONTINUACIONES_GANCHO) return { seguir: false }
+      const salida = yield* plugin.trigger(
+        "experimental.session.stop",
+        { sessionID: id, subagente: session.parentID !== undefined, agent: lastUser.agent },
+        {} as { continuar?: string },
+      )
+      const razon = typeof salida.continuar === "string" ? salida.continuar.trim().slice(0, MAX_RAZON_GANCHO) : ""
+      if (!razon) return { seguir: false }
+      yield* mensajeSintetico(sessionID, lastUser, razon, { lazunox_stop: "continuar" })
+      return { seguir: true, ganchos: ganchos + 1 }
+    })
+
+    const runLoop: (sessionID: SessionID, ganchos?: number) => Effect.Effect<SessionV1.WithParts> = Effect.fn(
+      "SessionPrompt.run",
+    )(function* (sessionID: SessionID, ganchos: number = 0) {
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
@@ -1352,10 +1622,13 @@ const layer = Layer.effect(
           continue
         }
 
+        // Lazunox (3A): objetivo y gancho Stop. Si dejaron un mensaje sintético, se da otro turno (acotado por los topes de arriba).
+        const despues = yield* despuesDelBucle(sessionID, ganchos)
+        if (despues.seguir) return yield* runLoop(sessionID, despues.ganchos)
+
         yield* compaction.prune({ sessionID }).pipe(Effect.ignore, Effect.forkIn(scope))
         return yield* lastAssistant(sessionID)
-      },
-    )
+    })
 
     const loop: (input: LoopInput) => Effect.Effect<SessionV1.WithParts> = Effect.fn("SessionPrompt.loop")(function* (
       input: LoopInput,
