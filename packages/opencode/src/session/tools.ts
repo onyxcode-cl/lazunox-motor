@@ -469,7 +469,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       const esquema = bruto && typeof (bruto as { then?: unknown }).then !== "function" ? bruto : undefined
       def.execute = ((rawArgs: unknown, opts: ToolExecutionOptions) => {
         // Lazunox (7.13): la entrada se repara ANTES de ganchos, permisos y candado; lo reparado es lo que se muestra y evalúa.
-        const args = esquema && repararActiva() ? repararEntrada(rawArgs, esquema).valor : rawArgs
+        const reparada = esquema && repararActiva() ? repararEntrada(rawArgs, esquema) : undefined
+        // Sin cambios se conserva la MISMA referencia (los ganchos mutan `args` y la herramienta debe verlo).
+        const args = reparada && reparada.cambios.length > 0 ? reparada.valor : rawArgs
         return conCandado(input.session.id, esSoloLectura(key) || mcpLectura(key, args), opts.abortSignal, async () =>
           original(args as never, opts),
         )
@@ -605,8 +607,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             const entry = found!
             // Lazunox (7.13): los argumentos de la herramienta diferida se reparan con SU esquema.
             if (repararActiva()) {
-              const rep = repararEntrada(callArgs, entry.def.inputSchema).valor
-              if (isRecord(rep)) callArgs = rep
+              const rep = repararEntrada(callArgs, entry.def.inputSchema)
+              if (rep.cambios.length > 0 && isRecord(rep.valor)) callArgs = rep.valor
             }
             const invalid = ToolSearch.validateArguments(entry.def, callArgs as Record<string, unknown>)
             if (invalid) fail(`${invalid} Revisa el esquema con tool_search { query: "select:${name}" }.`)
