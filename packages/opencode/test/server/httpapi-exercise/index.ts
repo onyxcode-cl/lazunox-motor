@@ -1337,6 +1337,11 @@ const scenarios: Scenario[] = [
       check(body.title === "Get me", "should preserve seeded title")
     }),
   http.protected
+    .get("/session/{sessionID}/uso", "session.uso")
+    .seeded((ctx) => ctx.session({ title: "Uso" }))
+    .at((ctx) => ({ path: route("/session/{sessionID}/uso", { sessionID: ctx.state.id }), headers: ctx.headers() }))
+    .json(200, object),
+  http.protected
     .get("/session/{sessionID}", "session.get.missing")
     .at((ctx) => ({
       path: route("/session/{sessionID}", { sessionID: "ses_httpapi_missing" }),
