@@ -16,6 +16,7 @@ import { McpCatalog } from "./catalog"
 import * as EnCurso from "./en-curso"
 import { conGanchoDeFallo } from "@/session/ganchos-fallo"
 import type { MCP } from "."
+import * as Binarios from "./binarios"
 
 export const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
 export const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
@@ -25,6 +26,8 @@ export const SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES = new Set([
   "image/png",
   "image/webp",
 ])
+
+const tipoAdjuntable = (mime: string) => SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES.has(mime)
 
 export function base64Size(value: string) {
   const trimmed = value.replace(/\s/g, "")
@@ -59,6 +62,8 @@ export interface RunInput {
   /** Título y metadatos extra del resultado (lo usa `mcp_call`; la llamada directa no los pone). */
   readonly title?: string
   readonly extraMetadata?: Record<string, unknown>
+  /** Lazunox (7.21): ¿el modelo acepta imágenes? Sin dato (undefined) se asume que sí; las imágenes grandes igual van a archivo. */
+  readonly admiteImagen?: boolean
 }
 
 type Contenido = Awaited<ReturnType<NonNullable<ReturnType<typeof McpCatalog.convertTool>["execute"]>>>["content"]
@@ -154,20 +159,73 @@ export const run = Effect.fn("McpInvocar.run")(function* (input: RunInput) {
 
   const textParts: string[] = []
   const attachments: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[] = []
-  for (const contentItem of result.content) {
+  const binarios = Binarios.binariosActivos()
+  const topeImagen = Binarios.topeImagen()
+  const admiteImagen = input.admiteImagen !== false
+  const guardados: Array<Record<string, unknown>> = []
+  // Lazunox (7.21): imagen/audio/blob → archivo del motor; el modelo recibe ruta, tipo y tamaño. La imagen solo se adjunta si el
+  // modelo la admite y pesa menos que el tope.
+  const guardarBinario = Effect.fn("McpInvocar.guardarBinario")(function* (
+    data: string,
+    mimeDeclarado: string | undefined,
+    etiqueta: string,
+    adjuntar: (g: Binarios.Guardado) => boolean,
+    filename?: string,
+  ) {
+    const g = yield* Effect.promise(() => Binarios.guardar(data, mimeDeclarado))
+    if (!g.ok) {
+      textParts.push(`[Resultado binario MCP omitido: ${etiqueta} (${mimeDeclarado ?? "tipo desconocido"}, ${formatBytes(g.bytes)}): ${g.motivo}]`)
+      return
+    }
+    guardados.push({ path: g.ruta, mime: g.mime, bytes: g.bytes })
+    const aviso = g.tipoVerificado ? "" : " Aviso: el contenido NO coincide con el tipo declarado; se guardó como .bin."
+    if (g.tipoVerificado && adjuntar(g)) {
+      textParts.push(`[${etiqueta} MCP guardado en ${g.ruta} (${g.mime}, ${formatBytes(g.bytes)}) y adjuntado a la conversación.]`)
+      attachments.push({ type: "file", mime: g.mime, url: `data:${g.mime};base64,${data.replace(/\s/g, "")}`, ...(filename ? { filename } : {}) })
+      return
+    }
+    const razon = !g.tipoVerificado
+      ? ""
+      : g.mime.startsWith("image/")
+        ? !admiteImagen
+          ? " No se adjuntó: el modelo no admite imágenes."
+          : ` No se adjuntó al contexto: pesa más que el tope (${formatBytes(topeImagen)}).`
+        : g.mime.startsWith("audio/")
+          ? " El audio no se puede adjuntar al contexto."
+          : " No es un tipo que se adjunte al contexto."
+    textParts.push(`[${etiqueta} MCP guardado en ${g.ruta} (${g.mime}, ${formatBytes(g.bytes)}).${razon}${aviso} Ábrelo por esa ruta si lo necesitas.]`)
+  })
+  const imagenAdjuntable = (g: Binarios.Guardado) => admiteImagen && g.bytes <= topeImagen
+  for (const contentItem of result.content as any[]) {
     if (contentItem.type === "text") textParts.push(contentItem.text)
     else if (contentItem.type === "image") {
-      attachments.push({
-        type: "file",
-        mime: contentItem.mimeType,
-        url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
-      })
+      if (binarios) yield* guardarBinario(contentItem.data, contentItem.mimeType, "Imagen", imagenAdjuntable)
+      else
+        attachments.push({
+          type: "file",
+          mime: contentItem.mimeType,
+          url: `data:${contentItem.mimeType};base64,${contentItem.data}`,
+        })
+    } else if (contentItem.type === "audio") {
+      if (binarios) yield* guardarBinario(contentItem.data, contentItem.mimeType, "Audio", () => false)
     } else if (contentItem.type === "resource") {
       const { resource } = contentItem
       if (resource.text) textParts.push(resource.text)
       if (resource.blob) {
         const mime = resource.mimeType ?? "application/octet-stream"
         const size = base64Size(resource.blob)
+        if (binarios) {
+          // Se adjunta lo que ya se adjuntaba (tipos admitidos y bajo el máximo); las imágenes además con el tope y el modelo.
+          yield* guardarBinario(
+            resource.blob,
+            mime,
+            `Recurso ${resource.uri}`,
+            (g) =>
+              tipoAdjuntable(g.mime) && (g.mime.startsWith("image/") ? imagenAdjuntable(g) : g.bytes <= MAX_MCP_RESOURCE_BLOB_BYTES),
+            resource.uri,
+          )
+          continue
+        }
         if (!SUPPORTED_MCP_RESOURCE_ATTACHMENT_MIMES.has(mime)) {
           textParts.push(
             `[Binary MCP resource omitted: ${resource.uri} (${mime}, ${formatBytes(size)}) is not a supported attachment type]`,
@@ -196,6 +254,7 @@ export const run = Effect.fn("McpInvocar.run")(function* (input: RunInput) {
     ...result.metadata,
     truncated: truncated.truncated,
     ...(truncated.truncated && { outputPath: truncated.outputPath }),
+    ...(guardados.length > 0 && { lazunoxBinarios: guardados }),
     ...input.extraMetadata,
   }
 
