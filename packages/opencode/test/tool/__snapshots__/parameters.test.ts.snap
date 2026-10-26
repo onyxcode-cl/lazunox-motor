@@ -351,6 +351,10 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
       "description": "The updated todo list",
       "items": {
         "properties": {
+          "bloqueado": {
+            "description": "Optional. true when the task is blocked (waiting for the user or something that cannot be solved now).",
+            "type": "boolean",
+          },
           "content": {
             "description": "Brief description of the task",
             "type": "string",
@@ -361,6 +365,10 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
           },
           "status": {
             "description": "Current status of the task: pending, in_progress, completed, cancelled",
+            "type": "string",
+          },
+          "verificar": {
+            "description": "Optional check for completion. If it starts with "$ " the rest is a shell command run with normal permissions when you mark the task completed; if it fails the task stays in_progress.",
             "type": "string",
           },
         },
