@@ -60,6 +60,7 @@ import { SessionReminders } from "./reminders"
 import { SessionTools } from "./tools"
 import { Objetivo } from "./objetivo"
 import * as Presupuesto from "./presupuesto"
+import * as SalidaCortada from "./salida-cortada"
 import { SessionProgreso } from "./progreso"
 import { marcaModoPlan } from "./plan-modo"
 import { ContextoMinimo } from "./contexto-minimo"
@@ -1294,6 +1295,18 @@ const layer = Layer.effect(
       // Con error, interrumpido o salida estructurada no se continúa nada.
       if (asistente.error || asistente.parentID !== lastUser.id || lastUser.format?.type === "json_schema")
         return { seguir: false }
+      // Lazunox (7.4): la última respuesta se cortó por el límite de salida y no dejó llamadas a herramienta: aviso sintético y otro turno
+      // (la racha de 3 se corta en el inicio del bucle). Con `presupuesto.continuar` la continuación ya la hace el procesador.
+      if (
+        SalidaCortada.activo() &&
+        asistente.finish === "length" &&
+        SalidaCortada.racha(msgs) < SalidaCortada.MAX_RACHA &&
+        !Presupuesto.leer((yield* sessions.get(sessionID).pipe(Effect.orDie)).metadata)?.continuar &&
+        !ultimo.parts.some((p) => p.type === "tool")
+      ) {
+        yield* mensajeSintetico(sessionID, lastUser, SalidaCortada.AVISO_SINTETICO, { [SalidaCortada.MARCA]: "aviso" })
+        return { seguir: true, ganchos }
+      }
       const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
       const delTurno = msgs.filter((m) => m.info.role === "assistant" && m.info.parentID === lastUser.id)
       let sinGancho = false
@@ -1413,6 +1426,19 @@ const layer = Layer.effect(
             lastAssistantMsg?.parts.some(
               (part) => part.type === "tool" && !part.metadata?.providerExecuted && !isOrphanedInterruptedTool(part),
             ) ?? false
+
+          // Lazunox (7.4): tras 3 respuestas seguidas cortadas por el límite de salida, la sesión falla con un error propio.
+          if (
+            SalidaCortada.activo() &&
+            lastAssistant?.finish === "length" &&
+            !lastAssistant.error &&
+            SalidaCortada.racha(msgs) >= SalidaCortada.MAX_RACHA
+          ) {
+            lastAssistant.error = new NamedError.Unknown({ message: SalidaCortada.ERROR_RACHA }).toObject()
+            yield* sessions.updateMessage(lastAssistant)
+            yield* events.publish(Session.Event.Error, { sessionID, error: lastAssistant.error })
+            break
+          }
 
           if (
             lastAssistant?.finish &&
