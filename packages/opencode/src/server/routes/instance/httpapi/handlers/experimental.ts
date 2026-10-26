@@ -10,6 +10,7 @@ import { Session } from "@/session/session"
 import type { Snapshot } from "@/snapshot"
 import { SessionRebobinar } from "@/session/rebobinar"
 import { SessionTurnos } from "@/session/turnos"
+import { Objetivo } from "@/session/objetivo"
 import * as ApiError from "../errors"
 import { SessionID } from "@/session/schema"
 import { ToolJsonSchema } from "@/tool/json-schema"
@@ -28,12 +29,13 @@ import {
   RebobinarDeshacerPayload,
   RebobinarPayload,
   SessionListQuery,
+  ObjetivoPayload,
   ToolListQuery,
   TurnoDiffQuery,
   TurnosQuery,
   WorktreeApiError,
 } from "../groups/experimental"
-import type { MessageID } from "@/session/schema"
+import { MessageID } from "@/session/schema"
 
 function mapWorktreeError<A, R>(self: Effect.Effect<A, Worktree.Error, R>) {
   return self.pipe(
@@ -217,6 +219,45 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       })
     })
 
+    // Lazunox (3A): modo objetivo. La sesión debe existir (404 si no); el estado es de ESA sesión y no de otra.
+    const existe = (sessionID: SessionID) =>
+      sessions.get(sessionID).pipe(Effect.catch((error) => Effect.fail(ApiError.notFound(error.message))))
+
+    const sessionObjetivo = Effect.fn("ExperimentalHttpApi.sessionObjetivo")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      yield* existe(ctx.params.sessionID)
+      return { objetivo: Objetivo.obtener(String(ctx.params.sessionID)) ?? null }
+    })
+
+    const sessionObjetivoCrear = Effect.fn("ExperimentalHttpApi.sessionObjetivoCrear")(function* (ctx: {
+      params: { sessionID: SessionID }
+      payload: typeof ObjetivoPayload.Type
+    }) {
+      yield* existe(ctx.params.sessionID)
+      const id = String(ctx.params.sessionID)
+      const invalida = (message: string) => Effect.fail(new ApiError.InvalidRequestError({ message, kind: "objetivo" }))
+      if (ctx.payload.reanudar === true) {
+        const info = Objetivo.reanudar(id, MessageID.ascending())
+        if (!info) return yield* invalida("No hay un objetivo que reanudar (no existe o ya terminó)")
+        return { objetivo: info }
+      }
+      return yield* Effect.try({
+        try: () => Objetivo.crear(id, ctx.payload, MessageID.ascending()),
+        catch: (error) => (error instanceof Objetivo.EntradaInvalida ? error.message : String(error)),
+      }).pipe(
+        Effect.map((info) => ({ objetivo: info })),
+        Effect.catch((message) => invalida(message)),
+      )
+    })
+
+    const sessionObjetivoQuitar = Effect.fn("ExperimentalHttpApi.sessionObjetivoQuitar")(function* (ctx: {
+      params: { sessionID: SessionID }
+    }) {
+      yield* existe(ctx.params.sessionID)
+      return { ok: Objetivo.quitar(String(ctx.params.sessionID)) }
+    })
+
     const turnosSvc = yield* SessionTurnos.Service
 
     const apagado = () => ApiError.notFound("Rebobinar por turno está desactivado (LAZUNOX_REBOBINAR=0)")
@@ -328,6 +369,9 @@ export const experimentalHandlers = HttpApiBuilder.group(InstanceHttpApi, "exper
       .handle("sessionTrabajos", sessionTrabajos)
       .handle("sessionTrabajoTerminar", sessionTrabajoTerminar)
       .handle("sessionTrabajoReanudar", sessionTrabajoReanudar)
+      .handle("sessionObjetivo", sessionObjetivo)
+      .handle("sessionObjetivoCrear", sessionObjetivoCrear)
+      .handle("sessionObjetivoQuitar", sessionObjetivoQuitar)
       .handle("sessionTurnos", sessionTurnos)
       .handle("sessionTurnoDiff", sessionTurnoDiff)
       .handle("sessionRebobinarRevision", sessionRebobinarRevision)

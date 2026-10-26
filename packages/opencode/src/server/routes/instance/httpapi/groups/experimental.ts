@@ -120,6 +120,43 @@ export const TrabajoReanudarResponse = Schema.Struct({
   identifier: "TrabajoReanudarResponse",
 })
 
+// Lazunox (3A, P10): modo objetivo. Estado en memoria por sesión; apagado salvo que se cree.
+const EstadoObjetivo = Schema.Union([
+  Schema.Literal("activo"),
+  Schema.Literal("pausado"),
+  Schema.Literal("cumplido"),
+  Schema.Literal("imposible"),
+  Schema.Literal("bloqueado"),
+  Schema.Literal("presupuesto_agotado"),
+  Schema.Literal("tope"),
+])
+export const ObjetivoInfo = Schema.Struct({
+  condicion: Schema.String,
+  verificar: Schema.optional(Schema.String),
+  tope: Schema.Number,
+  estado: EstadoObjetivo,
+  motivo: Schema.optional(Schema.String),
+  iteraciones: Schema.Number,
+  creado: Schema.Number,
+  actualizado: Schema.Number,
+  ultimaVerificacion: Schema.optional(Schema.Struct({ codigo: Schema.NullOr(Schema.Number), salida: Schema.String })),
+  ultimoVeredicto: Schema.optional(
+    Schema.Union([Schema.Literal("cumplido"), Schema.Literal("imposible"), Schema.Literal("sigue")]),
+  ),
+}).annotate({ identifier: "ObjetivoInfo" })
+export const ObjetivoResponse = Schema.Struct({ objetivo: Schema.NullOr(ObjetivoInfo) }).annotate({
+  identifier: "ObjetivoResponse",
+})
+export const ObjetivoPayload = Schema.Struct({
+  condicion: Schema.optional(Schema.String),
+  verificar: Schema.optional(Schema.String),
+  tope: Schema.optional(Schema.Number),
+  reanudar: Schema.optional(Schema.Boolean),
+}).annotate({ identifier: "ObjetivoPayload" })
+export const ObjetivoQuitarResponse = Schema.Struct({ ok: Schema.Boolean }).annotate({
+  identifier: "ObjetivoQuitarResponse",
+})
+
 // Lazunox: rebobinar por turno (plan PLAN-REBOBINAR-Y-COMPACTACION.md, 2.A). Solo rutas y cifras, nunca contenido salvo el diff bajo demanda.
 export const TurnoArchivo = Schema.Struct({
   file: Schema.String,
@@ -224,6 +261,7 @@ export const ExperimentalPaths = {
   sessionTrabajos: "/experimental/session/:sessionID/trabajos",
   sessionTrabajoTerminar: "/experimental/session/:sessionID/trabajos/:id/terminar",
   sessionTrabajoReanudar: "/experimental/session/:sessionID/trabajos/:id/reanudar",
+  sessionObjetivo: "/experimental/session/:sessionID/objetivo",
   sessionTurnos: "/experimental/session/:sessionID/turnos",
   sessionTurnoDiff: "/experimental/session/:sessionID/turnos/:messageID/diff",
   sessionRebobinarRevision: "/experimental/session/:sessionID/rebobinar/:messageID",
@@ -410,6 +448,44 @@ export const ExperimentalApi = HttpApi.make("experimental")
             summary: "Resume a lost background subagent",
             description:
               "Resume a background subagent of this session that was lost when the engine restarted: starts a new turn in its child session with a fixed continuation message, as a background job. ok is false (with motivo no_existe, ya_en_curso or tope) if it is not a lost subagent of this session, is already running, or the simultaneous subagent limit was reached.",
+          }),
+        ),
+        HttpApiEndpoint.get("sessionObjetivo", ExperimentalPaths.sessionObjetivo, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(ObjetivoResponse, "Goal mode state of the session (objetivo is null when off)"),
+          error: [ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.objetivo.get",
+            summary: "Get the goal of a session",
+            description: "Goal mode is off unless created. Returns the condition, state, motivo and counters of this session's goal.",
+          }),
+        ),
+        HttpApiEndpoint.post("sessionObjetivoCrear", ExperimentalPaths.sessionObjetivo, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          payload: ObjetivoPayload,
+          success: described(ObjetivoResponse, "Goal created or resumed"),
+          error: [InvalidRequestError, ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.objetivo.crear",
+            summary: "Create or resume the goal of a session",
+            description:
+              "Body: condicion (required unless reanudar), verificar (optional shell command, permission-checked like any shell call; exit 0 = done), tope (continuations, at most 25). With reanudar:true a paused/blocked/stopped goal becomes active again. Does not start a turn: send a prompt. It never grants permissions.",
+          }),
+        ),
+        HttpApiEndpoint.delete("sessionObjetivoQuitar", ExperimentalPaths.sessionObjetivo, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(ObjetivoQuitarResponse, "Whether a goal was removed"),
+          error: [ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "experimental.session.objetivo.quitar",
+            summary: "Remove the goal of a session",
+            description: "Turns goal mode off for this session. A turn already running finishes normally; nothing continues after it.",
           }),
         ),
         HttpApiEndpoint.get("sessionTurnos", ExperimentalPaths.sessionTurnos, {
