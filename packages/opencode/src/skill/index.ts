@@ -17,6 +17,18 @@ import { Glob } from "@opencode-ai/core/util/glob"
 import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
 import { escapeHtml } from "@/util/html"
+import { SessionV1 } from "@opencode-ai/core/v1/session"
+import {
+  ajustarAlPresupuesto,
+  archivosDeHerramienta,
+  coincideRuta,
+  descripcionAcotada,
+  LISTA_PRESUPUESTO_BYTES,
+  leerMeta,
+  META_VACIA,
+  relativaDentroDelProyecto,
+  type SkillMeta,
+} from "./frontmatter"
 
 const CLAUDE_EXTERNAL_DIR = ".claude"
 const AGENTS_EXTERNAL_DIR = ".agents"
@@ -81,6 +93,10 @@ export class NotFoundError extends Schema.TaggedErrorClass<NotFoundError>()("Ski
 
 type State = {
   skills: Record<string, Info>
+  /** Lazunox (4A): frontmatter ampliado de cada skill (aparte de `Info`, que sale por la API HTTP). */
+  meta: Record<string, SkillMeta>
+  /** Lazunox (4A): skills con `paths` que ya se activaron al tocar un archivo que coincide. */
+  activas: Set<string>
   dirs: Set<string>
 }
 
@@ -99,7 +115,14 @@ export interface Interface {
   readonly require: (name: string) => Effect.Effect<Info, NotFoundError>
   readonly all: () => Effect.Effect<Info[]>
   readonly dirs: () => Effect.Effect<string[]>
-  readonly available: (agent?: Agent.Info) => Effect.Effect<Info[]>
+  /** `paraModelo: true` = lo que se ofrece al modelo: sin `disable-model-invocation` y sin las de `paths` aún sin activar. */
+  readonly available: (agent?: Agent.Info, opts?: { paraModelo?: boolean }) => Effect.Effect<Info[]>
+  /** Lazunox (4A): frontmatter ampliado. */
+  readonly meta: (name: string) => Effect.Effect<SkillMeta>
+  /** Lazunox (4A): ¿puede el modelo cargar esta skill ahora? (`disable-model-invocation` y `paths` sin activar lo impiden). */
+  readonly invocable: (name: string) => Effect.Effect<{ ok: true } | { ok: false; motivo: string }>
+  /** Lazunox (4A): un archivo del proyecto fue tocado: activa las skills con `paths` que lo cubren. Devuelve las nuevas. */
+  readonly tocar: (archivo: string) => Effect.Effect<string[]>
 }
 
 const add = Effect.fnUntraced(function* (state: State, match: string, events: EventV2Bridge.Service["Service"]) {
@@ -137,7 +160,29 @@ const add = Effect.fnUntraced(function* (state: State, match: string, events: Ev
     location: match,
     content: md.content,
   }
+  const meta = leerMeta(md.data)
+  state.meta[md.data.name] = meta
+  for (const aviso of meta.avisos) yield* Effect.logWarning("skill: frontmatter ignorado", { skill: md.data.name, aviso })
 })
+
+/**
+ * Lazunox (4A): un archivo fue tocado. Activa las skills con `paths` que lo cubren. El archivo se resuelve con realpath y debe
+ * quedar DENTRO del proyecto (un enlace simbólico hacia fuera, o `../`, no activa nada).
+ */
+function activarPorArchivo(s: State, archivo: string, directory: string, worktree: string): string[] {
+  const conPaths = Object.entries(s.meta).filter(([name, m]) => m.paths.length > 0 && !s.activas.has(name) && s.skills[name])
+  if (conPaths.length === 0) return []
+  const raiz = worktree && worktree !== "/" ? worktree : directory
+  const rel = relativaDentroDelProyecto(archivo, raiz, directory)
+  if (!rel) return []
+  const nuevas: string[] = []
+  for (const [name, m] of conPaths) {
+    if (!coincideRuta(rel, m.paths)) continue
+    s.activas.add(name)
+    nuevas.push(name)
+  }
+  return nuevas
+}
 
 const scan = Effect.fnUntraced(function* (
   state: ScanState,
@@ -271,8 +316,8 @@ const layer = Layer.effect(
       }),
     )
     const state = yield* InstanceState.make(
-      Effect.fn("Skill.state")(function* () {
-        const s: State = { skills: {}, dirs: new Set() }
+      Effect.fn("Skill.state")(function* (ctx) {
+        const s: State = { skills: {}, meta: {}, activas: new Set(), dirs: new Set() }
         // Register the built-in skill BEFORE disk discovery so a user-disk
         // skill with the same name can override it.
         s.skills[CUSTOMIZE_OPENCODE_SKILL_NAME] = {
@@ -282,6 +327,20 @@ const layer = Layer.effect(
           content: CUSTOMIZE_OPENCODE_SKILL_BODY,
         }
         yield* loadSkills(s, yield* InstanceState.get(discovered), events)
+        // Lazunox (4A): las skills con `paths` se activan cuando una herramienta de archivos termina sobre un archivo que coincide.
+        if (Object.values(s.meta).some((m) => m.paths.length > 0)) {
+          const unsubscribe = yield* events.listen((event) => {
+            if (event.type !== SessionV1.Event.PartUpdated.type) return Effect.void
+            if (event.location?.directory !== ctx.directory) return Effect.void
+            return Effect.sync(() => {
+              const part = (event.data as { part?: any }).part
+              if (!part || part.type !== "tool" || part.state?.status !== "completed") return
+              for (const f of archivosDeHerramienta(String(part.tool), part.state.input))
+                activarPorArchivo(s, f, ctx.directory, ctx.worktree)
+            })
+          })
+          yield* Effect.addFinalizer(() => unsubscribe)
+        }
         return s
       }),
     )
@@ -307,42 +366,76 @@ const layer = Layer.effect(
       return (yield* InstanceState.get(discovered)).dirs
     })
 
-    const available = Effect.fn("Skill.available")(function* (agent?: Agent.Info) {
+    const metaDe = (s: State, name: string) => s.meta[name] ?? META_VACIA
+    const invocableEn = (s: State, name: string): { ok: true } | { ok: false; motivo: string } => {
+      const m = metaDe(s, name)
+      if (m.disableModelInvocation)
+        return { ok: false, motivo: `La skill "${name}" tiene disable-model-invocation: solo la persona puede invocarla.` }
+      if (m.paths.length > 0 && !s.activas.has(name))
+        return { ok: false, motivo: `La skill "${name}" solo se activa al tocar archivos que coincidan con sus paths y todavía no se ha activado.` }
+      return { ok: true }
+    }
+
+    const available = Effect.fn("Skill.available")(function* (agent?: Agent.Info, opts?: { paraModelo?: boolean }) {
       const s = yield* InstanceState.get(state)
-      const list = Object.values(s.skills).toSorted((a, b) => a.name.localeCompare(b.name))
+      let list = Object.values(s.skills).toSorted((a, b) => a.name.localeCompare(b.name))
+      if (opts?.paraModelo) list = list.filter((skill) => invocableEn(s, skill.name).ok)
       if (!agent) return list
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
     })
 
-    return Service.of({ get, require, all, dirs, available })
+    const meta = Effect.fn("Skill.meta")(function* (name: string) {
+      const s = yield* InstanceState.get(state)
+      return metaDe(s, name)
+    })
+
+    const invocable = Effect.fn("Skill.invocable")(function* (name: string) {
+      return invocableEn(yield* InstanceState.get(state), name)
+    })
+
+    const tocar = Effect.fn("Skill.tocar")(function* (archivo: string) {
+      const s = yield* InstanceState.get(state)
+      const ctx = yield* InstanceState.context
+      return activarPorArchivo(s, archivo, ctx.directory, ctx.worktree)
+    })
+
+    return Service.of({ get, require, all, dirs, available, meta, invocable, tocar })
   }),
 )
 
-export function fmt(list: Info[], opts: { verbose: boolean }) {
+export function fmt(list: Info[], opts: { verbose: boolean; presupuesto?: number }) {
   const described = list.filter((skill) => skill.description !== undefined)
   if (described.length === 0) return "No skills are currently available."
+  const presupuesto = opts.presupuesto ?? LISTA_PRESUPUESTO_BYTES
+  const orden = described.toSorted((a, b) => a.name.localeCompare(b.name))
+  // Lazunox (4A): descripciones de una línea y de máx. 300 caracteres, y la lista entera dentro de un presupuesto de bytes.
+  const nota = (n: number) =>
+    opts.verbose
+      ? `  <!-- ${n} skills más no se listan por el presupuesto de la lista (${presupuesto} bytes) -->`
+      : `- (${n} skills más no se listan por el presupuesto de la lista)`
   if (opts.verbose) {
-    return [
-      "<available_skills>",
-      ...described
-        .toSorted((a, b) => a.name.localeCompare(b.name))
-        .flatMap((skill) => [
-          "  <skill>",
-          `    <name>${skill.name}</name>`,
-          `    <description>${skill.description}</description>`,
-          `    <location>${escapeHtml(skill.location)}</location>`,
-          "  </skill>",
-        ]),
-      "</available_skills>",
-    ].join("\n")
+    return ajustarAlPresupuesto(
+      ["<available_skills>"],
+      orden.map((skill) => [
+        "  <skill>",
+        `    <name>${escapeHtml(skill.name)}</name>`,
+        `    <description>${descripcionAcotada(skill.description ?? "")}</description>`,
+        `    <location>${escapeHtml(skill.location)}</location>`,
+        "  </skill>",
+      ]),
+      ["</available_skills>"],
+      presupuesto,
+      nota,
+    )
   }
 
-  return [
-    "## Available Skills",
-    ...described
-      .toSorted((a, b) => a.name.localeCompare(b.name))
-      .map((skill) => `- **${skill.name}**: ${skill.description}`),
-  ].join("\n")
+  return ajustarAlPresupuesto(
+    ["## Available Skills"],
+    orden.map((skill) => [`- **${escapeHtml(skill.name)}**: ${descripcionAcotada(skill.description ?? "")}`]),
+    [],
+    presupuesto,
+    nota,
+  )
 }
 
 export const node = LayerNode.make({
