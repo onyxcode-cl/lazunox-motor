@@ -308,6 +308,17 @@ describe("intersección con el padre (derive)", () => {
     expect(Permission.evaluate("grep", "x", r.permission).action).toBe("allow")
   })
 
+  test("lista blanca: las carpetas externas de solo lectura de la base no reabren un «*: deny» del agente", () => {
+    const baseExt = Permission.fromConfig({
+      "*": "allow",
+      external_directory: { "*": "ask", "/tmp/opencode/*": "allow" },
+    })
+    const r = restringir(baseExt, Permission.fromConfig({ "*": "deny", read: "allow" }))
+    expect(Permission.evaluate("external_directory", "/tmp/opencode/x", r.permission).action).toBe("deny")
+    const libre = restringir(baseExt, Permission.fromConfig({ read: "allow" }))
+    expect(Permission.evaluate("external_directory", "/tmp/opencode/x", libre.permission).action).toBe("allow")
+  })
+
   test("el padre con edit solo en el plan: el hijo con edit: allow solo escribe en el plan", () => {
     const padre = Permission.fromConfig({ edit: { "*": "deny", ".opencode/plans/*.md": "allow" } })
     const hijo = agente({ edit: "allow", bash: "allow" })

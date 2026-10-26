@@ -38,7 +38,7 @@ export function accionLiteral(permiso: string, patron: string, reglas: readonly 
  * Los allow de `external_directory` se conservan tal cual (carpetas de solo lectura que el padre ya tiene: salidas
  * truncadas, skills, temporales); el resto se acota con `declarado` para no reabrir lo que el agente niega.
  */
-export function colaDeLaBase(base: readonly Regla[], declarado: readonly Regla[] = []): Regla[] {
+export function colaDeLaBase(base: readonly Regla[], declarado: readonly Regla[] = [], acotarExternos = false): Regla[] {
   const cola: Regla[] = []
   base.forEach((r, i) => {
     if (r.action !== "allow") {
@@ -49,7 +49,9 @@ export function colaDeLaBase(base: readonly Regla[], declarado: readonly Regla[]
     }
     const pisa = base.slice(0, i).some((previa) => previa.action !== "allow" && cubre(previa, r))
     if (!pisa) return
-    if (r.permission === "external_directory") {
+    // Con `acotarExternos` (permisos propios del agente), un `"*": deny` del agente también cierra estas carpetas: una lista blanca
+    // no puede quedar con más libertad que su padre (el guardián de la app lo compara). Con el tope del padre se conservan tal cual.
+    if (r.permission === "external_directory" && !acotarExternos) {
       cola.push(r)
       return
     }
@@ -69,7 +71,7 @@ export function negacionesEfectivas(declarado: readonly Regla[]): Regla[] {
 /** Permisos finales de un agente de usuario: base + lo declarado, sin poder superar a la base. */
 export function restringir(base: readonly Regla[], declarado: readonly Regla[]): { permission: Regla[]; estricto: Regla[] } {
   const estricto = negacionesEfectivas(declarado)
-  return { permission: [...base, ...declarado, ...colaDeLaBase(base, declarado), ...estricto], estricto }
+  return { permission: [...base, ...declarado, ...colaDeLaBase(base, declarado, true), ...estricto], estricto }
 }
 
 /**
