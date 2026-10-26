@@ -18,6 +18,7 @@ import { SessionRunState } from "@/session/run-state"
 import { SessionStatus } from "@/session/status"
 import { SessionSummary } from "@/session/summary"
 import { Todo } from "@/session/todo"
+import * as Uso from "@/session/uso"
 import { MessageID, PartID, SessionID } from "@/session/schema"
 import { NamedError } from "@opencode-ai/core/util/error"
 import { Cause, Effect, Option, Schema, Scope } from "effect"
@@ -42,6 +43,7 @@ import {
 } from "../groups/session"
 import { CompactionConflictError, InvalidRequestError, PermissionNotFoundError } from "../errors"
 import * as SessionError from "./session-errors"
+import * as ApiError from "../errors"
 
 const tryParseJson = (text: string) =>
   Effect.try({
@@ -101,6 +103,13 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     const todo = Effect.fn("SessionHttpApi.todo")(function* (ctx: { params: { sessionID: SessionID } }) {
       yield* requireSession(ctx.params.sessionID)
       return yield* todoSvc.get(ctx.params.sessionID)
+    })
+
+    // Lazunox (7.18): uso local de tokens y caché. Solo lectura; apagable con LAZUNOX_USO=0.
+    const uso = Effect.fn("SessionHttpApi.uso")(function* (ctx: { params: { sessionID: SessionID } }) {
+      if (!Uso.activo()) return yield* ApiError.notFound("El uso por sesión está desactivado (LAZUNOX_USO=0)")
+      yield* requireSession(ctx.params.sessionID)
+      return yield* SessionError.mapStorageNotFound(Uso.calcular(session, ctx.params.sessionID))
     })
 
     const diff = Effect.fn("SessionHttpApi.diff")(function* (ctx: {
@@ -466,6 +475,7 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       .handle("get", get)
       .handle("children", children)
       .handle("todo", todo)
+      .handle("uso", uso)
       .handle("diff", diff)
       .handle("messages", messages)
       .handle("message", message)

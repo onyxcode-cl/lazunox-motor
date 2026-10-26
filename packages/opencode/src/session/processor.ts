@@ -18,6 +18,8 @@ import type { SessionID } from "./schema"
 import { SessionRetry } from "./retry"
 import * as Respaldo from "./respaldo"
 import * as Presupuesto from "./presupuesto"
+import * as SalidaCortada from "./salida-cortada"
+import * as Uso from "./uso"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
@@ -80,6 +82,8 @@ interface ProcessorContext extends Input {
   presupuesto: { cfg: Presupuesto.Config; est: Presupuesto.Estado } | undefined
   agotado: Presupuesto.Dimension | undefined
   textoPaso: string
+  // Lazunox (7.4): argumentos tal como llegaron en la transmisión, por llamada, del paso en curso.
+  crudo: Record<string, { name: string; raw: string }>
 }
 
 type StreamEvent = LLMEvent
@@ -122,6 +126,7 @@ const layer = Layer.effect(
         presupuesto: undefined,
         agotado: undefined,
         textoPaso: "",
+        crudo: {},
       }
       let aborted = false
 
@@ -324,6 +329,37 @@ const layer = Layer.effect(
         yield* session.updateMessage(ctx.assistantMessage)
       })
 
+      // Lazunox (7.4): el paso terminó por límite de salida. Cada llamada cuyos argumentos quedaron incompletos se cierra como ERROR con un
+      // mensaje que pide dividir el trabajo (con un extracto de lo recibido). Solo cambia el estado de la llamada: nada se reejecuta, y
+      // una llamada con argumentos completos (y su resultado) no se toca.
+      const cerrarLlamadasCortadas = Effect.fn("SessionProcessor.cerrarLlamadasCortadas")(function* () {
+        const parts = yield* MessageV2.parts(ctx.assistantMessage.id).pipe(Effect.provideService(Database.Service, database))
+        for (const part of parts) {
+          if (part.type !== "tool" || part.metadata?.providerExecuted) continue
+          const visto = ctx.crudo[part.callID]
+          if (!visto) continue
+          const estado = part.state.status
+          if (estado === "completed" && part.tool !== "invalid") continue
+          const incompleta =
+            estado === "pending" ? true : SalidaCortada.argumentosIncompletos(visto.raw)
+          if (!incompleta) continue
+          const tool = part.tool === "invalid" ? visto.name : part.tool
+          const end = Date.now()
+          yield* session.updatePart({
+            ...part,
+            tool,
+            state: {
+              status: "error",
+              input: {},
+              error: SalidaCortada.mensajeHerramienta(tool, visto.raw),
+              metadata: { lazunox_salida_cortada: true },
+              time: { start: "time" in part.state ? part.state.time.start : end, end },
+            },
+          })
+          yield* settleToolCall(part.callID)
+        }
+      })
+
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
           case "reasoning-start":
@@ -365,10 +401,12 @@ const layer = Layer.effect(
             if (ctx.assistantMessage.summary) {
               throw new Error(`Tool call not allowed while generating summary: ${value.name}`)
             }
+            ctx.crudo[value.id] = { name: value.name, raw: "" }
             yield* ensureToolCall(value)
             return
 
           case "tool-input-delta":
+            if (ctx.crudo[value.id]) ctx.crudo[value.id].raw += value.text
             yield* ensureToolCall(value)
             return
 
@@ -531,6 +569,8 @@ const layer = Layer.effect(
               }
               ctx.snapshot = undefined
             }
+            if (value.reason === "length" && SalidaCortada.activo()) yield* cerrarLlamadasCortadas()
+            ctx.crudo = {}
             yield* summary
               .summarize({
                 sessionID: ctx.sessionID,
@@ -703,6 +743,8 @@ const layer = Layer.effect(
           messageID: input.assistantMessage.id,
         })
         ctx.needsCompaction = false
+        // Lazunox (7.18): huella de herramientas y sistema de esta petición, para explicar fallos de caché (solo en memoria).
+        Uso.registrarHuella(String(ctx.assistantMessage.id), Uso.huellaDe({ system: streamInput.system, tools: streamInput.tools }))
         ctx.agotado = undefined
         ctx.presupuesto = undefined
         {

@@ -45,6 +45,51 @@ export const MessagesQuery = Schema.Struct({
   limit: Schema.optional(Schema.NumberFromString.check(Schema.isInt(), Schema.isGreaterThanOrEqualTo(0))),
   before: Schema.optional(Schema.String),
 })
+const UsoCausa = Schema.Literals(["herramientas", "sistema", "herramientas-y-sistema", "modelo", "desconocida"])
+const UsoResumen = Schema.Struct({
+  pasos: Schema.Number,
+  tokensEnviadosPorPaso: Schema.Struct({
+    mediana: Schema.Number,
+    p90: Schema.Number,
+    minimo: Schema.Number,
+    maximo: Schema.Number,
+    total: Schema.Number,
+  }),
+  salida: Schema.Number,
+  cache: Schema.Struct({
+    datos: Schema.Boolean,
+    leidos: Schema.Number,
+    escritos: Schema.Number,
+    sinCache: Schema.Number,
+    aciertoPct: Schema.NullOr(Schema.Number),
+    fallos: Schema.Array(Schema.Struct({ paso: Schema.Number, mensajeID: Schema.String, causa: UsoCausa })),
+  }),
+})
+export const UsoResponse = Schema.Struct({
+  sessionID: Schema.String,
+  sesion: UsoResumen,
+  porPaso: Schema.Array(
+    Schema.Struct({
+      mensajeID: Schema.String,
+      enviado: Schema.Number,
+      sinCache: Schema.Number,
+      leidos: Schema.Number,
+      escritos: Schema.Number,
+      salida: Schema.Number,
+    }),
+  ),
+  ayudantes: Schema.Array(
+    Schema.Struct({
+      sessionID: Schema.String,
+      titulo: Schema.String,
+      pasos: Schema.Number,
+      tokensEnviados: Schema.Number,
+      salida: Schema.Number,
+      cache: Schema.Struct({ leidos: Schema.Number, escritos: Schema.Number }),
+    }),
+  ),
+  total: Schema.Struct({ tokensEnviados: Schema.Number, salida: Schema.Number }),
+})
 export const StatusMap = Schema.Record(Schema.String, SessionStatus.Info)
 export const UpdatePayload = Schema.Struct({
   title: Schema.optional(Schema.String),
@@ -84,6 +129,7 @@ export const SessionPaths = {
   get: `${root}/:sessionID`,
   children: `${root}/:sessionID/children`,
   todo: `${root}/:sessionID/todo`,
+  uso: `${root}/:sessionID/uso`,
   diff: `${root}/:sessionID/diff`,
   messages: `${root}/:sessionID/message`,
   message: `${root}/:sessionID/message/:messageID`,
@@ -166,6 +212,19 @@ export const SessionApi = HttpApi.make("session")
             identifier: "session.todo",
             summary: "Get session todos",
             description: "Retrieve the todo list associated with a specific session, showing tasks and action items.",
+          }),
+        ),
+        HttpApiEndpoint.get("uso", SessionPaths.uso, {
+          params: { sessionID: SessionID },
+          query: WorkspaceRoutingQuery,
+          success: described(UsoResponse, "Local token and prompt-cache usage of the session"),
+          error: [ApiNotFoundError],
+        }).annotateMerge(
+          OpenApi.annotations({
+            identifier: "session.uso",
+            summary: "Get session token and cache usage",
+            description:
+              "Read-only, local-only figures: tokens sent per step (median and p90), cache read/write/uncached input tokens when the provider reports them, probable cause of each cache miss (tools, system, model or unknown; never guessed) and tokens per helper (child session). 404 if the session does not exist or LAZUNOX_USO=0.",
           }),
         ),
         HttpApiEndpoint.get("diff", SessionPaths.diff, {
