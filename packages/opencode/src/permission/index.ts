@@ -9,6 +9,7 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Plugin } from "@/plugin"
 import * as SiempreDisco from "./siempre-disco"
 import * as RutasProtegidas from "./rutas-protegidas"
+import * as Sugerencia from "./sugerencia"
 
 export const Event = PermissionV1.Event
 
@@ -134,12 +135,35 @@ const layer = Layer.effect(
       }
       if (decision.status === "allow" && !protegido) return
 
+      // Lazunox (5A): sugerencia del modelo pequeño como DATO adjunto. No toca `needsAsk`, `always` ni la decisión: solo informa a la persona.
+      // Falla cerrado (error/plazo/basura = sin sugerencia). Una clave con ese nombre que venga de la herramienta se descarta.
+      const { [Sugerencia.CLAVE_METADATA]: _ajena, ...metaLimpia } = (request.metadata ?? {}) as Record<string, unknown>
+      const sugerencia = yield* Sugerencia.sugerir({
+        sessionID: String(request.sessionID),
+        permiso: request.permission,
+        patrones: request.patterns,
+        regla: request.patterns
+          .slice(0, 5)
+          .map((p) => {
+            const r = evaluate(request.permission, p, ruleset, approved)
+            return `${r.action} (${r.permission}: ${r.pattern})`
+          })
+          .join("; "),
+      })
+
       const info: PermissionV1.Request = {
         id,
         sessionID: request.sessionID,
         permission: request.permission,
         patterns: request.patterns,
-        metadata: protegido ? { ...request.metadata, lazunoxProtegido: true } : request.metadata,
+        metadata:
+          protegido || sugerencia || Sugerencia.CLAVE_METADATA in (request.metadata ?? {})
+            ? {
+                ...metaLimpia,
+                ...(protegido ? { lazunoxProtegido: true } : {}),
+                ...(sugerencia ? { [Sugerencia.CLAVE_METADATA]: sugerencia } : {}),
+              }
+            : request.metadata,
         // Una ruta protegida no se puede aprobar con «siempre» (el «siempre» de un archivo no debe cubrir los demás).
         always: protegido ? [] : request.always,
         tool: request.tool,
