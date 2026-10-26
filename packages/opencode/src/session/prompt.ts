@@ -1385,9 +1385,12 @@ const layer = Layer.effect(
         const ctx = yield* InstanceState.context
         let structured: unknown
         let step = 0
-        const session = yield* sessions.get(sessionID).pipe(Effect.orDie)
+        // B4: los permisos de la SESIÓN pueden cambiar entre pasos (p. ej. una skill con `allowed-tools` escribe su bloque al cargarse):
+        // se vuelven a leer en cada paso para que las herramientas denegadas desaparezcan desde el SIGUIENTE paso, no al turno siguiente.
+        let session = yield* sessions.get(sessionID).pipe(Effect.orDie)
 
         while (true) {
+          session = yield* sessions.get(sessionID).pipe(Effect.orDie)
           yield* status.set(sessionID, { type: "busy" })
           yield* Effect.logInfo("loop", { "session.id": sessionID, step })
 
