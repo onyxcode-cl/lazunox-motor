@@ -337,7 +337,10 @@ const layer = Layer.effect(
       const taskAbort = new AbortController()
       const result = yield* taskTool
         .execute(taskArgs, {
-          agent: task.agent,
+          // B3: el «padre» del ayudante es el agente de la conversación (el del mensaje de la persona), NO el agente de la subtarea.
+          // Con `task.agent` el revisor se comparaba contra sí mismo (su `"*": deny` + las reglas de la sesión) y `tope del padre`
+          // le cerraba todo; así se calcula igual que cuando el modelo lanza el ayudante con `task`.
+          agent: lastUser.agent,
           messageID: assistantMessage.id,
           sessionID,
           abort: taskAbort.signal,
