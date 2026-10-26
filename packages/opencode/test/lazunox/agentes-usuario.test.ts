@@ -18,6 +18,7 @@ import { restringir } from "../../src/agent/restringir-permisos"
 import { esParcial, marcarParcial } from "../../src/agent/parcial"
 import { traducirClaude, traducirModelo, permisoDeNombreClaude } from "../../src/config/agent-claude"
 import { ConfigAgent } from "../../src/config/agent"
+import { fusionarConClaude } from "../../src/config/agent-claude"
 import { modeloDelAyudante } from "../../src/tool/task"
 import { disposeAllInstances, TestInstance } from "../fixture/fixture"
 import { testEffect } from "../lib/effect"
@@ -254,13 +255,76 @@ describe("seguridad: un agente de carpeta nunca supera al padre", () => {
       yield* Effect.promise(() =>
         escribir(t.directory, ".claude/agents/revisor.md", "---\nname: revisor\ntools: Bash, Edit\n---\nimpostor"),
       )
+      // H3 (variante): la persona ajustó el agente en la configuración; el archivo de Claude aporta su prompt, pero manda lo de la persona
+      // y nunca se amplían los permisos (aquí la persona deniega edit y bash; el archivo los permitiría).
       const a = yield* Agent.use.get("revisor")
       expect(a.description).toBe("el de la configuración")
-      expect(a.prompt ?? "").not.toContain("impostor")
+      expect(a.prompt ?? "").toContain("impostor")
       expect(accion(a, "edit", "a.ts")).toBe("deny")
+      expect(accion(a, "bash", "ls")).toBe("deny")
     }),
     { config: { agent: { revisor: { mode: "subagent", description: "el de la configuración", permission: { edit: "deny", bash: "deny" } } } } },
   )
+
+  it.instance(
+    "H3: ajustar solo el modelo de un agente de .claude/agents en la configuración conserva su prompt y su lista blanca de herramientas",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* TestInstance
+        yield* Effect.promise(() =>
+          escribir(t.directory, ".claude/agents/reviewer.md", "---\nname: reviewer\ndescription: Revisa\ntools: Read, Grep\n---\nEres un revisor."),
+        )
+        const a = yield* Agent.use.get("reviewer")
+        expect(a.prompt ?? "").toContain("Eres un revisor.")
+        expect(a.description).toBe("Revisa")
+        expect(accion(a, "read", "src/a.ts")).toBe("allow")
+        expect(accion(a, "grep", "foo")).toBe("allow")
+        // la lista blanca sigue: nada de bash ni edit
+        expect(accion(a, "bash", "ls")).toBe("deny")
+        expect(accion(a, "edit", "a.ts")).toBe("deny")
+      }),
+    { config: { agent: { reviewer: { model: "openai/gpt-4" } } } },
+  )
+
+  it.instance(
+    "H3: un ajuste en la configuración que añade herramientas fuera de la lista blanca de Claude no las abre",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* TestInstance
+        yield* Effect.promise(() =>
+          escribir(t.directory, ".claude/agents/reviewer.md", "---\nname: reviewer\ntools: Read\n---\nRevisor."),
+        )
+        const a = yield* Agent.use.get("reviewer")
+        expect(a.prompt ?? "").toContain("Revisor.")
+        expect(accion(a, "read", "a.ts")).toBe("allow")
+        expect(accion(a, "bash", "ls")).toBe("deny")
+        expect(accion(a, "edit", "a.ts")).toBe("deny")
+      }),
+    { config: { agent: { reviewer: { permission: { bash: "allow", edit: "allow" } } } } },
+  )
+
+  test("H3: fusionarConClaude: manda lo existente, gana lo más estricto, la lista blanca se conserva", () => {
+    const def = { name: "r", prompt: "p", mode: "subagent", permission: { "*": "deny", read: "allow", grep: "allow" } }
+    const r = fusionarConClaude(def, { model: "x", permission: { "*": "allow", read: "deny", bash: "allow" } })
+    expect(r.model).toBe("x")
+    expect(r.prompt).toBe("p")
+    expect(r.permission).toEqual({ "*": "deny", read: "deny", grep: "allow" })
+    // sin lista blanca en el agente de Claude, lo existente se añade
+    const abierto = fusionarConClaude({ name: "r", prompt: "p", permission: { read: "allow" } }, { permission: { bash: "deny" } })
+    expect(abierto.permission).toEqual({ read: "allow", bash: "deny" })
+  })
+
+  test("H3: el nombre derivado de la ruta pasa por NOMBRE_VALIDO (rechaza homógrafos no ASCII)", async () => {
+    const root = await fs.mkdtemp(path.join((await import("os")).tmpdir(), "lzx-h3b-"))
+    try {
+      // «а» cirílica (U+0430) en lugar de la «a» latina; sin `name` en el frontmatter, el nombre sale del archivo
+      await escribir(root, ".claude/agents/reviеwer-\u0430.md", "---\ntools: Read\n---\nimpostor")
+      await escribir(root, ".claude/agents/bueno.md", "---\ntools: Read\n---\nok")
+      expect(Object.keys(await ConfigAgent.loadClaude(root))).toEqual(["bueno"])
+    } finally {
+      await fs.rm(root, { recursive: true, force: true })
+    }
+  })
 
   test("H3: los nombres de los agentes de la app están reservados (también en ~/.claude/agents)", async () => {
     const root = await fs.mkdtemp(path.join((await import("os")).tmpdir(), "lzx-h3-"))

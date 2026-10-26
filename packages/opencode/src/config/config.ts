@@ -573,14 +573,16 @@ const layer = Layer.effect(
           })
         }
 
-        // Lazunox (revisión de seguridad H3): los agentes de `.claude/agents` y `~/.claude/agents` se añaden AL FINAL y SOLO con nombres que
-        // no existen (ni nativos, ni reservados, ni de la app o de .opencode). Nunca se fusionan con un agente existente: un archivo de la
-        // carpeta del proyecto no puede ampliar los permisos de `chat`, `tasks`, `computer`, `lazunox-helper`...
+        // Lazunox (revisión de seguridad H3): los agentes de `.claude/agents` y `~/.claude/agents` se añaden AL FINAL. Un nombre reservado
+        // (nativos, de la app) nunca se fusiona: un archivo de la carpeta no puede ampliar los permisos de `chat`, `tasks`,
+        // `computer`, `lazunox-helper`... Si el nombre NO es reservado y la persona ya lo ajustó en `opencode.json` / `.opencode/agents`,
+        // manda lo suyo (`fusionarConClaude`) pero sin ampliar los permisos que impone el agente de Claude (lista blanca de herramientas).
         {
           const agentes = (result.agent ??= {})
           for (const [name, def] of Object.entries(agentesClaude)) {
-            if (name in agentes || ConfigAgent.esNombreReservado(name)) continue
-            agentes[name] = def
+            if (ConfigAgent.esNombreReservado(name)) continue
+            const existente = agentes[name]
+            agentes[name] = existente ? (ConfigAgent.fusionarConClaude(def, existente) as typeof def) : def
           }
         }
 
