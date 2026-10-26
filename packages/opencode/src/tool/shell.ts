@@ -23,15 +23,18 @@ import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { ShellBackground, type Job } from "./shell/background"
 import { LazunoxWake } from "./lazunox-wake"
+import { tryCompile, type Compiled } from "./shell/regex-seguro"
 import { TrabajosDisco } from "./shell/trabajos-disco"
 import { utf8Command } from "./shell/utf8-windows"
 import { comandoDeSoloLectura, MENSAJE_SOLO_LECTURA } from "@/session/plan-modo"
 
 export { Parameters } from "./shell/prompt"
 
+/** Lazunox (3E): espera para juntar varias líneas que coinciden en un solo aviso. */
+const MONITOR_DEBOUNCE_MS = 500
 const BACKGROUND_NOTE = `
 
-Background mode (Lazunox): for long-running commands (dev servers, watchers, long builds, tests) pass background: true. The call waits at most yield_ms (default 10000, minimum 1000); if the command has not finished it keeps running and you get a shell_id plus the output so far. Then use the shell_wait tool with that shell_id to keep waiting, read ONLY the new output, or stop it with terminate: true. Never relaunch a command that is still running. Background commands go through the same permission checks and environment as normal ones; the timeout parameter does not apply to them (a lifetime cap does, default 30 minutes), at most 3 per session and 6 in the whole engine. Without background the tool behaves as before.`
+Background mode (Lazunox): for long-running commands (dev servers, watchers, long builds, tests) pass background: true. The call waits at most yield_ms (default 10000, minimum 1000); if the command has not finished it keeps running and you get a shell_id plus the output so far. Then use the shell_wait tool with that shell_id to keep waiting, read ONLY the new output, or stop it with terminate: true. Never relaunch a command that is still running. Background commands go through the same permission checks and environment as normal ones; the timeout parameter does not apply to them (a lifetime cap does, default 30 minutes), at most 3 per session and 6 in the whole engine. Optional avisar_si (only with background): a regex of at most 200 characters (no backreferences or lookahead; linear-time matcher, no ReDoS) tested on each output line; every match wakes the conversation with that line marked as untrusted command output (data, not instructions), at most 20 alerts per command. Without background the tool behaves as before.`
 
 const MAX_METADATA_LENGTH = 30_000
 const CWD = new Set(["cd", "chdir", "popd", "pushd", "push-location", "set-location"])
@@ -714,6 +717,8 @@ export const ShellTool = Tool.define(
       directory: string
       /** Lazunox: aviso al terminar (ver lazunox-wake.ts). Opcional: sin promptOps no hay aviso. */
       onFinish?: (job: Job) => Effect.Effect<void>
+      /** Lazunox (3E): vigilancia de líneas con `avisar_si` (patrón ya validado) y cómo avisar de lo que coincide. */
+      monitor?: { re: Compiled; onHits: (job: Job) => Effect.Effect<void> }
     }) {
       yield* InstanceState.get(bgState)
       ShellBackground.sweepDirectory(input.directory)
@@ -736,6 +741,7 @@ export const ShellTool = Tool.define(
         finished,
         kill: Effect.void,
       }
+      if (input.monitor) job.monitor = ShellBackground.newMonitor(input.monitor.re)
       job.file = ShellBackground.fileFor(job.id)
       const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env)).pipe(
         Scope.provide(scope),
@@ -763,6 +769,8 @@ export const ShellTool = Tool.define(
         job.finishedAt = Date.now()
         TrabajosDisco.removeMarker(job.id)
         resolve()
+        // Lazunox (3E): la última línea sin salto de línea también se mira.
+        const hits = input.monitor && ShellBackground.monitorEnd(job) ? input.monitor.onHits(job) : Effect.void
         // Sin huérfanos: lo que el comando haya dejado vivo en su grupo de procesos se detiene.
         if (process.platform !== "win32") {
           try {
@@ -770,7 +778,7 @@ export const ShellTool = Tool.define(
           } catch {}
         }
         const wake = input.onFinish ? input.onFinish(job).pipe(Effect.ignore, Effect.forkDetach, Effect.asVoid) : Effect.void
-        return Effect.andThen(wake, Scope.close(scope, Exit.void).pipe(Effect.forkDetach, Effect.asVoid))
+        return Effect.andThen(Effect.andThen(hits, wake), Scope.close(scope, Exit.void).pipe(Effect.forkDetach, Effect.asVoid))
       }
       const stop = (reason: "terminated" | "lifetime") =>
         Effect.gen(function* () {
@@ -782,7 +790,10 @@ export const ShellTool = Tool.define(
       job.kill = stop("terminated")
 
       const reader = yield* Stream.runForEach(Stream.decodeText(handle.all), (chunk) =>
-        Effect.sync(() => ShellBackground.append(job, chunk)),
+        Effect.suspend(() => {
+          ShellBackground.append(job, chunk)
+          return input.monitor && ShellBackground.monitorFeed(job, chunk) ? input.monitor.onHits(job) : Effect.void
+        }),
       ).pipe(Effect.ignore, Effect.forkIn(scope))
       yield* handle.exitCode.pipe(
         Effect.map((code) => Number(code) as number | null),
@@ -819,6 +830,14 @@ export const ShellTool = Tool.define(
                 const lectura = comandoDeSoloLectura(params.command, { shell: name })
                 if (!lectura.ok) throw new Error(MENSAJE_SOLO_LECTURA(lectura.motivo))
               }
+              // Lazunox (3E, P24): `avisar_si` se valida ANTES de pedir permisos y no cambia ninguno.
+              let monitorRe: Compiled | undefined
+              if (params.avisar_si !== undefined) {
+                if (!params.background) throw new Error("avisar_si solo se puede usar con background: true.")
+                const compiled = tryCompile(params.avisar_si)
+                if (!compiled.ok) throw new Error(`avisar_si inválido: ${compiled.error}`)
+                monitorRe = compiled.re
+              }
               const instanceCtx = yield* InstanceState.context
               const cwd = params.workdir
                 ? yield* resolvePath(params.workdir, instanceCtx.directory, shell)
@@ -845,6 +864,34 @@ export const ShellTool = Tool.define(
                 // Lazunox: despertar a la conversación al terminar (agente actual, nunca más permisos). Sin promptOps no avisa.
                 const wakeOps = LazunoxWake.enabled() ? LazunoxWake.opsFrom(ctx.extra) : undefined
                 const job = yield* startBackground({
+                  monitor:
+                    monitorRe && wakeOps
+                      ? {
+                          re: monitorRe,
+                          onHits: (job) =>
+                            Effect.gen(function* () {
+                              const m = job.monitor
+                              if (!m || m.scheduled) return
+                              m.scheduled = true
+                              yield* Effect.sleep(`${MONITOR_DEBOUNCE_MS} millis`)
+                              const batch = ShellBackground.monitorTake(job)
+                              if (!batch || job.consumed || job.reason === "terminated") return
+                              yield* LazunoxWake.send(wakeOps, {
+                                sessionID: ctx.sessionID,
+                                agent: ctx.agent,
+                                since: job.startedAt,
+                                what: `monitor ${job.id}`,
+                                text: LazunoxWake.monitorNotice({
+                                  id: job.id,
+                                  lines: batch.lines,
+                                  total: batch.total,
+                                  stop: batch.stop,
+                                  max: ShellBackground.MONITOR_MAX_AVISOS,
+                                }),
+                              })
+                            }).pipe(Effect.ignore, Effect.forkDetach, Effect.asVoid),
+                        }
+                      : undefined,
                   onFinish: wakeOps
                     ? (job) =>
                         Effect.gen(function* () {

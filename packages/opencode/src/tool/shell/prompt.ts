@@ -24,6 +24,10 @@ export function parameterSchema() {
       description:
         "Optional, only with background: milliseconds to wait before returning while the command keeps running (default 10000, minimum 1000).",
     }),
+    avisar_si: Schema.optional(Schema.String).annotate({
+      description:
+        "Optional, only with background: a regular expression (max 200 characters, no backreferences or lookahead) matched against each output line; each match wakes this conversation with that line, marked as untrusted command output (max 20 alerts per command). Use it to be told about e.g. 'error|ready' without polling.",
+    }),
     workdir: Schema.optional(Schema.String).annotate({
       description: `The working directory to run the command in. Defaults to the current directory. Use this instead of 'cd' commands.`,
     }),

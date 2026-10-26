@@ -3,6 +3,7 @@ import fs from "node:fs"
 import path from "node:path"
 import { Global } from "@opencode-ai/core/global"
 import { TrabajosDisco } from "./trabajos-disco"
+import type { Compiled } from "./regex-seguro"
 
 // Lazunox: registro de shells en segundo plano (pausa y espera al estilo Codex, lectura incremental al estilo Claude Code).
 // Vive en el proceso del motor: no es durable. Cada trabajo escribe su salida a un archivo con tope y se lee por desplazamiento.
@@ -22,6 +23,85 @@ export const MIN_YIELD_MS = 1_000
 export const clampYield = (value: number | undefined) => {
   const requested = typeof value === "number" && Number.isFinite(value) ? Math.floor(value) : DEFAULT_YIELD_MS
   return Math.min(Math.max(requested, MIN_YIELD_MS), 10 * 60 * 1000)
+}
+
+/** Lazunox (3E, P24): `avisar_si`. Máximo de avisos (líneas que coinciden) por trabajo y presupuesto de CPU para el patrón. */
+export const MONITOR_MAX_AVISOS = 20
+export const MONITOR_MAX_CPU_MS = 3000
+const MONITOR_MAX_PARTIAL = 8192
+
+export type Monitor = {
+  re: Compiled
+  /** Línea a medias (sin salto de línea todavía). */
+  partial: string
+  avisos: number
+  /** Líneas que coinciden y aún no se mandaron. */
+  pending: string[]
+  /** Hay un envío programado. */
+  scheduled: boolean
+  /** Por qué dejó de mirar: `tope` (20 avisos) o `cpu` (el patrón gastó demasiado). */
+  stopped?: "tope" | "cpu"
+  /** El aviso de «ya no miro más» está pendiente de mandarse. */
+  stopNotice?: boolean
+  spentMs: number
+}
+
+export const newMonitor = (re: Compiled): Monitor => ({ re, partial: "", avisos: 0, pending: [], scheduled: false, spentMs: 0 })
+
+const monitorLine = (m: Monitor, line: string) => {
+  if (m.stopped || line.length === 0) return
+  const t0 = performance.now()
+  let hit = false
+  try {
+    hit = m.re.test(line)
+  } catch {
+    hit = false
+  }
+  m.spentMs += performance.now() - t0
+  if (hit) {
+    m.avisos++
+    m.pending.push(line)
+    if (m.avisos >= MONITOR_MAX_AVISOS) {
+      m.stopped = "tope"
+      m.stopNotice = true
+    }
+  }
+  if (!m.stopped && m.spentMs > MONITOR_MAX_CPU_MS) {
+    m.stopped = "cpu"
+    m.stopNotice = true
+  }
+}
+
+/** Mira un trozo de salida (independiente del tope del archivo). Devuelve true si hay líneas nuevas pendientes de avisar. */
+export const monitorFeed = (job: Job, chunk: string) => {
+  const m = job.monitor
+  if (!m || m.stopped) return false
+  const before = m.pending.length + (m.stopNotice ? 1 : 0)
+  const pieces = (m.partial + chunk).split(/\r\n|\n|\r/)
+  m.partial = (pieces.pop() ?? "").slice(0, MONITOR_MAX_PARTIAL)
+  for (const line of pieces) monitorLine(m, line)
+  return m.pending.length + (m.stopNotice ? 1 : 0) > before
+}
+
+/** Fin de la salida: la última línea sin salto de línea también cuenta. */
+export const monitorEnd = (job: Job) => {
+  const m = job.monitor
+  if (!m || m.stopped) return false
+  const last = m.partial
+  m.partial = ""
+  monitorLine(m, last)
+  return m.pending.length > 0 || m.stopNotice === true
+}
+
+/** Saca lo pendiente para mandarlo (y marca el aviso de parada como dado). */
+export const monitorTake = (job: Job) => {
+  const m = job.monitor
+  if (!m) return undefined
+  const lines = m.pending.splice(0)
+  const stop = m.stopNotice ? m.stopped : undefined
+  m.stopNotice = false
+  m.scheduled = false
+  return lines.length > 0 || stop ? { lines, stop, total: m.avisos } : undefined
 }
 
 export type EndReason = "exit" | "terminated" | "lifetime"
@@ -44,6 +124,8 @@ export type Job = {
   consumed?: boolean
   /** Ya se mandó el aviso de fin (uno por trabajo). */
   notified?: boolean
+  /** Lazunox (3E): vigilancia de líneas con `avisar_si`. */
+  monitor?: Monitor
   finished: Promise<void>
   /** Mata el grupo de procesos y libera el scope. Idempotente. */
   kill: Effect.Effect<void>

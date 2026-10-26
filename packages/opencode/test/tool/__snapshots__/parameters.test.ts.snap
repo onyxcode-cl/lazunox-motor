@@ -20,6 +20,10 @@ exports[`tool parameters JSON Schema (wire shape) bash 1`] = `
 {
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "properties": {
+    "avisar_si": {
+      "description": "Optional, only with background: a regular expression (max 200 characters, no backreferences or lookahead) matched against each output line; each match wakes this conversation with that line, marked as untrusted command output (max 20 alerts per command). Use it to be told about e.g. 'error|ready' without polling.",
+      "type": "string",
+    },
     "background": {
       "description": "Optional. true runs the command in the background: the call waits at most yield_ms and, if it has not finished, returns a shell_id to use with shell_wait.",
       "type": "boolean",
