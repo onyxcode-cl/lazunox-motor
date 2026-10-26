@@ -367,6 +367,17 @@ exports[`tool parameters JSON Schema (wire shape) todo 1`] = `
             "description": "Brief description of the task",
             "type": "string",
           },
+          "depende_de": {
+            "description": "Optional. ids of todos in this same list that must be completed before this one can be in_progress or completed (max 10). Cycles and unknown ids reject the whole list.",
+            "items": {
+              "type": "string",
+            },
+            "type": "array",
+          },
+          "id": {
+            "description": "Optional. Short id (letters, digits, - _ .; max 40) so other todos can depend on this one. Unique within the list.",
+            "type": "string",
+          },
           "priority": {
             "description": "Priority level of the task: high, medium, low",
             "type": "string",
