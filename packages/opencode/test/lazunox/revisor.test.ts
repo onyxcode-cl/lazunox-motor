@@ -185,13 +185,14 @@ describe("agentes nativos: solo lectura, sin ayudantes, modelo pequeño", () => 
     { config: { permission: { "*": "allow" } } },
   )
 
-  it.instance("la configuración del usuario puede endurecerlos (bash: ask no lo abre; queda sin shell)", () =>
+  it.instance("con bash en «preguntar» el revisor y el verificador pueden pedir SOLO sus órdenes (la persona decide); lo demás, denegado", () =>
     Effect.gen(function* () {
       const r = yield* Agent.use.get("revisor")
       const v = yield* Agent.use.get("verificador")
-      // Un «preguntar» global sobre el shell no se convierte en «permitido»: la lista blanca falla cerrada (2A), sin shell.
-      expect(accion(r, "bash", "git diff")).toBe("deny")
-      expect(accion(v, "bash", "bun test")).toBe("deny")
+      // Un «preguntar» global sobre el shell nunca se convierte en «permitido»: sus órdenes propias quedan en «preguntar»
+      // (como el padre) y todo lo demás sigue denegado.
+      expect(accion(r, "bash", "git diff")).toBe("ask")
+      expect(accion(v, "bash", "bun test")).toBe("ask")
       expect(accion(r, "bash", "rm -rf .")).toBe("deny")
     }),
     { config: { permission: { bash: "ask" } } },
@@ -220,7 +221,8 @@ describe("nunca más permisos que quien los lanza", () => {
     Effect.gen(function* () {
       const a = yield* Agent.use.get("revisor")
       const pregunta = Permission.fromConfig({ "*": "allow", bash: "ask" })
-      expect(evaluar(a, pregunta, [], "bash", "git diff")).not.toBe("allow") // falla cerrado (ver LAZUNOX.md 3C)
+      expect(evaluar(a, pregunta, [], "bash", "git diff")).toBe("ask") // como el padre: la persona decide
+      expect(evaluar(a, pregunta, [], "bash", "rm -rf .")).toBe("deny")
       expect(evaluar(a, pregunta, Permission.fromConfig({ bash: "deny" }), "bash", "git diff")).toBe("deny")
     }),
   )

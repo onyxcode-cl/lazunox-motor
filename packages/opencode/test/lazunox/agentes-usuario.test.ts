@@ -16,7 +16,7 @@ import { Skill } from "../../src/skill"
 import { deriveSubagentSessionPermission } from "../../src/agent/subagent-permissions"
 import { restringir } from "../../src/agent/restringir-permisos"
 import { esParcial, marcarParcial } from "../../src/agent/parcial"
-import { traducirClaude, traducirModelo, permisoDeNombreClaude } from "../../src/config/agent-claude"
+import { traducirClaude, traducirModelo, permisoDeNombreClaude, esNombreReservado } from "../../src/config/agent-claude"
 import { ConfigAgent } from "../../src/config/agent"
 import { fusionarConClaude } from "../../src/config/agent-claude"
 import { modeloDelAyudante } from "../../src/tool/task"
@@ -99,16 +99,16 @@ describe("carga de .claude/agents", () => {
   test("loadClaude lee, traduce, no pisa agentes nativos", async () => {
     const root = await fs.mkdtemp(path.join((await import("os")).tmpdir(), "lzx-claude-"))
     try {
-      await escribir(root, ".claude/agents/revisor.md", "---\nname: revisor\ndescription: Revisa\ntools: Read, Grep\nmaxTurns: 4\nmodel: haiku\n---\nEres revisor.")
+      await escribir(root, ".claude/agents/inspector.md", "---\nname: inspector\ndescription: Revisa\ntools: Read, Grep\nmaxTurns: 4\nmodel: haiku\n---\nEres revisor.")
       await escribir(root, ".claude/agents/general.md", "---\nname: general\ntools: Bash, Edit\n---\nSoy un impostor.")
       await escribir(root, ".claude/agents/sub/otro.md", "---\ndescription: Otro\n---\nOtro.")
       const out = await ConfigAgent.loadClaude(root)
-      expect(Object.keys(out).sort()).toEqual(["otro", "revisor"])
-      expect(out.revisor.max_turns).toBe(4)
-      expect(out.revisor.steps).toBe(4)
-      expect(out.revisor.model).toBe("small")
-      expect(out.revisor.prompt).toBe("Eres revisor.")
-      expect(out.revisor.mode).toBe("subagent")
+      expect(Object.keys(out).sort()).toEqual(["inspector", "otro"])
+      expect(out.inspector.max_turns).toBe(4)
+      expect(out.inspector.steps).toBe(4)
+      expect(out.inspector.model).toBe("small")
+      expect(out.inspector.prompt).toBe("Eres revisor.")
+      expect(out.inspector.mode).toBe("subagent")
       expect(await ConfigAgent.loadClaude(root, { LAZUNOX_SIN_AGENTES_CLAUDE: "1" } as NodeJS.ProcessEnv)).toEqual({})
     } finally {
       await fs.rm(root, { recursive: true, force: true })
@@ -253,17 +253,17 @@ describe("seguridad: un agente de carpeta nunca supera al padre", () => {
     Effect.gen(function* () {
       const t = yield* TestInstance
       yield* Effect.promise(() =>
-        escribir(t.directory, ".claude/agents/revisor.md", "---\nname: revisor\ntools: Bash, Edit\n---\nimpostor"),
+        escribir(t.directory, ".claude/agents/auditor.md", "---\nname: auditor\ntools: Bash, Edit\n---\nimpostor"),
       )
       // H3 (variante): la persona ajustó el agente en la configuración; el archivo de Claude aporta su prompt, pero manda lo de la persona
       // y nunca se amplían los permisos (aquí la persona deniega edit y bash; el archivo los permitiría).
-      const a = yield* Agent.use.get("revisor")
+      const a = yield* Agent.use.get("auditor")
       expect(a.description).toBe("el de la configuración")
       expect(a.prompt ?? "").toContain("impostor")
       expect(accion(a, "edit", "a.ts")).toBe("deny")
       expect(accion(a, "bash", "ls")).toBe("deny")
     }),
-    { config: { agent: { revisor: { mode: "subagent", description: "el de la configuración", permission: { edit: "deny", bash: "deny" } } } } },
+    { config: { agent: { auditor: { mode: "subagent", description: "el de la configuración", permission: { edit: "deny", bash: "deny" } } } } },
   )
 
   it.instance(
@@ -272,10 +272,10 @@ describe("seguridad: un agente de carpeta nunca supera al padre", () => {
       Effect.gen(function* () {
         const t = yield* TestInstance
         yield* Effect.promise(() =>
-          escribir(t.directory, ".claude/agents/reviewer.md", "---\nname: reviewer\ndescription: Revisa\ntools: Read, Grep\n---\nEres un revisor."),
+          escribir(t.directory, ".claude/agents/reviewer.md", "---\nname: reviewer\ndescription: Revisa\ntools: Read, Grep\n---\nEres un auditor."),
         )
         const a = yield* Agent.use.get("reviewer")
-        expect(a.prompt ?? "").toContain("Eres un revisor.")
+        expect(a.prompt ?? "").toContain("Eres un auditor.")
         expect(a.description).toBe("Revisa")
         expect(accion(a, "read", "src/a.ts")).toBe("allow")
         expect(accion(a, "grep", "foo")).toBe("allow")
@@ -381,6 +381,21 @@ describe("intersección con el padre (derive)", () => {
     expect(Permission.evaluate("external_directory", "/tmp/opencode/x", r.permission).action).toBe("deny")
     const libre = restringir(baseExt, Permission.fromConfig({ read: "allow" }))
     expect(Permission.evaluate("external_directory", "/tmp/opencode/x", libre.permission).action).toBe("allow")
+  })
+
+  test("verificador y revisor (3C) son nombres reservados: un archivo de Claude no los fusiona", () => {
+    expect(esNombreReservado("revisor")).toBe(true)
+    expect(esNombreReservado("Verificador")).toBe(true)
+  })
+
+  test("lista blanca con patrones concretos: lo permitido queda en «preguntar» como el padre y lo demás negado", () => {
+    const baseAsk = Permission.fromConfig({ "*": "allow", bash: "ask" })
+    const r = restringir(baseAsk, Permission.fromConfig({ "*": "deny", read: "allow", bash: { "git diff*": "allow" } }))
+    expect(Permission.evaluate("bash", "git diff HEAD", r.permission).action).toBe("ask")
+    expect(Permission.evaluate("bash", "rm -rf .", r.permission).action).toBe("deny")
+    const libre = restringir(Permission.fromConfig({ "*": "allow" }), Permission.fromConfig({ "*": "deny", bash: { "git diff*": "allow" } }))
+    expect(Permission.evaluate("bash", "git diff HEAD", libre.permission).action).toBe("allow")
+    expect(Permission.evaluate("bash", "rm -rf .", libre.permission).action).toBe("deny")
   })
 
   test("el padre con edit solo en el plan: el hijo con edit: allow solo escribe en el plan", () => {

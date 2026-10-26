@@ -23,6 +23,8 @@ export const NOMBRES_RESERVADOS = new Set([
   "build", "plan", "general", "explore", "compaction", "title", "summary",
   // agentes primarios y ayudantes de la app (Lazunox): un archivo de la carpeta no puede ocupar ni ampliar estos nombres
   "chat", "tasks", "computer", "lazunox-helper", "lazunox-chat-helper",
+  // agentes nativos de solo lectura de Lazunox (3C)
+  "verificador", "revisor",
 ])
 export const esNombreReservado = (name: string) => NOMBRES_RESERVADOS.has(name.trim().toLowerCase())
 

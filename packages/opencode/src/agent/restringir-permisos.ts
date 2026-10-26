@@ -44,7 +44,16 @@ export function colaDeLaBase(base: readonly Regla[], declarado: readonly Regla[]
     if (r.action !== "allow") {
       // Un «preguntar» de la base no reabre lo que el agente niega (lista blanca `"*": deny`): sigue negado y la herramienta
       // no se le ofrece. Un «denegar» de la base se conserva siempre.
-      cola.push(r.action === "ask" && accionLiteral(r.permission, r.pattern, declarado) === "deny" ? { ...r, action: "deny" } : r)
+      if (r.action === "ask" && accionLiteral(r.permission, r.pattern, declarado) === "deny") {
+        cola.push({ ...r, action: "deny" })
+        // Lista blanca con patrones concretos (p. ej. el revisor: `git diff*`): lo que el agente permite explícitamente queda en
+        // «preguntar», igual que el padre (la persona decide), y todo lo demás sigue negado. Nunca más que el «preguntar» del padre.
+        for (const d of declarado) {
+          if (d.action === "allow" && d.pattern !== "*" && Wildcard.match(r.permission, d.permission)) cola.push({ ...d, action: "ask" })
+        }
+        return
+      }
+      cola.push(r)
       return
     }
     const pisa = base.slice(0, i).some((previa) => previa.action !== "allow" && cubre(previa, r))
