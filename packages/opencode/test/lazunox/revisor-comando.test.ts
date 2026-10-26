@@ -294,7 +294,7 @@ describe("/review (comando -> subtarea) conserva las herramientas del revisor co
         const agente = yield* (yield* AgentSvc.Service).get("revisor")
         const ev = (p: string, pat: string) => Permission.evaluate(p, pat, agente!.permission, reglas).action
         expect(ev("read", "src/a.ts")).toBe("allow")
-        expect(ev("bash", "git diff --no-ext-diff")).toBe("allow")
+        expect(ev("bash", "git diff --no-ext-diff")).toBe("ask") // la persona decide cada orden (nunca allow, ver revisor-git-modos)
         for (const p of ["edit", "task", "webfetch"]) expect(ev(p, "*")).toBe("deny")
         expect(ev("bash", "rm -rf .")).toBe("deny")
       }),

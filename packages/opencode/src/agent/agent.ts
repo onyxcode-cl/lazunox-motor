@@ -154,9 +154,14 @@ const layer = Layer.effect(
         // poder lanzar otros ayudantes. Se construyen como los agentes de carpeta (2A): sus permisos son la intersección con los del
         // padre (`usuario: true` + `estricto`), nunca más. Ver `agent/revisor.ts` y LAZUNOX.md (3C).
         // `X`, `X *` y `X:*` (scripts como `npm run test:unit`). Los comodines solo abren lo que empieza por la orden exacta.
+        // Van SIEMPRE en «ask» (la persona decide cada orden; «siempre» la hace persistente), nunca en «allow»: lo que un agente declara
+        // (`GET /agent`) lo compara el guardián de subagentes de la app con el padre, y un `allow` supera a un padre que pregunta
+        // (bug «el revisor no puede ejecutar git diff»). Con `bash * : deny` ANTES, lo que no está en la lista sigue denegado.
         const parDeOrden = (...ordenes: string[]) =>
-          Object.fromEntries(ordenes.flatMap((o) => [[o, "allow"], [`${o} *`, "allow"], [`${o}:*`, "allow"]] as const)) as Record<string, "allow">
-        const soloLectura = { "*": "deny", read: "allow", grep: "allow", glob: "allow", list: "allow", task: "deny", todowrite: "deny" } as const
+          Object.fromEntries(ordenes.flatMap((o) => [[o, "ask"], [`${o} *`, "ask"], [`${o}:*`, "ask"]] as const)) as Record<string, "ask">
+        // `read mcp:*` (recursos de un conector MCP) pregunta en las sesiones de la app; si el agente lo declarara en allow (por el
+        // `read: allow`) el guardián lo vería como más libertad que el padre.
+        const soloLectura = { "*": "deny", read: { "*": "allow", "mcp:*": "ask" }, grep: "allow", glob: "allow", list: "allow", task: "deny", todowrite: "deny" } as const
         const baseNativa = Permission.merge(defaults, user)
         const nativoRestringido = (declarado: ReturnType<typeof Permission.fromConfig>) => {
           const r = restringir(baseNativa, declarado)

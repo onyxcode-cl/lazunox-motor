@@ -148,7 +148,7 @@ describe("agentes nativos: solo lectura, sin ayudantes, modelo pequeño", () => 
     Effect.gen(function* () {
       const a = yield* Agent.use.get("revisor")
       for (const ok of ["git diff", "git diff --no-ext-diff HEAD~1", "git show abc123", "git log -p -n 3", "git status --short", "git diff main...HEAD"])
-        expect(accion(a, "bash", ok)).toBe("allow")
+        expect(accion(a, "bash", ok)).toBe("ask")
       for (const mal of [
         "rm -rf .",
         "git commit -am x",
@@ -170,7 +170,7 @@ describe("agentes nativos: solo lectura, sin ayudantes, modelo pequeño", () => 
     Effect.gen(function* () {
       const a = yield* Agent.use.get("verificador")
       for (const ok of ["bun test test/a.test.ts", "bun run typecheck", "npm test", "npm run test:unit", "pytest -x", "go test ./...", "cargo test", "git diff --stat", "tsc --noEmit"])
-        expect(accion(a, "bash", ok)).toBe("allow")
+        expect(accion(a, "bash", ok)).toBe("ask")
       for (const mal of ["rm -rf node_modules", "git commit -am x", "git push", "npm install", "npm publish", "curl http://x", "sed -i s/a/b/ x", "bun add evil", "python -c 'x'", "git checkout ."])
         expect(accion(a, "bash", mal)).toBe("deny")
     }),
