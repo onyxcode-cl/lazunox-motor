@@ -221,6 +221,17 @@ const Model = Schema.Struct({
 
 export const Metadata = Schema.Record(Schema.String, Schema.Any)
 
+/** Lazunox 6.9: opciones de un fork que nace como hija de la sesión de origen. */
+export type ForkHija = {
+  title: string
+  agent?: string
+  permission?: PermissionV1.Ruleset
+  /** Sustituye a los metadatos de la sesión (NO se clona el `metadata` del origen: objetivo/presupuesto no se heredan). */
+  metadata?: Record<string, unknown>
+  /** Recibe los mensajes ya cortados y devuelve los que de verdad se copian. */
+  seleccionar: (msgs: ReadonlyArray<SessionV1.WithParts>) => ReadonlyArray<SessionV1.WithParts>
+}
+
 export const Info = Schema.Struct({
   id: SessionID,
   slug: Schema.String,
@@ -422,7 +433,12 @@ export interface Interface {
     permission?: PermissionV1.Ruleset
     workspaceID?: WorkspaceV2.ID
   }) => Effect.Effect<Info>
-  readonly fork: (input: { sessionID: SessionID; messageID?: MessageID }) => Effect.Effect<Info, NotFound>
+  readonly fork: (input: {
+    sessionID: SessionID
+    messageID?: MessageID
+    /** Lazunox 6.9: fork como sesión HIJA (ayudante que hereda la conversación). Sin esto, el fork es el de siempre. */
+    hija?: ForkHija
+  }) => Effect.Effect<Info, NotFound>
   readonly touch: (sessionID: SessionID) => Effect.Effect<void>
   readonly get: (id: SessionID) => Effect.Effect<Info, NotFound>
   readonly setTitle: (input: { sessionID: SessionID; title: string }) => Effect.Effect<void>
@@ -691,28 +707,46 @@ const layer: Layer.Layer<
       })
     })
 
-    const fork = Effect.fn("Session.fork")(function* (input: { sessionID: SessionID; messageID?: MessageID }) {
+    const fork = Effect.fn("Session.fork")(function* (input: {
+      sessionID: SessionID
+      messageID?: MessageID
+      hija?: ForkHija
+    }) {
       const ctx = yield* InstanceState.context
       const original = yield* get(input.sessionID)
-      const title = getForkedTitle(original.title)
+      const hija = input.hija
+      const title = hija?.title ?? getForkedTitle(original.title)
       const session = yield* createNext({
         directory: ctx.directory,
         path: sessionPath(ctx.worktree, ctx.directory),
         workspaceID: original.workspaceID,
         title,
-        metadata: structuredClone(original.metadata),
+        // Fork de siempre: clona los metadatos. Fork-hija (6.9): solo los que se indican; permisos = los que calcula el llamador.
+        metadata: hija ? hija.metadata : structuredClone(original.metadata),
+        ...(hija ? { parentID: input.sessionID, agent: hija.agent, permission: hija.permission } : {}),
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()
       // Lazunox 5D: sin `messageID` en una sesión rebobinada, el corte es el punto de rebobinado (lo deshecho no resucita en el fork).
       const corte = input.messageID ?? original.revert?.messageID
-      const target = corte ? msgs.findIndex((msg) => msg.info.id === corte) : msgs.length
+      const indice = (id: string | undefined) => (id ? msgs.findIndex((msg) => msg.info.id === id) : -1)
+      let target = corte ? indice(corte) : msgs.length
+      // Fork-hija: aunque se indique un `messageID`, nunca se copia lo que el padre tiene deshecho (rebobinado).
+      const rev = indice(original.revert?.messageID)
+      if (hija && rev >= 0 && (target < 0 || rev < target)) target = rev
+      const cortados = msgs.slice(0, target < 0 ? msgs.length : target)
+      const copiar = hija ? hija.seleccionar(cortados) : cortados
+      let ultimoUsuario: MessageID | undefined
 
-      for (const msg of msgs.slice(0, target < 0 ? msgs.length : target)) {
+      for (const msg of copiar) {
         const newID = MessageID.ascending()
         idMap.set(msg.info.id, newID)
+        if (msg.info.role === "user") ultimoUsuario = newID
 
-        const parentID = msg.info.role === "assistant" && msg.info.parentID ? idMap.get(msg.info.parentID) : undefined
+        const parentID =
+          msg.info.role === "assistant" && msg.info.parentID
+            ? (idMap.get(msg.info.parentID) ?? (hija ? ultimoUsuario : undefined))
+            : undefined
         const cloned = yield* updateMessage({
           ...msg.info,
           sessionID: session.id,
