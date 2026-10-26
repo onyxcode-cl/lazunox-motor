@@ -1,4 +1,5 @@
 import { Agent } from "@/agent/agent"
+import { conGanchoDeFallo } from "./ganchos-fallo"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { Provider } from "@/provider/provider"
 import { ProviderTransform } from "@/provider/transform"
@@ -177,12 +178,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
               { args },
             )
-            const result = yield* conReglas(
-              item.id,
-              args as Record<string, unknown>,
-              ctx,
-              yield* item.execute(args, ctx),
-            )
+            const result = yield* Effect.gen(function* () {
+              return yield* conReglas(item.id, args as Record<string, unknown>, ctx, yield* item.execute(args, ctx))
+            }).pipe(conGanchoDeFallo(plugin, { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID ?? "", args }))
             const output = {
               ...result,
               attachments: result.attachments?.map((attachment) => ({

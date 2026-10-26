@@ -81,7 +81,7 @@ describe("McpInvocar.run", () => {
   })
 
   test("permiso rechazado: no llama al servidor ni dispara 'after'", async () => {
-    const m = montar({ ask: () => Effect.die(new Error("denegado")) })
+    const m = montar({ ask: () => Effect.die(Object.assign(new Error("denegado"), { _tag: "PermissionRejectedError" })) })
     await expect(Effect.runPromise(McpInvocar.run(m.input({})))).rejects.toThrow()
     expect(m.llamadas).toHaveLength(0)
     expect(m.eventos).toEqual(["tool.execute.before", "ask"])
@@ -110,5 +110,51 @@ describe("McpInvocar.run", () => {
     )
     expect(out.title).toBe("x_start")
     expect((out.metadata as any).lazunoxMcp).toEqual({ tool: "x_start", server: "x" })
+  })
+
+  // 6.8: ganchos de salida sobre una herramienta MCP.
+  test("6.8 el gancho 'after' ve el texto como output y puede reemplazarlo: cambia solo el texto, no la metadata ni los adjuntos", async () => {
+    const m = montar()
+    const vistos: any[] = []
+    const plugin: any = {
+      trigger: (name: string, _i: any, o: any) => {
+        if (name === "tool.execute.after") {
+          vistos.push(o.output)
+          o.output = "FILTRADO"
+        }
+        return Effect.succeed(o)
+      },
+    }
+    const out = await Effect.runPromise(McpInvocar.run(m.input({ a: 1 }, { plugin })))
+    expect(vistos).toEqual(['eco:{"a":1}'])
+    expect(out.output).toBe("FILTRADO")
+    expect((out as any).content).toEqual([{ type: "text", text: "FILTRADO" }])
+    expect((out as any).output).toBe("FILTRADO")
+    expect(out.attachments).toEqual([])
+  })
+  test("6.8 un gancho 'after' que no toca el texto deja el contenido intacto", async () => {
+    const m = montar()
+    const out = await Effect.runPromise(McpInvocar.run(m.input({ a: 1 })))
+    expect(out.output).toBe('eco:{"a":1}')
+    expect((out as any).content).toEqual([{ type: "text", text: 'eco:{"a":1}' }])
+  })
+  test("6.8 herramienta MCP que falla: avisa 'tool.execute.failure', el contexto va al error y el fallo se mantiene", async () => {
+    const m = montar({ fallo: true })
+    const plugin: any = {
+      trigger: (name: string, i: any, o: any) => {
+        m.eventos.push(name)
+        if (name === "tool.execute.failure") {
+          expect(i.tool).toBe("x_start")
+          expect(i.error).toContain("boom")
+          o.contexto = "revisa el servidor"
+        }
+        return Effect.succeed(o)
+      },
+    }
+    const err = await Effect.runPromise(McpInvocar.run(m.input({}, { plugin })).pipe(Effect.flip))
+    expect(String((err as Error).message)).toContain("boom")
+    expect(String((err as Error).message)).toContain("[Gancho de usuario]: revisa el servidor")
+    expect(m.eventos).toContain("tool.execute.failure")
+    expect(m.eventos).not.toContain("tool.execute.after")
   })
 })

@@ -6,7 +6,7 @@ import { aplica, ejecutar, leerConfig, LazunoxGanchosPlugin } from "../../src/pl
 
 describe("ganchos de usuario", () => {
   test("leerConfig descarta lo inválido y acota tiempos y cantidad", () => {
-    const vacio = { PreToolUse: [], PostToolUse: [], PreCompact: [], PostCompact: [], Stop: [], SessionStart: [], UserPromptSubmit: [], SubagentStop: [] }
+    const vacio = { PreToolUse: [], PostToolUse: [], PreCompact: [], PostCompact: [], Stop: [], SessionStart: [], UserPromptSubmit: [], SubagentStop: [], PostToolUseFailure: [], PermissionDenied: [] }
     expect(leerConfig("no json")).toEqual(vacio)
     expect(leerConfig('{"hooks":7}')).toEqual(vacio)
     expect(leerConfig('{"hooks":{"PreCompact":[{"command":"x"}],"Stop":[{"command":"y"}]}}')).toMatchObject({ PreCompact: [{ command: "x" }], Stop: [{ command: "y" }] })

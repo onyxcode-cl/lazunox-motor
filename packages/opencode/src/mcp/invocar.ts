@@ -14,6 +14,7 @@ import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { PartID } from "@/session/schema"
 import { McpCatalog } from "./catalog"
 import * as EnCurso from "./en-curso"
+import { conGanchoDeFallo } from "@/session/ganchos-fallo"
 import type { MCP } from "."
 
 export const MAX_MCP_RESOURCE_BLOB_BYTES = 10 * 1024 * 1024
@@ -60,6 +61,41 @@ export interface RunInput {
   readonly extraMetadata?: Record<string, unknown>
 }
 
+type Contenido = Awaited<ReturnType<NonNullable<ReturnType<typeof McpCatalog.convertTool>["execute"]>>>["content"]
+
+/** Texto que el modelo ve de un resultado MCP: partes de texto y recursos con texto, unidos como en `run`. */
+export function textoDeContenido(content: Contenido): string {
+  const partes: string[] = []
+  for (const c of content as any[]) {
+    if (c.type === "text") partes.push(c.text)
+    else if (c.type === "resource" && c.resource?.text) partes.push(c.resource.text)
+  }
+  return partes.join("\n\n")
+}
+
+/** Sustituye todo el texto por `nuevo` conservando lo no textual (imágenes, blobs). El texto nuevo ocupa el lugar de la primera parte de texto. */
+export function reemplazarTexto(content: Contenido, nuevo: string): Contenido {
+  const out: any[] = []
+  let puesto = false
+  const poner = () => {
+    if (puesto) return
+    puesto = true
+    out.push({ type: "text", text: nuevo })
+  }
+  for (const c of content as any[]) {
+    if (c.type === "text") poner()
+    else if (c.type === "resource" && c.resource?.text) {
+      poner()
+      if (c.resource.blob) {
+        const { text: _t, ...resto } = c.resource
+        out.push({ ...c, resource: resto })
+      }
+    } else out.push(c)
+  }
+  poner()
+  return out as Contenido
+}
+
 export const run = Effect.fn("McpInvocar.run")(function* (input: RunInput) {
   const { key, entry, args, opts, ctx } = input
   const item = McpCatalog.convertTool(entry.def, entry.client, entry.timeout)
@@ -92,6 +128,7 @@ export const run = Effect.fn("McpInvocar.run")(function* (input: RunInput) {
         }),
     })
   }).pipe(
+    conGanchoDeFallo(input.plugin, { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId, args }),
     Effect.withSpan("Tool.execute", {
       attributes: {
         "tool.name": key,
@@ -101,11 +138,19 @@ export const run = Effect.fn("McpInvocar.run")(function* (input: RunInput) {
       },
     }),
   )
+  // Lazunox (6.8): el gancho ve el texto del resultado como `output` (como en las herramientas nativas) y, si lo reemplaza o le añade algo,
+  // solo cambia el TEXTO: imágenes, PDF y `metadata` quedan como estaban.
+  const textoAntes = textoDeContenido(result.content)
+  const vista = result as typeof result & { output?: string }
+  vista.output = textoAntes
   yield* input.plugin.trigger(
     "tool.execute.after",
     { tool: key, sessionID: ctx.sessionID, callID: opts.toolCallId, args },
-    result,
+    vista,
   )
+  const textoNuevo = vista.output
+  delete vista.output
+  if (typeof textoNuevo === "string" && textoNuevo !== textoAntes) result.content = reemplazarTexto(result.content, textoNuevo)
 
   const textParts: string[] = []
   const attachments: Omit<SessionV1.FilePart, "id" | "sessionID" | "messageID">[] = []

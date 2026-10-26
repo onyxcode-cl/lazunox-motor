@@ -6,6 +6,8 @@ import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import { validarEsquema } from "@/cli/cmd/run-banderas"
 import { ToolJsonSchema } from "@/tool/json-schema"
 import { PartID } from "@/session/schema"
+import { ToolID } from "@/tool/schema"
+import { TRUNCATION_DIR } from "@/tool/truncation-dir"
 
 // Lazunox: ganchos de usuario por comando (como los hooks de Claude Code), solo del archivo que la APP fija en LAZUNOX_HOOKS_FILE.
 // Un proyecto NO puede traer sus propios ganchos (sería ejecución de código de un repositorio ajeno): el archivo vive en la carpeta de datos de
@@ -20,6 +22,10 @@ import { PartID } from "@/session/schema"
 //   SubagentStop      un ayudante quedó ocioso (informativo; si el bucle llama a `experimental.session.stop` con `subagente`, puede hacerlo seguir).
 //   Stop              la sesión va a parar: stdout {"decision":"block","reason":"…"} (o código 2 + stderr) = SEGUIR trabajando con `reason` como
 //                     instrucción. Tope: 5 continuaciones seguidas por gancho; al llegar, ese gancho se ignora y la sesión para.
+//   PostToolUse       además (6.8): stdout {"updatedToolOutput":"<texto>"} con código 0 REEMPLAZA el texto de la salida (≤ 64 KB; solo texto, nunca
+//                     metadata ni archivos). El ORIGINAL completo se guarda en la carpeta de salidas (`Truncate.DIR`) y su ruta va en el texto.
+//   PostToolUseFailure  (6.8) la herramienta falló: solo informa y puede añadir contexto (≤ 2000) al error. No oculta ni borra el fallo.
+//   PermissionDenied  (6.8) una regla o un plugin negó un permiso: solo informa (stdin con la herramienta y las reglas, sin argumentos). Sin reintento.
 //   PreToolUse        además: stdout {"updatedInput":{…}} (o hookSpecificOutput.updatedInput) reemplaza los argumentos SI validan contra el
 //                     esquema de la herramienta; si no validan (o no se conoce el esquema) se ignora y se registra.
 
@@ -33,6 +39,8 @@ export type Config = {
   SessionStart: Gancho[]
   UserPromptSubmit: Gancho[]
   SubagentStop: Gancho[]
+  PostToolUseFailure: Gancho[]
+  PermissionDenied: Gancho[]
 }
 const VACIO = (): Config => ({
   PreToolUse: [],
@@ -43,6 +51,8 @@ const VACIO = (): Config => ({
   SessionStart: [],
   UserPromptSubmit: [],
   SubagentStop: [],
+  PostToolUseFailure: [],
+  PermissionDenied: [],
 })
 
 const MAX_ARCHIVO = 64 * 1024
@@ -57,6 +67,13 @@ const PRESUPUESTO_EVENTO_MS = 120_000
 const MAX_CONTEXTO = 4000
 const MAX_RAZON = 2000
 const MAX_ARGS_JSON = 256 * 1024
+/** 6.8: texto máximo (en bytes) con que un gancho puede reemplazar una salida. */
+export const MAX_SALIDA_REEMPLAZO = 64 * 1024
+/** 6.8: salida de la herramienta que se le pasa al gancho por stdin (el original completo se guarda aparte). */
+const MAX_ENTRADA_SALIDA = 256 * 1024
+/** 6.8: tope de stdout de un gancho `PostToolUse` (el JSON escapa el texto, así que es mayor que el texto permitido). */
+const MAX_SALIDA_POST = 512 * 1024
+const MAX_CONTEXTO_FALLO = 2000
 
 /** Interpreta el archivo de ganchos; lo inválido se descarta (nunca lanza). */
 export const leerConfig = (text: string): Config => {
@@ -87,10 +104,12 @@ export const leerConfig = (text: string): Config => {
     SessionStart: lista(hooks.SessionStart),
     UserPromptSubmit: lista(hooks.UserPromptSubmit),
     SubagentStop: lista(hooks.SubagentStop),
+    PostToolUseFailure: lista(hooks.PostToolUseFailure),
+    PermissionDenied: lista(hooks.PermissionDenied),
   }
 }
 
-export type Salida = { decision?: "block"; reason?: string; updatedInput?: unknown; context?: string }
+export type Salida = { decision?: "block"; reason?: string; updatedInput?: unknown; context?: string; updatedToolOutput?: unknown }
 
 /** Interpreta el stdout de un gancho como JSON de decisión. Texto que no es un objeto JSON, o JSON roto, = sin decisión (nunca lanza). */
 export const leerSalida = (stdout: string): Salida => {
@@ -110,6 +129,8 @@ export const leerSalida = (stdout: string): Salida => {
   if (typeof o.reason === "string") out.reason = o.reason.slice(0, MAX_RAZON)
   const ui = "updatedInput" in o ? o.updatedInput : h.updatedInput
   if (ui !== undefined) out.updatedInput = ui
+  const uo = "updatedToolOutput" in o ? o.updatedToolOutput : h.updatedToolOutput
+  if (uo !== undefined) out.updatedToolOutput = uo
   const ctx = typeof o.additionalContext === "string" ? o.additionalContext : typeof h.additionalContext === "string" ? h.additionalContext : undefined
   if (ctx) out.context = ctx.slice(0, MAX_CONTEXTO)
   return out
@@ -133,6 +154,22 @@ export const textoContexto = (r: Resultado): string => {
   if (s.decision === "block") return ""
   if (r.stdout.trim().startsWith("{") && (s.context !== undefined || Object.keys(s).length > 0)) return (s.context ?? "").trim()
   return r.stdout.trim().slice(0, MAX_CONTEXTO)
+}
+
+/** El texto de un gancho es DATO no confiable: sin escapes ANSI ni control, y sin poder cerrar o fingir las etiquetas de sobre del motor. */
+export const neutralizarSalida = (t: string) =>
+  t
+    .replace(/\u001b\[[0-9;?]*[ -/]*[@-~]/g, "")
+    .replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f\u200e\u200f\u202a-\u202e\u2066-\u2069]/g, "")
+    .replace(/<(\/?)(system[-_a-z]*|task[-_a-z]*|summary|shell_[a-z_]+|linea_[a-z_]+|contexto[-_a-z]*|objetivo[-_a-z]*|subagent[-_a-z]*|lazunox[-_a-z]*)\b/gi, "<\u200b$1$2")
+
+/** Valida `updatedToolOutput`: texto no vacío de hasta 64 KB. Devuelve el texto neutralizado o el motivo de rechazo. */
+export const validarSalidaNueva = (v: unknown): { texto: string } | { motivo: string } => {
+  if (typeof v !== "string") return { motivo: "updatedToolOutput no es texto" }
+  if (Buffer.byteLength(v, "utf-8") > MAX_SALIDA_REEMPLAZO) return { motivo: `updatedToolOutput pasa de ${MAX_SALIDA_REEMPLAZO / 1024} KB` }
+  const texto = neutralizarSalida(v)
+  if (!texto.trim()) return { motivo: "updatedToolOutput está vacío" }
+  return { texto }
 }
 
 type Esquemas = { parameters?: unknown; jsonSchema?: unknown }
@@ -189,6 +226,12 @@ export class Continuaciones {
 /** Mensajes que el plugin registra al ignorar algo (últimos 50; también van al registro del motor). Útil para pruebas y diagnóstico. */
 export const registroGanchos: string[] = []
 
+/** Ganchos `PermissionDenied` en vuelo (no se esperan al negar); las pruebas los esperan con `esperarPendientes`. */
+const pendientes = new Set<Promise<unknown>>()
+export const esperarPendientes = async () => {
+  while (pendientes.size) await Promise.allSettled([...pendientes])
+}
+
 /** ¿El gancho aplica a esta herramienta? Sin matcher o «*» = todas; si no, expresión regular anclada («bash|edit»). */
 export const aplica = (g: Gancho, tool: string) => {
   if (!g.matcher || g.matcher === "*") return true
@@ -210,7 +253,7 @@ const matar = (pid: number | undefined) => {
 }
 
 /** Ejecuta un gancho: JSON por stdin, con tiempo máximo y salida acotada. */
-export const ejecutar = (g: Gancho, payload: unknown, cwd: string): Promise<Resultado> =>
+export const ejecutar = (g: Gancho, payload: unknown, cwd: string, maxSalida = MAX_SALIDA): Promise<Resultado> =>
   new Promise((resolve) => {
     const child = spawn(g.command, [], {
       shell: true,
@@ -223,7 +266,7 @@ export const ejecutar = (g: Gancho, payload: unknown, cwd: string): Promise<Resu
     let stdout = ""
     let stderr = ""
     let timedOut = false
-    const tope = (acc: string, d: Buffer) => (acc.length >= MAX_SALIDA ? acc : (acc + d.toString("utf-8")).slice(0, MAX_SALIDA))
+    const tope = (acc: string, d: Buffer) => (acc.length >= maxSalida ? acc : (acc + d.toString("utf-8")).slice(0, maxSalida))
     child.stdout.on("data", (d: Buffer) => (stdout = tope(stdout, d)))
     child.stderr.on("data", (d: Buffer) => (stderr = tope(stderr, d)))
     const timer = setTimeout(() => {
@@ -444,14 +487,68 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
       }
     },
     "tool.execute.after": async (i, o) => {
-      for (const g of config(file).PostToolUse) {
-        if (!aplica(g, i.tool)) continue
-        const r = await ejecutar(g, { event: "PostToolUse", tool: i.tool, args: i.args, sessionID: i.sessionID, cwd, output: String(o.output ?? "").slice(0, 4000) }, cwd)
+      const lista = config(file).PostToolUse.filter((g) => aplica(g, i.tool))
+      if (!lista.length) return
+      const inicial = typeof o.output === "string" ? o.output : undefined
+      let actual = inicial
+      let filtrado = false
+      for (const g of lista) {
+        const r = await ejecutar(g, { event: "PostToolUse", tool: i.tool, args: i.args, sessionID: i.sessionID, cwd, output: String(actual ?? "").slice(0, MAX_ENTRADA_SALIDA) }, cwd, MAX_SALIDA_POST)
         if (r.code === 2) {
           const why = (r.stderr || r.stdout).trim().slice(0, 1000)
-          if (why && typeof o.output === "string") o.output += `\n\n[Gancho de usuario]: ${why}`
+          if (why && actual !== undefined) actual += `\n\n[Gancho de usuario]: ${neutralizarSalida(why)}`
+          continue
         }
+        // 6.8: código 0 y {"updatedToolOutput":"…"} reemplaza el texto. Código ≠ 0, tiempo vencido o texto inválido: no cambia nada.
+        if (r.code !== 0 || r.timedOut || actual === undefined) continue
+        const nuevo = leerSalida(r.stdout).updatedToolOutput
+        if (nuevo === undefined) continue
+        const v = validarSalidaNueva(nuevo)
+        if ("motivo" in v) {
+          registrar(`PostToolUse: updatedToolOutput de «${g.command.slice(0, 80)}» para ${i.tool} se ignora: ${v.motivo}`)
+          continue
+        }
+        actual = v.texto
+        filtrado = true
       }
+      if (actual === inicial || actual === undefined) return
+      if (!filtrado) {
+        o.output = actual
+        return
+      }
+      // El original completo queda en disco ANTES de reemplazar: si no se puede guardar, no se reemplaza (un filtro nunca debe ocultar sin rastro).
+      let ruta: string
+      try {
+        fs.mkdirSync(TRUNCATION_DIR, { recursive: true })
+        ruta = path.join(TRUNCATION_DIR, ToolID.ascending())
+        fs.writeFileSync(ruta, inicial ?? "")
+      } catch (e) {
+        registrar(`PostToolUse: no se pudo guardar la salida original de ${i.tool}; no se reemplaza (${e instanceof Error ? e.message : String(e)})`)
+        return
+      }
+      o.output = `[Un gancho de usuario filtró esta salida. El original completo (${Buffer.byteLength(inicial ?? "", "utf-8")} bytes) está en ${ruta}; si algo parece faltar, léelo con la herramienta read.]\n${actual}`
+    },
+    // 6.8 PostToolUseFailure: solo informa; su stdout (código 0, ≤ 2000) se añade al error que ve el modelo. El fallo sigue siendo fallo.
+    "tool.execute.failure": async (i, o) => {
+      const extra: string[] = []
+      for (const g of config(file).PostToolUseFailure) {
+        if (!aplica(g, i.tool)) continue
+        const r = await ejecutar(g, { event: "PostToolUseFailure", tool: i.tool, args: i.args, sessionID: i.sessionID, cwd, error: i.error }, cwd)
+        const t = neutralizarSalida(textoContexto(r))
+        if (t) extra.push(t)
+      }
+      if (extra.length) o.contexto = extra.join("\n").slice(0, MAX_CONTEXTO_FALLO)
+    },
+    // 6.8 PermissionDenied: solo informa y NO espera (no retrasa la negativa). Sin argumentos de la llamada. No hay reintento.
+    "permission.denied": async (i) => {
+      const lista = config(file).PermissionDenied.filter((g) => aplica(g, i.permission))
+      if (!lista.length) return
+      const p = (async () => {
+        for (const g of lista) {
+          await ejecutar(g, { event: "PermissionDenied", tool: i.permission, sessionID: i.sessionID, cwd, origen: i.origen, reglas: i.reglas }, cwd).catch(() => {})
+        }
+      })().finally(() => pendientes.delete(p))
+      pendientes.add(p)
     },
   }
 }
