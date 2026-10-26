@@ -591,3 +591,10 @@ Prueba: `test/lazunox/revisor-git-modos.test.ts` (rulesets de la app copiados de
 - **Desviación del plan**: `task` comparte el candado (el plan lo pone exclusivo). Si fuera exclusivo, `lote` y los ayudantes simultáneos pasarían a ejecutarse uno tras otro; el ayudante escribe en SU sesión con SU candado. Dos ayudantes que editen el mismo archivo siguen sin protegerse entre sí.
 - **Cambia respecto a 5B**: `edit` + `read` en un mismo paso ya no se solapan (`paralelo-lectura.test.ts` actualizado). Interruptor `LAZUNOX_PARALELISMO_SEGURO=0` = comportamiento anterior.
 - Pruebas: `test/lazunox/paralelismo-seguro.test.ts` (núcleo + motor con proveedor falso).
+
+## Ola 7 — 7.13 Reparación de la entrada de herramientas (rama `feat/ola7-herramientas`)
+
+- **Dónde**: `tool/reparar-entrada.ts` (puro) y su cableado al final de `SessionTools.resolve` (`session/tools.ts`), ANTES de los ganchos `tool.execute.before`, del candado y de los permisos: la entrada reparada es la que se evalúa. **Desviación del plan**: no está en `experimental_repairToolCall` de `llm.ts`, porque las herramientas se declaran con `jsonSchema()` sin validador y el SDK nunca marca la entrada como inválida (ese gancho solo se dispara por nombre desconocido o JSON ilegible, y sigue como estaba). Cubre las herramientas del registro, las MCP directas, los recursos MCP y los `arguments` de `mcp_call` (con el esquema de la herramienta diferida).
+- **Lista cerrada**: objeto/arreglo que llegó como texto JSON (raíz o anidado); número/entero desde texto decimal; booleano desde «true»/«false»; `null` en un opcional de tipo simple (se quita la clave); valor suelto donde se espera un arreglo (`"a"` -> `["a"]`); `$ref` locales; profundidad máx. 6.
+- **Nunca**: inventar un obligatorio, tocar `null` en obligatorios/enum/const/uniones, adivinar entre ramas de una unión, quitar claves desconocidas, convertir hex/vacío/`Infinity`/enteros fuera de rango seguro, tocar cadenas esperadas como texto. Lo no reparable llega igual que antes y la herramienta lo rechaza con su mensaje.
+- Interruptor `LAZUNOX_REPARAR_ENTRADA=0`. Pruebas: `test/lazunox/reparar-entrada.test.ts`.
