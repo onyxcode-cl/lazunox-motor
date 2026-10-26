@@ -704,7 +704,9 @@ const layer: Layer.Layer<
       })
       const msgs = yield* messages({ sessionID: input.sessionID })
       const idMap = new Map<string, MessageID>()
-      const target = input.messageID ? msgs.findIndex((msg) => msg.info.id === input.messageID) : msgs.length
+      // Lazunox 5D: sin `messageID` en una sesión rebobinada, el corte es el punto de rebobinado (lo deshecho no resucita en el fork).
+      const corte = input.messageID ?? original.revert?.messageID
+      const target = corte ? msgs.findIndex((msg) => msg.info.id === corte) : msgs.length
 
       for (const msg of msgs.slice(0, target < 0 ? msgs.length : target)) {
         const newID = MessageID.ascending()
