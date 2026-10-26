@@ -36,6 +36,28 @@ export const permissionHandlers = HttpApiBuilder.group(InstanceHttpApi, "permiss
       return true
     })
 
-    return handlers.handle("list", list).handle("reply", reply)
+    // Lazunox (Ola 7, 7.22): los «siempre» guardados.
+    const siempreList = Effect.fn("PermissionHttpApi.siempreList")(function* () {
+      return svc.siempre ? yield* svc.siempre.listar() : { activo: false, reglas: [] }
+    })
+    const siempreRemoveAll = Effect.fn("PermissionHttpApi.siempreRemoveAll")(function* () {
+      return { borradas: svc.siempre ? yield* svc.siempre.borrarTodos() : 0 }
+    })
+    const siempreRemove = Effect.fn("PermissionHttpApi.siempreRemove")(function* (ctx: { params: { id: string } }) {
+      const ok = svc.siempre ? yield* svc.siempre.borrar(ctx.params.id) : false
+      if (!ok)
+        return yield* new PermissionNotFoundError({
+          requestID: ctx.params.id,
+          message: `Saved permission not found: ${ctx.params.id}`,
+        })
+      return true
+    })
+
+    return handlers
+      .handle("list", list)
+      .handle("reply", reply)
+      .handle("siempreList", siempreList)
+      .handle("siempreRemoveAll", siempreRemoveAll)
+      .handle("siempreRemove", siempreRemove)
   }),
 )

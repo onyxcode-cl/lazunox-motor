@@ -296,6 +296,12 @@ const scenarios: Scenario[] = [
       body: { reply: "once" },
     }))
     .json(404, object, "status"),
+  http.protected.get("/permission/siempre", "permission.siempre.list").json(200, object),
+  http.protected
+    .delete("/permission/siempre/{id}", "permission.siempre.remove")
+    .at((ctx) => ({ path: route("/permission/siempre/{id}", { id: "psv_httpapi_missing" }), headers: ctx.headers() }))
+    .json(404, object, "status"),
+  http.protected.delete("/permission/siempre", "permission.siempre.removeAll").json(200, object),
   http.protected.get("/question", "question.list").json(200, array),
   http.protected
     .post("/question/{requestID}/reply", "question.reply.invalid")

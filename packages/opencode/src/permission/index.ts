@@ -17,6 +17,12 @@ export interface Interface {
   readonly ask: (input: PermissionV1.AskInput) => Effect.Effect<void, PermissionV1.Error>
   readonly reply: (input: PermissionV1.ReplyInput) => Effect.Effect<void, PermissionV1.NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<PermissionV1.Request>>
+  /** Lazunox (Ola 7, 7.22): gestionar los «siempre» guardados de esta carpeta (opcional para no romper dobles de prueba). */
+  readonly siempre?: {
+    readonly listar: () => Effect.Effect<{ activo: boolean; reglas: SiempreDisco.Guardada[]; aviso?: string }>
+    readonly borrar: (id: string) => Effect.Effect<boolean>
+    readonly borrarTodos: () => Effect.Effect<number>
+  }
 }
 
 interface PendingEntry {
@@ -265,7 +271,39 @@ const layer = Layer.effect(
       return Array.from(pending.values(), (item) => item.info)
     })
 
-    return Service.of({ ask, reply, list })
+    // Lazunox (Ola 7, 7.22): además de quitarlo del disco, se quita de lo ya aprobado en memoria (si no, seguiría valiendo hasta reiniciar).
+    const olvidarEnMemoria = (approved: PermissionV1.Rule[], r: { permission: string; pattern: string }) => {
+      for (let i = approved.length - 1; i >= 0; i--)
+        if (approved[i]!.permission === r.permission && approved[i]!.pattern === r.pattern) approved.splice(i, 1)
+    }
+    const siempre = {
+      listar: Effect.fn("Permission.siempre.listar")(function* () {
+        const { directory } = yield* InstanceState.get(state)
+        const l = SiempreDisco.leer(directory)
+        const aviso =
+          l.estado === "corrupto"
+            ? "El archivo de «siempre» guardados está dañado y se ignora; borrar todos lo elimina."
+            : l.ignoradas > 0
+              ? `${l.ignoradas} regla(s) guardadas no son válidas y se ignoran.`
+              : undefined
+        return { activo: SiempreDisco.activo(), reglas: l.reglas, ...(aviso ? { aviso } : {}) }
+      }),
+      borrar: Effect.fn("Permission.siempre.borrar")(function* (id: string) {
+        const st = yield* InstanceState.get(state)
+        const quitada = SiempreDisco.borrarUno(st.directory, id)
+        if (!quitada) return false
+        olvidarEnMemoria(st.approved, quitada)
+        return true
+      }),
+      borrarTodos: Effect.fn("Permission.siempre.borrarTodos")(function* () {
+        const st = yield* InstanceState.get(state)
+        const quitadas = SiempreDisco.borrarTodas(st.directory)
+        for (const r of quitadas) olvidarEnMemoria(st.approved, r)
+        return quitadas.length
+      }),
+    }
+
+    return Service.of({ ask, reply, list, siempre })
   }),
 )
 
