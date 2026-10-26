@@ -10,7 +10,7 @@ import { permisoDeHerramienta } from "@opencode-ai/core/v1/config/agent"
  *  - `model`: `inherit` y los alias de Claude `sonnet`/`opus` -> hereda el modelo del padre (no se asume una cuenta de Anthropic);
  *    `haiku` -> `small` (el modelo pequeño del mismo proveedor que el padre); `proveedor/modelo` se respeta; un ID suelto
  *    (`claude-3-5-sonnet-...`) se ignora y hereda.
- *  - `skills` y `background` pasan tal cual.
+ *  - `skills` y `background` pasan tal cual; `omitClaudeMd: true` pasa a `contexto: "minimo"`.
  *  - Se IGNORAN siempre `permissionMode`, `hooks`, `mcpServers`, `memory`, `permission` y cualquier clave desconocida: un archivo
  *    de la carpeta no puede cambiar el modo de permisos ni añadir servidores ni ejecutar comandos propios.
  *  - `color` solo si es un color válido (hex o de tema); los nombres de Claude (`blue`) se descartan.
@@ -95,6 +95,8 @@ export function traducirClaude(data: Record<string, unknown>, opts: { soloClaude
   const skills = lista(data.skills)
   if (skills.length) out.skills = skills
   if (typeof data.background === "boolean") out.background = data.background
+  // Lazunox (6.3): `omitClaudeMd: true` de Claude Code equivale a contexto mínimo (solo surte efecto con la bandera y sin permiso de editar).
+  if (data.omitClaudeMd === true) out.contexto = "minimo"
 
   out.mode = "subagent"
   return out

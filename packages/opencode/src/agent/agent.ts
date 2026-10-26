@@ -63,6 +63,8 @@ export const Info = Schema.Struct({
   estricto: Schema.optional(PermissionV1.Ruleset),
   background: Schema.optional(Schema.Boolean),
   skills: Schema.optional(Schema.Array(Schema.String)),
+  // Lazunox (Ola 6, 6.3): `minimo` = como ayudante no carga AGENTS.md, skills ni MCP (solo con LAZUNOX_AYUDANTES_MINIMOS=1 y si no puede editar).
+  contexto: Schema.optional(Schema.Literals(["completo", "minimo"])),
 }).annotate({ identifier: "Agent" })
 export type Info = DeepMutable<Schema.Schema.Type<typeof Info>>
 
@@ -239,6 +241,7 @@ const layer = Layer.effect(
             ),
             description: `Fast agent specialized for exploring codebases. Use this when you need to quickly find files by patterns (eg. "src/components/**/*.tsx"), search code for keywords (eg. "API endpoints"), or answer questions about the codebase (eg. "how do API endpoints work?"). When calling this agent, specify the desired thoroughness level: "quick" for basic searches, "medium" for moderate exploration, or "very thorough" for comprehensive analysis across multiple locations and naming conventions.`,
             prompt: PROMPT_EXPLORE,
+            contexto: "minimo",
             // Lazunox: lectura barata, modelo pequeño del mismo proveedor que el padre (si no hay, hereda).
             modelSmall: true,
             options: {},
@@ -270,6 +273,7 @@ const layer = Layer.effect(
               }),
             ),
             prompt: PROMPT_VERIFICADOR,
+            contexto: "minimo",
             modelSmall: true,
             options: {},
             mode: "subagent",
@@ -290,6 +294,7 @@ const layer = Layer.effect(
               }),
             ),
             prompt: PROMPT_REVISOR,
+            contexto: "minimo",
             modelSmall: true,
             options: {},
             mode: "subagent",
@@ -381,6 +386,7 @@ const layer = Layer.effect(
           item.options = mergeDeep(item.options, value.options ?? {})
           item.background = value.background ?? item.background
           item.skills = value.skills ?? item.skills
+          item.contexto = value.contexto ?? item.contexto
           const declarado = Permission.fromConfig(value.permission ?? {})
           if (creado && item.mode !== "primary") {
             // Lazunox (2A): un agente nuevo de carpeta (subagente) solo puede RESTRINGIR lo que hereda (defaults + config del

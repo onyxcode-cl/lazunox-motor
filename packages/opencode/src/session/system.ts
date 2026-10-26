@@ -75,7 +75,12 @@ export function stableDate(now: Date = new Date()) {
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
-  readonly mcp: (agent: Agent.Info, permission?: PermissionV1.Ruleset) => Effect.Effect<string | undefined>
+  // `minimo` (Lazunox 6.3): solo los servidores con alguna herramienta que el agente pueda usar; los que no declaran herramientas, fuera.
+  readonly mcp: (
+    agent: Agent.Info,
+    permission?: PermissionV1.Ruleset,
+    minimo?: boolean,
+  ) => Effect.Effect<string | undefined>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SystemPrompt") {}
@@ -140,10 +145,12 @@ const layer = Layer.effect(
         ].join("\n")
       }),
 
-      mcp: Effect.fn("SystemPrompt.mcp")(function* (agent: Agent.Info, permission?: PermissionV1.Ruleset) {
+      mcp: Effect.fn("SystemPrompt.mcp")(function* (agent: Agent.Info, permission?: PermissionV1.Ruleset, minimo?: boolean) {
         const ruleset = Permission.merge(agent.permission, permission ?? [])
         const instructions = (yield* mcp.instructions()).filter(
-          (item) => item.tools.length === 0 || Permission.disabled(item.tools, ruleset).size < item.tools.length,
+          (item) =>
+            (item.tools.length === 0 && !minimo) ||
+            (item.tools.length > 0 && Permission.disabled(item.tools, ruleset).size < item.tools.length),
         )
         if (instructions.length === 0) return
 

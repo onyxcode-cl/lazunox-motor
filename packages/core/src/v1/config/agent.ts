@@ -51,6 +51,10 @@ const AgentSchema = Schema.StructWithRest(
     skills: Schema.optional(Schema.mutable(Schema.Array(Schema.String))).annotate({
       description: "Skills this agent may use (the rest are denied). Absent means the usual skills.",
     }),
+    contexto: Schema.optional(Schema.Literals(["completo", "minimo"])).annotate({
+      description:
+        'Context for this agent when launched as a subagent: "minimo" skips AGENTS.md, the skills list and MCP instructions (read-only agents only; ignored if the agent can edit). Needs LAZUNOX_AYUDANTES_MINIMOS=1. Permissions do not change.',
+    }),
   }),
   [Schema.Record(Schema.String, Schema.Any)],
 )
@@ -76,6 +80,7 @@ const KNOWN_KEYS = new Set([
   "max_turns",
   "background",
   "skills",
+  "contexto",
 ])
 
 /** Nombre de herramienta (opencode o de Claude Code) -> clave de permiso. `write`, `edit` y `patch` comparten `edit`. */

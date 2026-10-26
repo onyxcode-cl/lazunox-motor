@@ -9,6 +9,8 @@ import { MessageV2 } from "../session/message-v2"
 import { Agent } from "../agent/agent"
 import { deriveSubagentSessionPermission } from "../agent/subagent-permissions"
 import { esParcial, marcarParcial } from "../agent/parcial"
+import * as Exhaustividad from "../agent/exhaustividad"
+import { ContextoMinimo } from "../session/contexto-minimo"
 import type { SessionPrompt } from "../session/prompt"
 import { Config } from "@/config/config"
 import { Effect, Exit, Schema, Scope } from "effect"
@@ -110,10 +112,18 @@ const BaseParameterFields = {
   command: Schema.optional(Schema.String).annotate({ description: "The command that triggered this task" }),
 }
 
-const BaseParameters = Schema.Struct(BaseParameterFields)
+// Lazunox (Ola 6, 6.3 · H4): `exhaustividad` solo existe en el esquema con LAZUNOX_AYUDANTES_MINIMOS=1 (apagado: esquema idéntico al de antes).
+const exhaustividadCampo = Schema.optional(Schema.Literals(Exhaustividad.NIVELES)).annotate({
+  description:
+    'Only for the "explore" agent: how much to search. "rapida" (quick, 6 steps), "media" (medium, 15) or "a_fondo" (very thorough, 40). Default: the usual limit.',
+})
+export const camposExhaustividad = (encendido: boolean) =>
+  (encendido ? { exhaustividad: exhaustividadCampo } : {}) as { exhaustividad: typeof exhaustividadCampo }
+const BaseParameters = Schema.Struct({ ...BaseParameterFields, ...camposExhaustividad(ContextoMinimo.activo()) })
 
 export const Parameters = Schema.Struct({
   ...BaseParameterFields,
+  ...camposExhaustividad(ContextoMinimo.activo()),
   background: Schema.optional(Schema.Boolean).annotate({
     description:
       "Run the agent in the background. You will be notified when it completes. DO NOT sleep, poll, or proactively check on its progress",
@@ -300,7 +310,10 @@ export const TaskTool = Tool.define(
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
-        const parts = yield* ops.resolvePromptParts(params.prompt)
+        // Lazunox (6.3 · H4): solo `explore` y solo con la bandera; baja el tope de pasos y añade una línea a la orden.
+        const nivel = ContextoMinimo.activo() && next.name === "explore" ? params.exhaustividad : undefined
+        if (nivel) Exhaustividad.fijar(nextSession.id, nivel)
+        const parts = yield* ops.resolvePromptParts(nivel ? `${Exhaustividad.linea(nivel)}\n\n${params.prompt}` : params.prompt)
         const result = yield* ops.prompt({
           messageID: MessageID.ascending(),
           sessionID: nextSession.id,
@@ -330,13 +343,14 @@ export const TaskTool = Tool.define(
           truncate.write,
         )
         // Lazunox (2A): si llegó a su `max_turns`, el informe lo dice.
-        if (next.steps !== undefined) {
+        const tope = Exhaustividad.topeEfectivo(next.steps, nivel)
+        if (tope !== undefined) {
           const turnosDados = (yield* sessions
             .messages({ sessionID: nextSession.id })
             .pipe(Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])))).filter(
             (m) => m.info.role === "assistant",
           ).length
-          if (esParcial({ maxTurns: next.steps, turnosDados })) return marcarParcial(informe, next.steps)
+          if (esParcial({ maxTurns: tope, turnosDados })) return marcarParcial(informe, tope)
         }
         return informe
       })

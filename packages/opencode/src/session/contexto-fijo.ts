@@ -8,6 +8,7 @@ import { Permission } from "@/permission"
 import { Session } from "./session"
 import { Instruction } from "./instruction"
 import { SystemPrompt } from "./system"
+import { ContextoMinimo } from "./contexto-minimo"
 import type { SessionID } from "./schema"
 
 export interface ContextoFijo {
@@ -52,7 +53,14 @@ const layer = Layer.effect(
         .join("\n")
       const agentes = tokensDe(agente.prompt) + tokensDe(ayudantes)
 
-      const skills = tokensDe(yield* sys.skills(agente))
+      // Lazunox (6.3): igual que en la petición real, un ayudante en contexto mínimo no suma skills, AGENTS.md ni MCP sin herramientas.
+      const minimo =
+        ContextoMinimo.decidir({
+          agent: agente,
+          esHija: session.parentID !== undefined,
+          permissionSesion: session.permission,
+        }) === "minimo"
+      const skills = minimo ? 0 : tokensDe(yield* sys.skills(agente))
 
       // MCP: instrucciones de los servidores y definiciones (nombre, descripción y esquema) de las herramientas visibles.
       const ruleset = Permission.merge(agente.permission, session.permission ?? [])
@@ -65,9 +73,9 @@ const layer = Layer.effect(
         const def = (defs as Record<string, MCP.McpTool>)[clave]!.def
         defsChars += clave.length + (def.description?.length ?? 0) + JSON.stringify(def.inputSchema ?? {}).length
       }
-      const mcpTokens = tokensDe(yield* sys.mcp(agente, session.permission)) + Math.ceil(defsChars / 4)
+      const mcpTokens = tokensDe(yield* (minimo ? sys.mcp(agente, session.permission, true) : sys.mcp(agente, session.permission))) + Math.ceil(defsChars / 4)
 
-      const texto = yield* instruction.system().pipe(Effect.orElseSucceed(() => [] as string[]))
+      const texto = minimo ? [] : yield* instruction.system().pipe(Effect.orElseSucceed(() => [] as string[]))
       const instrucciones = tokensDe(texto.join("\n\n"))
 
       const reglasPorRuta = yield* instruction.contarReglas()

@@ -61,6 +61,8 @@ import { Objetivo } from "./objetivo"
 import * as Presupuesto from "./presupuesto"
 import { SessionProgreso } from "./progreso"
 import { marcaModoPlan } from "./plan-modo"
+import { ContextoMinimo } from "./contexto-minimo"
+import * as ExhaustividadExplore from "../agent/exhaustividad"
 import { SessionTurnos } from "./turnos"
 import { LLMEvent } from "@opencode-ai/llm"
 
@@ -1471,7 +1473,8 @@ const layer = Layer.effect(
             yield* events.publish(Session.Event.Error, { sessionID, error: error.toObject() })
             throw error
           }
-          const maxSteps = agent.steps ?? Infinity
+          // Lazunox (6.3 · H4): nivel de exhaustividad pedido a `explore`; solo puede BAJAR el tope propio del agente.
+          const maxSteps = ExhaustividadExplore.topeEfectivo(agent.steps, ExhaustividadExplore.nivelDe(sessionID)) ?? Infinity
           const isLastStep = step >= maxSteps
           msgs = yield* SessionReminders.apply({ messages: msgs, agent, session }).pipe(
             Effect.provideService(RuntimeFlags.Service, flags),
@@ -1551,11 +1554,23 @@ const layer = Layer.effect(
 
             yield* plugin.trigger("experimental.chat.messages.transform", {}, { messages: msgs })
 
+            // Lazunox (6.3): contexto mínimo para ayudantes de solo lectura (apagado por defecto). Solo recorta contexto fijo;
+            // los permisos, las rutas protegidas y los topes no pasan por aquí.
+            const contexto = ContextoMinimo.decidir({
+              agent,
+              esHija: session.parentID !== undefined,
+              permissionSesion: session.permission,
+            })
+            if (contexto === "rechazado-edita" || contexto === "rechazado-nunca")
+              yield* Effect.logWarning(
+                `contexto "minimo" ignorado para el agente ${agent.name} (${contexto === "rechazado-edita" ? "puede editar" : "agente que nunca lo usa"})`,
+              )
+            const minimo = contexto === "minimo"
             const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
-              sys.skills(agent),
+              minimo ? Effect.succeed(undefined) : sys.skills(agent),
               sys.environment(model),
-              instruction.system().pipe(Effect.orDie),
-              sys.mcp(agent, session.permission),
+              minimo ? Effect.succeed([] as string[]) : instruction.system().pipe(Effect.orDie),
+              minimo ? sys.mcp(agent, session.permission, true) : sys.mcp(agent, session.permission),
               MessageV2.toModelMessagesEffect(msgs, model),
             ])
             // Lazunox (P02): orden estable para la caché; el entorno (con la fecha) va al final.
@@ -1564,7 +1579,8 @@ const layer = Layer.effect(
             if (format.type === "json_schema") system.push(STRUCTURED_OUTPUT_SYSTEM_PROMPT)
             const result = yield* handle.process({
               user: lastUser,
-              agent,
+              // Sin prompt propio, un ayudante en contexto mínimo usa el corto en vez del base largo del proveedor.
+              agent: minimo && !agent.prompt ? { ...agent, prompt: ContextoMinimo.promptCorto } : agent,
               permission: session.permission,
               sessionID,
               parentSessionID: session.parentID,
