@@ -73,7 +73,7 @@ export const WriteTool = Tool.define(
 
           let output = "Wrote file successfully."
           yield* lsp.touchFile(filepath, "document")
-          const diagnostics = yield* lsp.diagnostics()
+          const diagnostics = yield* lsp.diagnostics(filepath) // Lazunox (4B): con LAZUNOX_LSP=1 solo este archivo
           const normalizedFilepath = FSUtil.normalizePath(filepath)
           let projectDiagnosticsCount = 0
           for (const [file, issues] of Object.entries(diagnostics)) {

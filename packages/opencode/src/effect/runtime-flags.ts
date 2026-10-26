@@ -51,6 +51,11 @@ export class Service extends ConfigService.Service<Service>()("@opencode/Runtime
     Config.withDefault(""),
     Config.map((value) => value === "1" || value === "true"),
   ),
+  // Lazunox (4B, P16): LSP estable (herramienta `lsp` + diagnósticos tras edit/write con servidores del PATH). Ausente = apagado.
+  lazunoxLsp: Config.string("LAZUNOX_LSP").pipe(
+    Config.withDefault(""),
+    Config.map((value) => value === "1" || value === "true"),
+  ),
   experimentalCodeMode: enabledByExperimental("OPENCODE_EXPERIMENTAL_CODE_MODE"),
   experimentalEventSystem: enabledByExperimental("OPENCODE_EXPERIMENTAL_EVENT_SYSTEM"),
   experimentalWorkspaces: enabledByExperimental("OPENCODE_EXPERIMENTAL_WORKSPACES"),
