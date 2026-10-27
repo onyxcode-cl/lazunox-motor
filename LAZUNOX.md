@@ -844,3 +844,9 @@ El banco mostró que el modelo leía `.entorno` con `read` y la clave llegaba si
 - **Aparte**: `LAZUNOX_RETRY_TOPE=0` apaga el tope de 15 min al `retry-after` (antes 2^31 ms, unos 24 días).
 - **Medido** (binario `tokens/v2`, sha 16973e02…, proveedor falso que guarda el cuerpo de la petición): primera petición de T01 34.063 B a 21.819 B (-36 %); T12 82.553 B a 24.331 B (-71 %, con `tool_search` + `mcp_call` en lugar de 40 herramientas MCP). Con modelo real (deepseek-v4.1-flash, **n=1 por tarea**, contra la mediana n=3 del comparativo): tokens por paso T01 9.043 a 6.436, T12 22.794 a 8.088, T13 9.820 a 6.715; 3/3 éxitos. **No hay n>=5**: es una verificación de humo, no una decisión estadística. Detalle en `scripts/engine-bench/linea-base/real-go-ola7-tokens-2026-10-27/` de la app.
 - **Sin hacer**: prompts compactos de Claude, GPT, Gemini y Codex; compactación sobre el mismo prefijo (`compaction.ts` sigue mandando `tools:{}`/`system:[]`); recorte de `cuaderno` y `shell_wait`; recorte de las descripciones de los agentes `revisor`/`verificador`.
+
+## Versión lazunox.13 (candidato)
+
+- Etiqueta de la futura release: `v1.19.0-lazunox.13`. La versión interna del binario sigue siendo `1.19.0` (la etiqueta `lazunox.N` solo vive en el repositorio y en `pin.json` de la app).
+- Código: `feat/ola7-final` (Ola 7 completa: A, B, C, D y el recorte de tokens 7.2) sobre `main` del fork (b3ccb17 = lazunox.12 + 6.3). Sin otros cambios de código en esta rama.
+- Encendido por defecto: ahorro de tokens (`LAZUNOX_AHORRO_TOKENS=0` lo apaga), sanitizador de secretos para lo mostrado y guardado, paralelismo seguro, edición segura. Apagado por defecto: `LAZUNOX_SANITIZAR_MODELO`, flujos 7.17 (`LAZUNOX_FLUJOS`), tareas programadas 7.12.
