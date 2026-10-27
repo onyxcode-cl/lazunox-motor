@@ -48,6 +48,7 @@ import { Cause, Effect, Exit, Latch, Layer, Option, Scope, Context, Schema, Type
 import { InstanceState } from "@/effect/instance-state"
 import { TaskTool, type TaskPromptOps } from "@/tool/task"
 import { LazunoxWake } from "@/tool/lazunox-wake"
+import { Programadas } from "./programadas"
 import { SessionRunState } from "./run-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { EventV2Bridge } from "@/event-v2-bridge"
@@ -167,6 +168,7 @@ const layer = Layer.effect(
     const cancel = Effect.fn("SessionPrompt.cancel")(function* (sessionID: SessionID) {
       yield* Effect.logInfo("cancel", { "session.id": sessionID })
       LazunoxWake.markStopped(String(sessionID)) // Lazunox: un aviso de un trabajo anterior no reanuda una sesión detenida
+      Programadas.borrarTodas(String(sessionID)) // Lazunox (7.12): Detener también borra las tareas programadas de la sesión (nada sigue solo)
       // Lazunox: Detener cierra los formularios MCP abiertos de la sesión (publica rejected/abort y contesta cancel al servidor).
       yield* elicitation.cancelSession(sessionID, "abort")
       yield* state.cancel(sessionID)

@@ -31,6 +31,9 @@ import { LspTool } from "./lsp"
 import * as Truncate from "./truncate"
 import { ApplyPatchTool } from "./apply_patch"
 import { CuadernoTool } from "./cuaderno"
+import { BorrarTool, EsperarTool, ListarTool, ProgramarTool } from "./programadas"
+import { Programadas } from "@/session/programadas"
+import { SessionStatus } from "@/session/status"
 import { cuadernoHabilitado } from "./cuaderno-registro"
 import { Glob } from "@opencode-ai/core/util/glob"
 import path from "path"
@@ -122,6 +125,10 @@ const layer = Layer.effect(
     const greptool = yield* GrepTool
     const patchtool = yield* ApplyPatchTool
     const cuaderno = yield* CuadernoTool
+    const programar = yield* ProgramarTool
+    const listarProgramadas = yield* ListarTool
+    const borrarProgramada = yield* BorrarTool
+    const esperarYContinuar = yield* EsperarTool
     const skilltool = yield* SkillTool
     const agent = yield* Agent.Service
     const codeMode = flags.experimentalCodeMode ? yield* Effect.promise(() => import("./code-mode")) : undefined
@@ -235,6 +242,10 @@ const layer = Layer.effect(
           skill: Tool.init(skilltool),
           patch: Tool.init(patchtool),
           cuaderno: Tool.init(cuaderno),
+          programar: Tool.init(programar),
+          listarProgramadas: Tool.init(listarProgramadas),
+          borrarProgramada: Tool.init(borrarProgramada),
+          esperarYContinuar: Tool.init(esperarYContinuar),
           question: Tool.init(question),
           lsp: Tool.init(lsptool),
           plan: Tool.init(plan),
@@ -265,6 +276,8 @@ const layer = Layer.effect(
             tool.patch,
             // Lazunox (7.15): solo si el proyecto tiene cuadernos (LAZUNOX_CUADERNO=1 fuerza, =0 apaga).
             ...(cuadernoHabilitado(ctx.directory) ? [tool.cuaderno] : []),
+            // Lazunox (7.12): tareas programadas y espera, solo con LAZUNOX_PROGRAMADAS=1 (apagado por defecto).
+            ...(Programadas.activo() ? [tool.programar, tool.listarProgramadas, tool.borrarProgramada, tool.esperarYContinuar] : []),
             ...(tool.execute ? [tool.execute] : []),
             ...(tool.execute_wait ? [tool.execute_wait] : []),
             // Lazunox (4B, P16): la herramienta `lsp` sale con LAZUNOX_LSP=1 (ya no con la bandera experimental).
@@ -478,6 +491,7 @@ export const node = LayerNode.make({
     MCP.node,
     Database.node,
     Ripgrep.node,
+    SessionStatus.node,
   ],
 })
 
