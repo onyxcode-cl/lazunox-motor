@@ -5,6 +5,8 @@ import { InstanceState } from "@/effect/instance-state"
 
 import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_DEFAULT from "./prompt/default.txt"
+import PROMPT_DEFAULT_COMPACTO from "./prompt/default-compacto.txt"
+import { recorteActivo } from "@/tool/ahorro-tokens"
 import PROMPT_BEAST from "./prompt/beast.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
@@ -47,7 +49,7 @@ export function provider(model: Provider.Model) {
     ["kimi-for-coding", "moonshotai", "moonshotai-cn"].includes(model.providerID)
   )
     return [PROMPT_KIMI]
-  return [PROMPT_DEFAULT]
+  return [recorteActivo("sistema") ? PROMPT_DEFAULT_COMPACTO : PROMPT_DEFAULT]
 }
 
 // Lazunox (P02, caché estable): el prefijo de la petición debe ser idéntico byte a byte entre pasos
