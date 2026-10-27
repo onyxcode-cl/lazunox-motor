@@ -22,6 +22,7 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { ShellBackground, type Job } from "./shell/background"
+import { recorteActivo } from "./ahorro-tokens"
 import { ShellEndurecer } from "./shell/endurecer"
 import { realpath } from "node:fs/promises"
 import { LazunoxWake } from "./lazunox-wake"
@@ -1006,7 +1007,7 @@ export const ShellTool = Tool.define(
         yield* Effect.logInfo("shell tool using shell", { shell })
 
         return {
-          description: prompt.description + BACKGROUND_NOTE,
+          description: prompt.description + (recorteActivo("bash") ? ShellPrompt.BACKGROUND_NOTE_COMPACTA : BACKGROUND_NOTE),
           parameters: prompt.parameters,
           execute: (params: Parameters, ctx: Tool.Context) =>
             Effect.gen(function* () {
