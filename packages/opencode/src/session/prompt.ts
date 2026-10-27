@@ -65,6 +65,7 @@ import { SessionProgreso } from "./progreso"
 import { marcaModoPlan } from "./plan-modo"
 import { ContextoMinimo } from "./contexto-minimo"
 import { InstruccionesDiff } from "./instrucciones-diff"
+import { ultimoPasoSinHerramientas } from "../agent/parcial"
 import { AvisosCambios } from "./avisos-cambios"
 import * as ExhaustividadExplore from "../agent/exhaustividad"
 import { SessionTurnos } from "./turnos"
@@ -1664,7 +1665,7 @@ const layer = Layer.effect(
               ],
               tools,
               model,
-              toolChoice: format.type === "json_schema" ? "required" : undefined,
+              toolChoice: format.type === "json_schema" ? "required" : isLastStep && ultimoPasoSinHerramientas() ? "none" : undefined,
             })
 
             if (structured !== undefined) {

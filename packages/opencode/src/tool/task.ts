@@ -35,6 +35,8 @@ const id = "task"
 /** Máximo de ayudantes en segundo plano vivos a la vez (LAZUNOX_MAX_SUBAGENTS, 1-64; por defecto 8). */
 export const limiteSubagentes = (env: NodeJS.ProcessEnv = process.env) =>
   Math.min(64, Math.max(1, Number.parseInt(env.LAZUNOX_MAX_SUBAGENTS ?? "", 10) || 8))
+/** Lazunox (7.10): `LAZUNOX_AYUDANTE_REANUDABLE=0` quita la comprobación de agente al reanudar. */
+export const resumirSeguro = (env: NodeJS.ProcessEnv = process.env) => env.LAZUNOX_AYUDANTE_REANUDABLE !== "0"
 export const topeAlcanzado = (vivos: number, max: number) => vivos >= max
 /** Tope del informe de un ayudante, en bytes (LAZUNOX_SUBAGENT_RESULT_MAX; por defecto 4096; se acota a 256..1 MB). */
 export const resultadoMaximo = (env: NodeJS.ProcessEnv = process.env) =>
@@ -127,6 +129,26 @@ const heredarCampo = Schema.optional(Schema.Literals(["nada", "conversacion"])).
 })
 export const camposHeredar = (encendido: boolean) =>
   (encendido ? { heredar: heredarCampo } : {}) as { heredar: typeof heredarCampo }
+// Lazunox (Ola 7, 7.10): `esfuerzo` solo existe en el esquema con LAZUNOX_AYUDANTE_ESFUERZO=1 (apagado: esquema idéntico al de antes).
+export const ESFUERZOS = ["bajo", "medio", "alto"] as const
+const esfuerzoCampo = Schema.optional(Schema.Literals(ESFUERZOS)).annotate({
+  description:
+    'Reasoning effort for this subagent: "bajo" (quick and cheap), "medio" or "alto" (hard problems). Default: the same as yours. Ignored when the model has no effort levels.',
+})
+export const camposEsfuerzo = (encendido: boolean) =>
+  (encendido ? { esfuerzo: esfuerzoCampo } : {}) as { esfuerzo: typeof esfuerzoCampo }
+export const esfuerzoActivo = (env: NodeJS.ProcessEnv = process.env) => env.LAZUNOX_AYUDANTE_ESFUERZO === "1"
+
+const CANDIDATAS: Record<(typeof ESFUERZOS)[number], string[]> = {
+  bajo: ["low", "minimal", "none"],
+  medio: ["medium"],
+  alto: ["high", "xhigh", "max"],
+}
+/** Nombre de la variante (nivel de razonamiento) del modelo que corresponde a `esfuerzo`; `undefined` si el modelo no tiene ninguna. */
+export function varianteParaEsfuerzo(esfuerzo: (typeof ESFUERZOS)[number], variantes: readonly string[]): string | undefined {
+  return CANDIDATAS[esfuerzo].find((v) => variantes.includes(v))
+}
+
 const BaseParameters = Schema.Struct({
   ...BaseParameterFields,
   ...camposExhaustividad(ContextoMinimo.activo()),
@@ -261,8 +283,12 @@ export const TaskTool = Tool.define(
       // sesiones paralelas (coste, memoria y permisos pendientes). LAZUNOX_MAX_SUBAGENTS (1-64, por defecto 8).
       if (runInBackground) {
         const max = limiteSubagentes()
-        const vivos = (yield* background.list()).filter((j) => j.type === id && j.status === "running").length
-        if (topeAlcanzado(vivos, max)) {
+        const trabajos = yield* background.list()
+        // Lazunox (7.10): reanudar una hija que YA corre en segundo plano solo le manda contexto (no ocupa un cupo nuevo); reanudar una
+        // terminada sí ocupa uno (cuenta contra el tope como cualquier ayudante nuevo).
+        const yaCorre = params.task_id !== undefined && trabajos.some((j) => j.id === params.task_id && j.type === id && j.status === "running")
+        const vivos = trabajos.filter((j) => j.type === id && j.status === "running").length
+        if (!yaCorre && topeAlcanzado(vivos, max)) {
           return yield* Effect.fail(
             new Error(
               `Ya hay ${vivos} ayudantes en segundo plano trabajando (máximo ${max}). Espera a que termine alguno (te avisarán) antes de lanzar otro, o hazlo tú mismo.`,
@@ -279,6 +305,15 @@ export const TaskTool = Tool.define(
             Effect.catchCause(() => Effect.succeed(undefined)),
           )
         : undefined
+      // Lazunox (7.10): una hija solo se reanuda con el MISMO agente con que nació (un `explore` de solo lectura no se retoma como
+      // `general`): sus permisos y su contexto fueron los de ese agente. Si la sesión no registra agente (antiguas), se deja pasar.
+      if (session?.agent && session.agent !== next.name && resumirSeguro()) {
+        return yield* Effect.fail(
+          new Error(
+            `La sesión ${session.id} pertenece al agente "${session.agent}"; para continuarla usa subagent_type "${session.agent}" (o lanza un ayudante nuevo sin task_id).`,
+          ),
+        )
+      }
       const copiados = { omitidos: 0 }
       const permisoHijo = permisoDeHija({ cfg, parent, parentAgent, next })
       // Lazunox (6.9 · H6): solo con la bandera, solo al CREAR (al reanudar la sesión ya tiene su historial) y nunca desde un fork.
@@ -351,6 +386,18 @@ export const TaskTool = Tool.define(
       const ops = ctx.extra?.promptOps as TaskPromptOps
       if (!ops) return yield* Effect.fail(new Error("TaskTool requires promptOps in ctx.extra"))
 
+      // Lazunox (7.10): esfuerzo por llamada -> variante (nivel de razonamiento) del modelo del ayudante. Si el modelo no tiene ese nivel,
+      // se usa la variante de siempre. Solo con LAZUNOX_AYUDANTE_ESFUERZO=1.
+      const esfuerzo = esfuerzoActivo() ? (params as { esfuerzo?: (typeof ESFUERZOS)[number] }).esfuerzo : undefined
+      const variantePedida = esfuerzo
+        ? varianteParaEsfuerzo(
+            esfuerzo,
+            Object.keys(
+              (yield* providers.getModel(model.providerID, model.modelID).pipe(Effect.catchCause(() => Effect.succeed(undefined))))?.variants ?? {},
+            ),
+          )
+        : undefined
+
       const runTask = Effect.fn("TaskTool.runTask")(function* () {
         // Lazunox (6.3 · H4): solo `explore` y solo con la bandera; baja el tope de pasos y añade una línea a la orden.
         const nivel = ContextoMinimo.activo() && next.name === "explore" ? params.exhaustividad : undefined
@@ -366,7 +413,7 @@ export const TaskTool = Tool.define(
             modelID: model.modelID,
             providerID: model.providerID,
           },
-          variant: (next.model && !heredando) || pequeno ? undefined : variant,
+          variant: variantePedida ?? ((next.model && !heredando) || pequeno ? undefined : variant),
           agent: next.name,
           parts,
         })
@@ -395,7 +442,7 @@ export const TaskTool = Tool.define(
             .pipe(Effect.catchCause(() => Effect.succeed([] as SessionV1.WithParts[])))).filter(
             (m) => m.info.role === "assistant",
           ).length
-          if (esParcial({ maxTurns: tope, turnosDados })) return marcarParcial(informe, tope)
+          if (esParcial({ maxTurns: tope, turnosDados })) return marcarParcial(informe, tope, nextSession.id)
         }
         return informe
       })
@@ -534,12 +581,17 @@ export const TaskTool = Tool.define(
       )
     })
 
+    // Lazunox (7.10): `esfuerzo` se añade al esquema al crear la herramienta (no al importar el módulo) y solo con LAZUNOX_AYUDANTE_ESFUERZO=1.
+    const conEsfuerzo = esfuerzoActivo()
+    const parametros = conEsfuerzo ? Schema.Struct({ ...Parameters.fields, ...camposEsfuerzo(true) }) : Parameters
+    const parametrosBase = conEsfuerzo ? Schema.Struct({ ...BaseParameters.fields, ...camposEsfuerzo(true) }) : BaseParameters
+
     return {
       description: flags.experimentalBackgroundSubagents
         ? [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n")
         : DESCRIPTION,
-      parameters: Parameters,
-      jsonSchema: flags.experimentalBackgroundSubagents ? undefined : ToolJsonSchema.fromSchema(BaseParameters),
+      parameters: parametros,
+      jsonSchema: flags.experimentalBackgroundSubagents ? undefined : ToolJsonSchema.fromSchema(parametrosBase),
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         run(params, ctx).pipe(Effect.orDie),
     }
