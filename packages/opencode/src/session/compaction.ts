@@ -266,7 +266,7 @@ function cargadoEn(messages: SessionV1.WithParts[]) {
         if (typeof nombre === "string" && nombre) habilidades.add(nombre)
       }
       // `edit`/`write`/`apply_patch` solo adjuntan reglas por ruta (Lazunox 4D); `read` también AGENTS.md de subcarpetas.
-      if (part.tool === "read" || part.tool === "edit" || part.tool === "write" || part.tool === "apply_patch") {
+      if (part.tool === "read" || part.tool === "edit" || part.tool === "write" || part.tool === "apply_patch" || part.tool === "cuaderno_editar") {
         const loaded = part.state.metadata?.loaded
         if (Array.isArray(loaded)) for (const p of loaded) if (typeof p === "string" && p) instrucciones.add(p)
       }

@@ -133,7 +133,7 @@ export function origenes(turno: TurnoDatos, directory: string, worktree: string)
   for (const item of turno.herramientas) {
     if (ES_COMANDO(item.tool)) comando = true
     const input = (item.input ?? {}) as Record<string, unknown>
-    if ((item.tool === "edit" || item.tool === "write") && typeof input.filePath === "string") {
+    if ((item.tool === "edit" || item.tool === "write" || item.tool === "cuaderno_editar") && typeof input.filePath === "string") {
       nombrados.add(aRelativa(directory, worktree, input.filePath))
     }
     if (item.tool === "apply_patch" && typeof input.patchText === "string") {

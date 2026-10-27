@@ -126,7 +126,7 @@ function ediciones(messages: SessionV1.WithParts[], r: Raices) {
       if (p.type === "patch") for (const f of p.files) agregar(m.info.id, f)
       if (p.type !== "tool") continue
       const input = (p.state.input ?? {}) as Record<string, unknown>
-      if ((p.tool === "edit" || p.tool === "write") && typeof input.filePath === "string") agregar(m.info.id, input.filePath)
+      if ((p.tool === "edit" || p.tool === "write" || p.tool === "cuaderno_editar") && typeof input.filePath === "string") agregar(m.info.id, input.filePath)
       if (p.tool === "apply_patch" && typeof input.patchText === "string") {
         for (const x of input.patchText.matchAll(/^\*\*\* (?:Add|Update|Delete) File: (.+)$/gm)) agregar(m.info.id, x[1]!.trim())
         for (const x of input.patchText.matchAll(/^\*\*\* Move to: (.+)$/gm)) agregar(m.info.id, x[1]!.trim())

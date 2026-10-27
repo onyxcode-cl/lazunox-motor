@@ -1,0 +1,5 @@
+Edit a Jupyter notebook (.ipynb): replace, insert or delete cells. It never runs anything.
+- operacion "reemplazar": needs celdaId or indice (0 = first cell) and contenido (the full new source of the cell). "tipo" optionally changes the cell type (code, markdown, raw).
+- operacion "insertar": needs contenido. With celdaId the cell goes AFTER that cell; with indice it ends up at that position; with neither it goes at the end. "tipo" defaults to code.
+- operacion "borrar": needs celdaId or indice.
+Use read first to see the cells and their ids. Outputs of untouched cells are kept; a code cell whose code changes loses its old outputs. Do not use edit/write on .ipynb files.

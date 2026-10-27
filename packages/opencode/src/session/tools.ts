@@ -75,7 +75,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     ctx: Tool.Context,
     result: T,
   ) {
-    if (!instruction || (id !== "edit" && id !== "write" && id !== "apply_patch")) return result
+    if (!instruction || (id !== "edit" && id !== "write" && id !== "apply_patch" && id !== "cuaderno_editar")) return result
     const dir = yield* InstanceState.directory
     const archivos =
       id === "apply_patch"

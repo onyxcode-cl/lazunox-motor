@@ -19,7 +19,7 @@ import * as Imports from "./imports"
 
 // Herramientas cuyo resultado puede llevar instrucciones adjuntas (`metadata.loaded`). `edit`/`write`/`apply_patch`
 // solo adjuntan reglas por ruta (Lazunox 4D); `read` también AGENTS.md de subcarpetas.
-const ADJUNTAN = new Set(["read", "edit", "write", "apply_patch"])
+const ADJUNTAN = new Set(["read", "edit", "write", "apply_patch", "cuaderno_editar"])
 
 function extract(messages: SessionV1.WithParts[], root?: string) {
   const paths = new Set<string>()
