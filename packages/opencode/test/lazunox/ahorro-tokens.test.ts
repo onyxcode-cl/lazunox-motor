@@ -6,10 +6,9 @@ import { ToolSearch } from "../../src/tool/tool-search"
 const limits = { maxLines: 2000, maxBytes: 51200 }
 
 describe("LAZUNOX_AHORRO_TOKENS", () => {
-  test("ausente o desconocida = ningún recorte", () => {
-    expect(AhorroTokens.recortesActivos({}).size).toBe(0)
-    expect(AhorroTokens.recortesActivos({ LAZUNOX_AHORRO_TOKENS: "xyz" }).size).toBe(0)
-    expect(AhorroTokens.recortesActivos({ LAZUNOX_AHORRO_TOKENS: "off" }).size).toBe(0)
+  test("ausente = todos encendidos; 0/off/desconocida = ninguno", () => {
+    expect(AhorroTokens.recortesActivos({}).size).toBe(AhorroTokens.RECORTES.length)
+    for (const v of ["0", "off", "false", "no", "xyz"]) expect(AhorroTokens.recortesActivos({ LAZUNOX_AHORRO_TOKENS: v }).size).toBe(0)
   })
   test("on = todos; lista = solo los nombrados", () => {
     expect(AhorroTokens.recortesActivos({ LAZUNOX_AHORRO_TOKENS: "on" }).size).toBe(AhorroTokens.RECORTES.length)
@@ -17,14 +16,19 @@ describe("LAZUNOX_AHORRO_TOKENS", () => {
     expect([...s].sort()).toEqual(["bash", "task"])
   })
   test("la búsqueda diferida pasa a auto solo con el recorte, y la variable explícita manda", () => {
-    expect(ToolSearch.config({}).mode).toBe("off")
+    expect(ToolSearch.config({}).mode).toBe("auto")
+    expect(ToolSearch.config({ LAZUNOX_AHORRO_TOKENS: "0" }).mode).toBe("off")
     expect(ToolSearch.config({ LAZUNOX_AHORRO_TOKENS: "busqueda" }).mode).toBe("auto")
     expect(ToolSearch.config({ LAZUNOX_AHORRO_TOKENS: "on", LAZUNOX_TOOL_SEARCH: "off" }).mode).toBe("off")
   })
 })
 
 describe("descripción compacta del shell", () => {
+  const previo = process.env.LAZUNOX_AHORRO_TOKENS
+  process.env.LAZUNOX_AHORRO_TOKENS = "0"
   const largo = ShellPrompt.render("bash", "linux", limits, 120000).description
+  if (previo === undefined) delete process.env.LAZUNOX_AHORRO_TOKENS
+  else process.env.LAZUNOX_AHORRO_TOKENS = previo
   const corto = ShellPrompt.renderCompacto("bash", "linux", limits, 120000)
   test("es bastante más corta", () => {
     expect(corto.length).toBeLessThan(largo.length * 0.6)

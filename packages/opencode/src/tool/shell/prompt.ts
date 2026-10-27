@@ -301,7 +301,7 @@ All commands run in the current working directory; use the \`workdir\` parameter
 IMPORTANT: for terminal operations (git, npm, docker, tests...). DO NOT use it for file operations: read with Read, search with Glob/Grep, edit with Edit, write with Write; talk to the user with plain output, not echo.${ps ? `\n\n${powershellNotes(name)}` : ""}
 
 - Always quote paths that contain spaces. Before creating files or directories, use \`ls\` to check the parent exists.
-- Commands time out after ${defaultTimeoutMs}ms unless you pass \`timeout\`.
+- You can pass an optional timeout in milliseconds. If not specified, commands will time out after ${defaultTimeoutMs}ms.
 - Output over ${limits.maxLines} lines or ${limits.maxBytes} bytes is truncated and the full output is saved to a file: read it with Read (offset/limit) or Grep; do NOT pipe through head/tail to shorten it.
 - Independent commands: make several tool calls in one message. ${chain}
 

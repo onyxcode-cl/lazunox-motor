@@ -1,20 +1,20 @@
 // Lazunox (Ola 7, 7.2): recortes de tokens por paso. Cada recorte tiene su interruptor y NINGUNO está encendido por defecto
-// hasta que el banco con modelo real lo apruebe (ver LAZUNOX.md, «Ahorro de tokens»).
+// ENCENDIDOS por defecto (orden de Ben, 2026-10-27, sin n>=5: ver LAZUNOX.md «Ahorro de tokens»). Apagar: LAZUNOX_AHORRO_TOKENS=0.
 //
-//   LAZUNOX_AHORRO_TOKENS = off (por defecto) | on | lista separada por comas de:
+//   LAZUNOX_AHORRO_TOKENS = on (por defecto, también ausente) | 0 / off | lista separada por comas de:
 //     bash          descripción y parámetros de la herramienta de terminal más cortos (mismas reglas de seguridad y de git)
 //     task          descripción de `task` más corta
 //     todo          descripción de `todowrite` más corta
 //     herramientas  descripciones más cortas de read, edit, write, glob y grep
 //     sistema       prompt de sistema por defecto sin duplicados ni ejemplos de relleno
 //     busqueda      sin LAZUNOX_TOOL_SEARCH explícito, la búsqueda diferida de herramientas MCP se comporta como `auto`
-//   `on` = todos. Variable ausente o desconocida = ninguno.
+//   `on` = todos. `0`, `off`, `false` o `no` = ninguno.
 export const RECORTES = ["bash", "task", "todo", "herramientas", "sistema", "busqueda"] as const
 export type Recorte = (typeof RECORTES)[number]
 
 export function recortesActivos(env: Record<string, string | undefined> = process.env): ReadonlySet<Recorte> {
   const raw = (env.LAZUNOX_AHORRO_TOKENS ?? "").trim().toLowerCase()
-  if (raw === "on" || raw === "todo" || raw === "1") return new Set(RECORTES)
+  if (raw === "" || raw === "on" || raw === "todo" || raw === "1") return new Set(RECORTES)
   return new Set(
     raw
       .split(",")

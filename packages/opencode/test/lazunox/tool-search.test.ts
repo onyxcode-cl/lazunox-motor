@@ -27,7 +27,7 @@ const visibleAll = (entries: ToolSearch.Entry<null>[]) => new Set(entries.map((e
 
 describe("configuración", () => {
   test("valores por defecto y variables", () => {
-    expect(ToolSearch.config({})).toMatchObject({ mode: "off", minTokens: 4000 })
+    expect(ToolSearch.config({ LAZUNOX_AHORRO_TOKENS: "0" })).toMatchObject({ mode: "off", minTokens: 4000 })
     expect(cfg({ LAZUNOX_TOOL_SEARCH: "auto" }).mode).toBe("auto")
     expect(ToolSearch.config({}).keep.size).toBe(0)
     expect(cfg({ LAZUNOX_TOOL_SEARCH: "ON" }).mode).toBe("on")
@@ -309,7 +309,9 @@ describe("SessionTools con búsqueda diferida", () => {
 
   test("auto: poco catálogo no activa; mucho sí", async () => {
     delete process.env.LAZUNOX_TOOL_SEARCH
-    expect((await montar({ mcpTools: conStart }).resolver()).tool_search).toBeUndefined() // ausente = off
+    process.env.LAZUNOX_AHORRO_TOKENS = "0"
+    expect((await montar({ mcpTools: conStart }).resolver()).tool_search).toBeUndefined() // ausente = off (con el ahorro apagado)
+    delete process.env.LAZUNOX_AHORRO_TOKENS
     process.env.LAZUNOX_TOOL_SEARCH = "auto"
     const poco = await montar({ mcpTools: { x_start: conStart.x_start } }).resolver()
     expect(poco.tool_search).toBeUndefined()
