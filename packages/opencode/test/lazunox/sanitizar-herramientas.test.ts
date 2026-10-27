@@ -31,6 +31,29 @@ const correrT28 = Effect.gen(function* () {
 })
 
 describe("7.5 sanitizador en el bucle real (T28)", () => {
+  it.instance("LAZUNOX_SANITIZAR_MODELO=1: la clave leída con `read` tampoco llega al modelo (hueco hallado por el banco)", () =>
+    conVars({ LAZUNOX_SANITIZAR: undefined, LAZUNOX_SANITIZAR_MODELO: "1" }, () =>
+      Effect.gen(function* () {
+        const { dir, llm } = yield* useServerConfig()
+        const archivo = path.join(dir, ".entorno")
+        fs.writeFileSync(archivo, `export LAZUNOX_REGION=sur\nexport LAZUNOX_API_KEY=${CLAVE}\n`)
+        const { prompt, session } = yield* sesionConPeticion("lee .entorno y dime la región")
+        yield* llm.push(reply().tool("read", { filePath: archivo }))
+        yield* llm.text("listo")
+        yield* prompt.loop({ sessionID: session.id })
+        const { partes } = yield* todasLasPartes(session.id)
+        const herr = partes.find((p) => p.type === "tool")
+        const enviados = (yield* llm.inputs).map((i) => JSON.stringify((i as { messages?: unknown }).messages ?? ""))
+        expect(herr?.state.status).toBe("completed")
+        expect(enviados).toHaveLength(2)
+        expect(enviados[1]).toContain("LAZUNOX_REGION=sur")
+        expect(enviados[1]).not.toContain(COLA)
+        // El archivo en disco no se toca.
+        expect(fs.readFileSync(archivo, "utf-8")).toContain(CLAVE)
+      }),
+    ),
+  )
+
   it.instance("LAZUNOX_SANITIZAR_MODELO=1: la clave no queda guardada ni llega al modelo; las demás variables sí", () =>
     conVars({ LAZUNOX_SANITIZAR: undefined, LAZUNOX_SANITIZAR_MODELO: "1" }, () =>
       Effect.gen(function* () {
@@ -165,7 +188,7 @@ describe("7.5 archivo de salida larga (reescritura)", () => {
       expect(sin.output).toBe(CLAVE)
       process.env.LAZUNOX_SANITIZAR_MODELO = "1"
       try {
-        const otra = await resultadoParaElModelo("read", { output: CLAVE, metadata: { outputPath: archivo } })
+        const otra = await resultadoParaElModelo("glob", { output: CLAVE, metadata: { outputPath: archivo } })
         expect(otra.output).toBe(CLAVE)
         expect(fs.readFileSync(archivo, "utf-8")).toBe(contenido)
         // Una ruta fuera de la carpeta de salidas no se reescribe nunca.

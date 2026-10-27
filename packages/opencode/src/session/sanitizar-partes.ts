@@ -7,8 +7,12 @@ import path from "path"
 import { TRUNCATION_DIR } from "@/tool/truncation-dir"
 import { activo, activoParaElModelo, sanitizar, sanitizarProfundo } from "@opencode-ai/core/sanitizar"
 
-/** Herramientas cuya salida es texto de un comando o de un guion (el nivel 2 solo toca estas). */
-const SALIDA_DE_COMANDO = new Set(["bash", "shell_wait", "execute", "execute_wait"])
+/**
+ * Herramientas cuya salida puede traer secretos hacia el modelo (el nivel 2 solo toca estas): comandos, guiones y también
+ * `read`/`grep` (el banco mostró que el modelo lee `.entorno` con `read`). Solo se enmascaran los patrones que el sanitizador
+ * reconoce como secretos; el archivo en disco no cambia, así que `edit` sigue funcionando salvo que el texto citado sea el secreto.
+ */
+const SALIDA_DE_COMANDO = new Set(["bash", "shell_wait", "execute", "execute_wait", "read", "grep"])
 
 export const esSalidaDeComando = (tool: string) => SALIDA_DE_COMANDO.has(tool)
 
