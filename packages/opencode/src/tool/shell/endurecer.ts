@@ -34,20 +34,21 @@ const ENVOLTORIOS: Record<string, { valor: string[]; pos: number }> = {
   setsid: { valor: [], pos: 0 },
   ionice: { valor: ["-c", "-n", "-p", "-P", "-u", "--class", "--classdata"], pos: 0 },
   flock: { valor: ["-w", "--timeout", "-E", "--conflict-exit-code"], pos: 1 },
-  sudo: { valor: ["-u", "-g", "-h", "-p", "-C", "-r", "-t", "-U", "-D", "-R", "-T"], pos: 0 },
+  sudo: { valor: ["-u", "-g", "-h", "-p", "-C", "-r", "-t", "-U", "-D", "-R", "-T", "--user", "--group", "--host", "--prompt", "--chdir", "--role", "--type", "--other-user", "--close-from"], pos: 0 },
   doas: { valor: ["-u", "-C"], pos: 0 },
   env: { valor: ["-u", "-C", "--unset", "--chdir"], pos: 0 },
   exec: { valor: ["-a"], pos: 0 },
   xargs: { valor: ["-n", "-L", "-P", "-I", "-d", "-a", "-E", "-s", "--max-args", "--max-procs", "--delimiter", "--arg-file"], pos: 0 },
 }
 
+const base = (t: string) => t.slice(t.lastIndexOf("/") + 1)
 const ASIGNACION = /^[A-Za-z_][A-Za-z0-9_]*=/
 
 const quitarComillas = (t: string) => (t.length >= 2 && (t[0] === '"' || t[0] === "'") && t[t.length - 1] === t[0] ? t.slice(1, -1) : t)
 
 /** Si `tokens` empieza por un envoltorio, devuelve las palabras de la orden de dentro (sin envoltorio ni sus opciones). */
 function interior(tokens: string[]): string[] | undefined {
-  const nombre = tokens[0]
+  const nombre = tokens[0] === undefined ? undefined : base(tokens[0])
   const e = nombre === undefined ? undefined : ENVOLTORIOS[nombre]
   if (!e) return undefined
   let i = 1
@@ -79,7 +80,7 @@ function interior(tokens: string[]): string[] | undefined {
 
 /** Palabras de un `find` que van entre `-exec`/`-execdir`/`-ok`/`-okdir` y `;` o `+`: la orden que ejecuta. */
 function ordenesDeFind(tokens: string[]): string[][] {
-  if (tokens[0] !== "find") return []
+  if (tokens[0] === undefined || base(tokens[0]) !== "find") return []
   const out: string[][] = []
   for (let i = 1; i < tokens.length; i++) {
     if (!["-exec", "-execdir", "-ok", "-okdir"].includes(tokens[i]!)) continue
@@ -98,8 +99,12 @@ function ordenesDeFind(tokens: string[]): string[][] {
 
 /** Script de un `bash -c "…"` (también `-lc`, `-ic`, `-euc`…), de un `eval …` o de un `su -c "…"`. */
 function scriptDe(tokens: string[]): string | undefined {
-  const nombre = tokens[0]
+  const nombre = tokens[0] === undefined ? undefined : base(tokens[0])
   if (nombre === undefined) return undefined
+  if (nombre === "env") {
+    const k = tokens.findIndex((t) => t === "-S" || t === "--split-string")
+    return k >= 0 && tokens[k + 1] !== undefined ? quitarComillas(tokens[k + 1]!) : undefined
+  }
   if (nombre === "eval") {
     const resto = tokens.slice(1).map(quitarComillas).join(" ").trim()
     return resto || undefined
@@ -112,11 +117,17 @@ function scriptDe(tokens: string[]): string | undefined {
   for (let i = 1; i < tokens.length; i++) {
     const t = tokens[i]!
     if (t === "--") return undefined
-    if (/^-[A-Za-z]*c[A-Za-z]*$/.test(t) && !t.startsWith("--")) {
-      const s = tokens[i + 1]
+    if (/^[-+][A-Za-z]*c[A-Za-z]*$/.test(t) && !t.startsWith("--")) {
+      let j = i + 1
+      if (tokens[j] === "--") j++
+      const s = tokens[j]
       return s === undefined ? undefined : quitarComillas(s)
     }
-    if (!t.startsWith("-")) return undefined // un archivo de script: no hay nada que leer aquí
+    if (t === "-o" || t === "-O" || t === "+o" || t === "+O" || t === "--rcfile" || t === "--init-file") {
+      i++ // el valor de la opción no es el script
+      continue
+    }
+    if (!t.startsWith("-") && !t.startsWith("+")) return undefined // un archivo de script: no hay nada que leer aquí
   }
   return undefined
 }
@@ -133,7 +144,8 @@ export function desenvolver(tokens: string[]): Desenvuelto {
   const internas: string[][] = []
   const scripts: string[] = []
   let actual: string[] | undefined = tokens
-  for (let nivel = 0; actual && nivel < MAX_NIVELES; nivel++) {
+  // Cada vuelta acorta `actual`, así que termina sola; el tope solo protege de entradas absurdas. NUNCA se corta antes de llegar a la orden de dentro.
+  for (let nivel = 0; actual && nivel < 512; nivel++) {
     const sc = scriptDe(actual)
     if (sc !== undefined) scripts.push(sc)
     for (const c of ordenesDeFind(actual)) {
@@ -145,6 +157,8 @@ export function desenvolver(tokens: string[]): Desenvuelto {
     const dentro = interior(actual)
     if (!dentro) break
     internas.push(dentro)
+    // `watch 'rm x'`: una sola palabra con espacios es un script.
+    if (dentro.length === 1 && /\s/.test(quitarComillas(dentro[0]!))) scripts.push(quitarComillas(dentro[0]!))
     actual = dentro
   }
   return { internas, scripts }
@@ -154,11 +168,15 @@ export function desenvolver(tokens: string[]): Desenvuelto {
 
 /** Rutas a las que `git` apunta con `-C DIR`, `--git-dir[=]`, `--work-tree[=]`, `--namespace` no (no es ruta). Antes del subcomando. */
 export function rutasDeGit(tokens: string[]): string[] {
-  if (tokens[0] !== "git") return []
+  if (tokens[0] === undefined || base(tokens[0]) !== "git") return []
   const out: string[] = []
   for (let i = 1; i < tokens.length; i++) {
     const t = tokens[i]!
     if (!t.startsWith("-")) break // el subcomando: lo que sigue ya no son opciones globales
+    if (t === "-c" || t === "--namespace" || t === "--config-env" || t === "--exec-path") {
+      i++ // su valor no es el subcomando ni una ruta que vigilar aquí
+      continue
+    }
     if (t === "-C" || t === "--git-dir" || t === "--work-tree") {
       if (tokens[i + 1] !== undefined) out.push(tokens[i + 1]!)
       i++
@@ -192,9 +210,12 @@ const LECTORES = new Set([
 
 /** Palabras con pinta de ruta que una orden de lectura recibe: argumentos sueltos, `--opcion=ruta`, `-fRUTA` pegado y `@ruta`. */
 export function rutasLeidas(tokens: string[]): string[] {
-  const nombre = tokens[0]
+  const nombre = tokens[0] === undefined ? undefined : base(tokens[0])
   if (nombre === undefined || !LECTORES.has(nombre)) return []
   const out: string[] = []
+  // grep/rg/sed/awk/curl: el primer argumento suelto es el patrón, la expresión o la URL, no un archivo (salvo que se dé con -e/-f/--regexp/--file).
+  const PRIMERO_NO_ES_ARCHIVO = new Set(["grep", "egrep", "fgrep", "rg", "ag", "sed", "awk", "gawk", "curl", "wget"])
+  let saltarPrimero = PRIMERO_NO_ES_ARCHIVO.has(nombre) && !tokens.slice(1).some((t) => t === "-e" || t === "-f" || t === "--regexp" || t === "--file" || /^--(regexp|file)=/.test(t) || /^-[ef]./.test(t))
   const añadir = (t: string) => {
     const v = quitarComillas(t)
     if (v && v !== "-" && !out.includes(v)) out.push(v)
@@ -208,7 +229,11 @@ export function rutasLeidas(tokens: string[]): string[] {
     }
     if (t.startsWith("-")) {
       // «-f.env» (opción corta con el valor pegado): se mira el resto; «-n5» da «5», que no coincide con ninguna regla de ruta.
-      if (/^-[A-Za-z]./.test(t)) añadir(t.slice(2))
+      if (/^-[A-Za-z]./.test(t) && /[./]/.test(t.slice(2))) añadir(t.slice(2))
+      continue
+    }
+    if (saltarPrimero && !t.startsWith("@")) {
+      saltarPrimero = false
       continue
     }
     añadir(t.startsWith("@") && t.length > 1 ? t.slice(1) : t)
@@ -218,9 +243,8 @@ export function rutasLeidas(tokens: string[]): string[] {
 
 /** Destinos de redirección que NO son una ruta real a vigilar. */
 export function destinoIgnorable(destino: string, operador: string): boolean {
-  if (operador.endsWith("&")) return true // 2>&1, >&2, <&3: duplicación de descriptores
-  const d = quitarComillas(destino)
-  if (d === "-" || /^\d+$/.test(d)) return operador.includes("&")
+  const d = quitarComillas(destino).replace(/^&/, "")
+  if (d === "-" || /^\d+$/.test(d)) return operador.includes("&") || destino.startsWith("&")
   return d === "/dev/null" || d === "/dev/stdout" || d === "/dev/stderr" || d === "/dev/stdin" || d === "/dev/tty" || d.startsWith("/dev/fd/")
 }
 

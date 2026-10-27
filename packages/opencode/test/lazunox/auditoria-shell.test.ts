@@ -134,6 +134,16 @@ describe("7.7 auditoría: órdenes dentro de otras órdenes (un deny de `rm *` n
     "su -c 'rm x'",
     "bash -c \"bash -c 'rm x'\"",
     "sudo bash -c 'timeout 3 rm x'",
+    // Hallazgos de la revisión independiente
+    `${"nice ".repeat(12)}rm x`,
+    "eval eval eval eval rm x",
+    "bash -c -- 'rm x'",
+    "bash -o errexit -c 'rm x'",
+    "/usr/bin/timeout 5 rm x",
+    "/bin/bash -c 'rm x'",
+    "sudo --user root rm x",
+    "env -S 'rm x'",
+    "watch 'rm x'",
   ]
   for (const c of ENVOLTORIOS) {
     it.live(`ANTES se saltaba el deny, ahora no: ${c}`, () =>
@@ -148,7 +158,7 @@ describe("7.7 auditoría: órdenes dentro de otras órdenes (un deny de `rm *` n
           expect(ahora.bash.every((p) => p.length > 1)).toBe(true)
           // La orden entera sigue ahí tal cual y «siempre» no cambia (solo se añade lo de dentro).
           expect(ahora.bash).toContain(antes.bash[0]!)
-          expect(ahora.always).toEqual(antes.always)
+          expect(ahora.always).toEqual(expect.arrayContaining([...antes.always]))
         }),
       ),
     )
@@ -161,9 +171,9 @@ describe("7.7 auditoría: órdenes dentro de otras órdenes (un deny de `rm *` n
         expect(roto.bash, JSON.stringify(roto)).toContain("rm x ( (") // el texto entero llega a las reglas aunque el analizador solo recupere `rm`
         expect(roto.bash).toContain("rm")
         const hondo = yield* escanear(`${"nice ".repeat(12)}rm x`)
-        expect(hondo.bash.length).toBeGreaterThan(1)
-        const scripts = yield* escanear(`bash -c "bash -c \\"bash -c 'bash -c \\\\\\"rm x\\\\\\"'\\""`)
-        expect(scripts.bash.length).toBeGreaterThan(0) // 4 niveles de scripts: se corta en 3 sin colgarse
+        expect(negada(hondo)).toBe(true)
+        const scripts = yield* escanear("eval eval eval eval eval rm x")
+        expect(negada(scripts)).toBe(true) // 4 niveles de scripts: se corta en 3 sin colgarse y el texto llega a las reglas
       }),
     ),
   )
@@ -425,7 +435,7 @@ describe("7.7 endurecer.ts (piezas puras)", () => {
     expect(ShellEndurecer.desenvolver(["echo", "hola"])).toEqual({ internas: [], scripts: [] })
     expect(ShellEndurecer.desenvolver(["timeout", "5"]).internas).toEqual([]) // sin orden de dentro
     const muchos = ShellEndurecer.desenvolver(["nice", ...Array(20).fill("nice"), "rm"]).internas
-    expect(muchos.length).toBeLessThanOrEqual(ShellEndurecer.MAX_NIVELES)
+    expect(muchos.at(-1)).toEqual(["rm"]) // se llega a la orden de dentro por muchos envoltorios que haya
   })
   test("desenvolver: scripts de shell, eval, su -c y find -exec", () => {
     expect(ShellEndurecer.desenvolver(["bash", "-c", "'rm x'"]).scripts).toEqual(["rm x"])
@@ -444,6 +454,14 @@ describe("7.7 endurecer.ts (piezas puras)", () => {
     expect(ShellEndurecer.rutasDeGit(["git", "log", "-C", "/a"])).toEqual([]) // después del subcomando es otra opción
     expect(ShellEndurecer.rutasDeGit(["echo", "-C", "/a"])).toEqual([])
     expect(ShellEndurecer.rutasDeAsignaciones(["GIT_DIR=/x", "FOO=/y", "GIT_WORK_TREE=/z", "GIT_DIR="])).toEqual(["/x", "/z"])
+  })
+  test("revisión: git -c, >& a archivo, grep sin patrón como archivo", () => {
+    expect(ShellEndurecer.rutasDeGit(["git", "-c", "a=b", "-C", "/otro", "status"])).toEqual(["/otro"])
+    expect(ShellEndurecer.destinoIgnorable("/etc/x", ">&")).toBe(false)
+    expect(ShellEndurecer.destinoIgnorable("2", ">&")).toBe(true)
+    expect(ShellEndurecer.rutasLeidas(["grep", "-rn", "process.env", "src"])).toEqual(["src"])
+    expect(ShellEndurecer.rutasLeidas(["grep", "-e", "x", ".env"])).toEqual(["x", ".env"])
+    expect(ShellEndurecer.rutasLeidas(["cat", ".env"])).toEqual([".env"])
   })
   test("rutasLeidas", () => {
     expect(ShellEndurecer.rutasLeidas(["cat", "-n", "a.txt", "'b c.txt'"])).toEqual(["a.txt", "b c.txt"])

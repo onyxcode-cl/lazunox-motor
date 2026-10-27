@@ -628,7 +628,7 @@ export const ShellTool = Tool.define(
           if (cmd && (cmd === "cd" || cmd === "pushd")) {
             const destino = pathArgs(command, false)[0]
             const resolved = destino ? yield* argPath(destino, cwd, false, shell) : undefined
-            if (resolved && !cwds.includes(resolved)) cwds.push(resolved)
+            if (resolved && !cwds.includes(resolved) && cwds.length < 8) cwds.push(resolved)
           }
         }
 
@@ -654,11 +654,25 @@ export const ShellTool = Tool.define(
           for (const interna of dentro.internas) {
             yield* examinar(
               interna.map((text) => ({ type: "word", text })),
-              { patron: interna.join(" "), siempre: false, palabras: interna },
+              { patron: interna.join(" "), siempre: true, palabras: interna },
             )
           }
-          if (hondo < ShellEndurecer.MAX_SCRIPTS) {
-            for (const script of dentro.scripts) {
+          for (const script of dentro.scripts) {
+            // Más allá del tope de profundidad el script no se analiza, pero su texto entero llega igual a las reglas.
+            if (hondo >= ShellEndurecer.MAX_SCRIPTS) {
+              // Sin parser: se sigue desenvolviendo por palabras (acotado) para que `eval eval eval … rm x` no esconda `rm x`.
+              const pendientes = [script]
+              for (let n = 0; pendientes.length > 0 && n < 64; n++) {
+                const texto = pendientes.pop()!.trim()
+                if (!texto) continue
+                scan.patterns.add(texto)
+                const d = ShellEndurecer.desenvolver(texto.split(/\s+/))
+                for (const i of d.internas) scan.patterns.add(i.join(" "))
+                pendientes.push(...d.scripts)
+              }
+              continue
+            }
+            {
               const analizado = yield* Effect.scoped(
                 Effect.gen(function* () {
                   const tree = yield* Effect.acquireRelease(parse(script, false), (t) => Effect.sync(() => t.delete()))
