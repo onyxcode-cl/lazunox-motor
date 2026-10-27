@@ -168,6 +168,10 @@ const layer = Layer.effect(
       // Lazunox: Detener cierra los formularios MCP abiertos de la sesión (publica rejected/abort y contesta cancel al servidor).
       yield* elicitation.cancelSession(sessionID, "abort")
       yield* state.cancel(sessionID)
+      // Lazunox (7.6): gancho de usuario `Interrupt` (informativo: ningún fallo suyo impide la detención).
+      yield* plugin
+        .trigger("session.interrupt", { sessionID: String(sessionID) }, {})
+        .pipe(Effect.catchCause(() => Effect.void))
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {

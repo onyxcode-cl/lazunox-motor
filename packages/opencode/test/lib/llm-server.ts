@@ -96,12 +96,12 @@ function finishLine(reason: string, usage?: Usage) {
   return chunk({ finish: reason, usage })
 }
 
-function toolStartLine(id: string, name: string) {
+function toolStartLine(id: string, name: string, index = 0) {
   return chunk({
     delta: {
       tool_calls: [
         {
-          index: 0,
+          index,
           id,
           type: "function",
           function: {
@@ -114,12 +114,12 @@ function toolStartLine(id: string, name: string) {
   })
 }
 
-function toolArgsLine(value: string) {
+function toolArgsLine(value: string, index = 0) {
   return chunk({
     delta: {
       tool_calls: [
         {
-          index: 0,
+          index,
           function: {
             arguments: value,
           },
@@ -513,6 +513,13 @@ export class Reply {
     const id = this.#id()
     const args = JSON.stringify(input)
     this.#tail = [...this.#tail, toolStartLine(id, name), toolArgsLine(args)]
+    return this.toolCalls()
+  }
+
+  /** Lazunox (Ola 7): una llamada con `index` propio, para varias herramientas en un mismo paso del modelo. */
+  toolAt(index: number, name: string, input: unknown) {
+    const id = this.#id()
+    this.#tail = [...this.#tail, toolStartLine(id, name, index), toolArgsLine(JSON.stringify(input), index)]
     return this.toolCalls()
   }
 

@@ -85,6 +85,8 @@ interface ProcessorContext extends Input {
   textoPaso: string
   // Lazunox (7.4): argumentos tal como llegaron en la transmisión, por llamada, del paso en curso.
   crudo: Record<string, { name: string; raw: string }>
+  // Lazunox (7.6): llamadas del paso en curso que ya tienen resultado (para el gancho `PostToolBatch`).
+  lote: { tool: string; callID: string; status: "completed" | "error" }[]
 }
 
 type StreamEvent = LLMEvent
@@ -126,6 +128,7 @@ const layer = Layer.effect(
         reasoningMap: {},
         presupuesto: undefined,
         agotado: undefined,
+        lote: [],
         textoPaso: "",
         crudo: {},
       }
@@ -209,6 +212,7 @@ const layer = Layer.effect(
             },
           }),
         )
+        ctx.lote.push({ tool: match.part.tool, callID: toolCallID, status: "completed" })
         yield* settleToolCall(toolCallID)
       })
 
@@ -228,6 +232,7 @@ const layer = Layer.effect(
             },
           }),
         )
+        ctx.lote.push({ tool: match.part.tool, callID: toolCallID, status: "error" })
         if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
@@ -535,6 +540,17 @@ const layer = Layer.effect(
             return
 
           case "step-finish": {
+            // Lazunox (7.6): gancho `PostToolBatch` (informativo) con las llamadas de este paso que ya tienen resultado.
+            if (ctx.lote.length > 0) {
+              const tools = ctx.lote.splice(0)
+              yield* plugin
+                .trigger(
+                  "session.tool-batch",
+                  { sessionID: String(ctx.sessionID), messageID: String(ctx.assistantMessage.id), tools },
+                  {},
+                )
+                .pipe(Effect.catchCause(() => Effect.void))
+            }
             const completedSnapshot = yield* snapshot.track()
             yield* Effect.forEach(Object.keys(ctx.reasoningMap), finishReasoning)
             // Anthropic reports thinking blocks it removed before the model saw the
