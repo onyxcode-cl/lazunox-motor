@@ -55,7 +55,7 @@ describe("rutas del objetivo", () => {
       expect((yield* del("ses_noexiste", directory)).status).toBe(404)
       expect((yield* post(a.id, directory, {})).status).toBe(400)
       expect((yield* post(a.id, directory, { condicion: "x", tope: 0 })).status).toBe(400)
-      expect((yield* post(a.id, directory, { condicion: "x".repeat(2001) })).status).toBe(400)
+      expect((yield* post(a.id, directory, { condicion: "x".repeat(4001) })).status).toBe(400)
       expect((yield* post(a.id, directory, { reanudar: true })).status).toBe(400) // nada que reanudar
       expect(Objetivo.obtener(a.id)).toBeUndefined()
     }),
