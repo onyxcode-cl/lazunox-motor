@@ -11,6 +11,7 @@ import { Agent } from "@/agent/agent"
 import { Plugin } from "@/plugin"
 import { Config } from "@/config/config"
 import { NotFoundError } from "@/storage/storage"
+import { NamedError } from "@opencode-ai/core/util/error"
 
 import { Effect, Layer, Context, Schema } from "effect"
 import path from "node:path"
@@ -40,6 +41,12 @@ import { SessionStatus } from "./status"
 import { Trabajos } from "@/tool/trabajos"
 import { lineaHerramientas, RECORDATORIO_PLANTILLA, resumenRobustoActivo, resumenSigueLaPlantilla } from "./resumen-robusto"
 import { construirBloque, presupuestoBloque, reinyectarActivo, type Documento } from "./contexto-vigente"
+
+/** Lazunox (Ola 7, 7.9): resumen vacío = error, reintento con menos conversación si el resumen desborda, y marca de resumen cortado. `LAZUNOX_COMPACTACION_SEGURA=0` lo apaga. */
+export const compactacionSegura = () => process.env.LAZUNOX_COMPACTACION_SEGURA !== "0"
+/** Reintentos del resumen cuando el proveedor rechaza la petición por tamaño; cada uno reduce el presupuesto de la conversación. */
+export const REINTENTOS_DESBORDE = 3
+const FACTOR_DESBORDE = 0.7
 
 export const Event = SessionCompactionEvent
 
@@ -746,16 +753,18 @@ const layer = Layer.effect(
       // Lazunox (P03): si la petición de resumen no cabe en el modelo, se recortan las salidas viejas (y, al final, los mensajes
       // más antiguos) en vez de fallar con desbordamiento.
       const usableTokens = usable({ cfg, model, outputTokenMax: flags.outputTokenMax })
-      const ajuste = ajustarConversacion({
-        messages: msgs,
-        presupuesto: Math.floor(usableTokens * RESUMEN_FRACCION_USABLE),
-        armar: (conversation) => [armar(conversation), ...(compacting.prompt ? [conversation] : [])].join("\n\n"),
-      })
+      const ajustar = (presupuesto: number) =>
+        ajustarConversacion({
+          messages: msgs,
+          presupuesto,
+          armar: (conversation) => [armar(conversation), ...(compacting.prompt ? [conversation] : [])].join("\n\n"),
+        })
+      let ajuste = ajustar(Math.floor(usableTokens * RESUMEN_FRACCION_USABLE))
       if (ajuste.nivel > 0 || ajuste.descartados > 0) {
         yield* Effect.logInfo("compaction request trimmed", { nivel: ajuste.nivel, descartados: ajuste.descartados })
       }
-      const conversation = ajuste.conversation
-      const nextPrompt = armar(conversation)
+      let conversation = ajuste.conversation
+      let nextPrompt = armar(conversation)
       let incompleto = false
       const ctx = yield* InstanceState.context
       const generar = Effect.fn("SessionCompaction.generar")(function* (recordatorio?: string) {
@@ -822,6 +831,25 @@ const layer = Layer.effect(
       let processor = primero.processor
       let result = primero.result
 
+      // Lazunox (7.9, Codex/OpenCode 2.x): si el proveedor rechaza la petición de resumen por tamaño, se retira ese intento y se reintenta con
+      // menos conversación (cada intento pide el 70 % de lo que pesó el anterior; primero se recortan salidas viejas y luego sale lo más
+      // antiguo). Máx. REINTENTOS_DESBORDE. Con un prompt de plugin no.
+      if (compactacionSegura() && !compacting.prompt) {
+        for (let intento = 1; intento <= REINTENTOS_DESBORDE && result === "compact"; intento++) {
+          const menor = ajustar(Math.floor(Token.estimate(nextPrompt) * FACTOR_DESBORDE))
+          // Si ya no se puede acortar más (queda un solo mensaje y salidas mínimas), no tiene sentido repetir la misma petición.
+          if (menor.conversation.length >= conversation.length) break
+          yield* Effect.logWarning("compaction summary overflowed; retrying with a shorter conversation", { intento })
+          yield* session.removeMessage({ sessionID: input.sessionID, messageID: processor.message.id }).pipe(Effect.catchCause(() => Effect.void))
+          ajuste = menor
+          conversation = menor.conversation
+          nextPrompt = armar(conversation)
+          const otro = yield* generar()
+          processor = otro.processor
+          result = otro.result
+        }
+      }
+
       // Lazunox (6.4, H7): si el resumen no sigue la plantilla, UN solo reintento con un recordatorio fijo. Nunca peor que antes:
       // si el reintento falla o también sale mal, se conserva el primer resumen (y se marca como incompleto).
       if (robusto && !compacting.prompt && result === "continue" && !processor.message.error) {
@@ -860,6 +888,28 @@ const layer = Layer.effect(
         processor.message.finish = "error"
         yield* session.updateMessage(processor.message)
         return "stop"
+      }
+
+      // Lazunox (7.9, Codex): un resumen vacío es un ERROR; el historial solo se reemplaza si el resumen sirve. Un resumen cortado por el
+      // límite de salida se acepta (dejar la sesión atascada en desbordamiento es peor) pero se marca como incompleto.
+      if (result === "continue" && compactacionSegura() && !processor.message.error && processor.message.finish !== undefined) {
+        const texto = yield* session.messages({ sessionID: input.sessionID, limit: 8 }).pipe(
+          Effect.map((l) => {
+            const m = l.find((x) => x.info.id === processor.message.id)
+            // Si el mensaje del resumen no está entre los últimos (no debería pasar), no se juzga.
+            return m ? (summaryText(m) ?? "") : "x"
+          }),
+          Effect.orElseSucceed(() => "x"),
+        )
+        if (texto.trim() === "") {
+          processor.message.error = new NamedError.Unknown({
+            message: "La compactación produjo un resumen vacío; se descartó y la conversación quedó como estaba. Vuelve a intentarlo o sigue en una sesión nueva.",
+          }).toObject()
+          processor.message.finish = "error"
+          yield* session.updateMessage(processor.message)
+          return "stop"
+        }
+        if (processor.message.finish === "length") incompleto = true
       }
 
       if (compactionPart && selected.tail_start_id && compactionPart.tail_start_id !== selected.tail_start_id) {

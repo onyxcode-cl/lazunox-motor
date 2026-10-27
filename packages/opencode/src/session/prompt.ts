@@ -64,6 +64,7 @@ import * as SalidaCortada from "./salida-cortada"
 import { SessionProgreso } from "./progreso"
 import { marcaModoPlan } from "./plan-modo"
 import { ContextoMinimo } from "./contexto-minimo"
+import { InstruccionesDiff } from "./instrucciones-diff"
 import { AvisosCambios } from "./avisos-cambios"
 import * as ExhaustividadExplore from "../agent/exhaustividad"
 import { SessionTurnos } from "./turnos"
@@ -1608,13 +1609,43 @@ const layer = Layer.effect(
                 `contexto "minimo" ignorado para el agente ${agent.name} (${contexto === "rechazado-edita" ? "puede editar" : "agente que nunca lo usa"})`,
               )
             const minimo = contexto === "minimo"
-            const [skills, env, instructions, mcpInstructions, modelMsgs] = yield* Effect.all([
+            const [skillsActual, env, instructionsActual, mcpInstructions] = yield* Effect.all([
               minimo ? Effect.succeed(undefined) : sys.skills(agent),
               sys.environment(model),
               minimo ? Effect.succeed([] as string[]) : instruction.system().pipe(Effect.orDie),
               minimo ? sys.mcp(agent, session.permission, true) : sys.mcp(agent, session.permission),
-              MessageV2.toModelMessagesEffect(msgs, model),
             ])
+            // Lazunox (Ola 7 · 7.9): línea base fija de instrucciones y habilidades; si cambian a mitad de sesión se persiste UN aviso
+            // con solo las diferencias en el mensaje de la persona (el sistema no cambia, así la caché del prompt se conserva).
+            let instructions = instructionsActual
+            let skills = skillsActual
+            if (!minimo && InstruccionesDiff.activo()) {
+              const paso = InstruccionesDiff.paso({
+                sessionID,
+                epoca: msgs[0]?.info.id ?? "",
+                instrucciones: instructionsActual,
+                habilidades: skillsActual,
+                visibles: new Set(msgs.map((m) => m.info.id)),
+              })
+              instructions = paso.sistema
+              // Si este agente no ve habilidades (permiso), no se muestra la lista de la línea base.
+              skills = skillsActual === undefined ? undefined : (paso.habilidades ?? skillsActual)
+              const user = msgs.findLast((m) => m.info.role === "user")
+              if (paso.aviso && user) {
+                const part = yield* sessions.updatePart({
+                  id: PartID.ascending(),
+                  messageID: user.info.id,
+                  sessionID: user.info.sessionID,
+                  type: "text",
+                  text: paso.aviso,
+                  synthetic: true,
+                  metadata: { lazunox_instrucciones_diff: true },
+                } as SessionV1.TextPart)
+                user.parts.push(part)
+                InstruccionesDiff.anunciadoEn(sessionID, user.info.id)
+              }
+            }
+            const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model)
             // Lazunox (P02): orden estable para la caché; el entorno (con la fecha) va al final.
             const system = SystemPrompt.assemble({ env, instructions, mcp: mcpInstructions, skills })
             const format = lastUser.format ?? { type: "text" as const }
