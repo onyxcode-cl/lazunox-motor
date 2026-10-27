@@ -11,6 +11,7 @@ import { GrepTool } from "./grep"
 import { ReadTool } from "./read"
 import { TaskTool } from "./task"
 import { TaskWaitTool, TaskListTool, TaskCancelTool } from "./task-gestion"
+import * as Flujos from "./flujos"
 import { Database } from "@opencode-ai/core/database/database"
 import { TodoWriteTool } from "./todo"
 import { WebFetchTool } from "./webfetch"
@@ -254,6 +255,22 @@ const layer = Layer.effect(
           ...(codeModeWaitTool ? { execute_wait: Tool.init(codeModeWaitTool) } : {}),
         })
 
+        // Lazunox (7.17): con LAZUNOX_FLUJOS=1 (y ayudantes de fondo encendidos) `execute` recibe el delegado de flujos, que se apoya
+        // en `task`, `task_wait` y `task_cancel` ya inicializados (mismos permisos, mismos topes). Apagado: el `execute` de siempre.
+        const flujosOn = Flujos.activo() && flags.experimentalBackgroundSubagents
+        const executeTool =
+          tool.execute && flujosOn
+            ? (() => {
+                const base = tool.execute as Tool.Def
+                const delegado = Flujos.delegadoDesdeHerramientas({ task: tool.task, wait: tool.task_wait, cancel: tool.task_cancel })
+                return {
+                  ...base,
+                  execute: (args: any, c: Tool.Context) =>
+                    base.execute(args, { ...c, extra: { ...c.extra, [Flujos.EXTRA_DELEGADO]: delegado } }),
+                } as typeof base
+              })()
+            : tool.execute
+
         return {
           custom,
           builtin: [
@@ -278,7 +295,7 @@ const layer = Layer.effect(
             ...(cuadernoHabilitado(ctx.directory) ? [tool.cuaderno] : []),
             // Lazunox (7.12): tareas programadas y espera, solo con LAZUNOX_PROGRAMADAS=1 (apagado por defecto).
             ...(Programadas.activo() ? [tool.programar, tool.listarProgramadas, tool.borrarProgramada, tool.esperarYContinuar] : []),
-            ...(tool.execute ? [tool.execute] : []),
+            ...(executeTool ? [executeTool] : []),
             ...(tool.execute_wait ? [tool.execute_wait] : []),
             // Lazunox (4B, P16): la herramienta `lsp` sale con LAZUNOX_LSP=1 (ya no con la bandera experimental).
             ...(flags.lazunoxLsp ? [tool.lsp] : []),
@@ -326,8 +343,9 @@ const layer = Layer.effect(
       if (!codeMode) return
       const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
       const tools = Permission.visibleTools(yield* mcp.tools(), ruleset)
-      if (Object.keys(tools).length === 0) return
-      return codeMode.describeCatalog(tools, Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize))
+      const conFlujos = Flujos.activo() && flags.experimentalBackgroundSubagents
+      if (Object.keys(tools).length === 0 && !conFlujos) return
+      return codeMode.describeCatalog(tools, Object.keys(yield* mcp.clients()).map(McpCatalog.sanitize), conFlujos)
     })
 
     const tools: Interface["tools"] = Effect.fn("ToolRegistry.tools")(function* (input) {

@@ -16,6 +16,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { InstanceRef } from "@/effect/instance-ref"
 import { TrabajosDisco } from "./shell/trabajos-disco"
 import { ShellBackground } from "./shell/background"
+import * as Flujos from "./flujos"
 
 export const CODE_MODE_TOOL = "execute"
 
@@ -96,13 +97,18 @@ export const CODE_MODE_LIMITS = {
   maxOutputBytes: limitFromEnv("LAZUNOX_CODE_MODE_MAX_OUTPUT_BYTES", 5_000_000),
 } as const
 
-export function describeCatalog(mcpTools: Record<string, MCP.McpTool>, servers: readonly string[]): string {
-  return CodeMode.make({
-    tools: toolTree(
-      [...groupByServer(mcpTools, servers).values()].flat(),
-      () => () => Effect.fail(toolError("Tool preview is not executable.")),
-    ),
-  }).instructions()
+export function describeCatalog(
+  mcpTools: Record<string, MCP.McpTool>,
+  servers: readonly string[],
+  conFlujos = false,
+): string {
+  const arbol = toolTree(
+    [...groupByServer(mcpTools, servers).values()].flat(),
+    () => () => Effect.fail(toolError("Tool preview is not executable.")),
+  )
+  // Lazunox (7.17): con LAZUNOX_FLUJOS=1 las funciones de flujo aparecen en las instrucciones (el registro ya comprobó los ayudantes de fondo).
+  if (conFlujos) arbol[arbol[Flujos.NAMESPACE] ? Flujos.NAMESPACE_ALTERNO : Flujos.NAMESPACE] = Flujos.arbolDescriptivo()
+  return CodeMode.make({ tools: arbol }).instructions()
 }
 
 const lastSegment = (uri: string) => {
@@ -430,8 +436,23 @@ export const CodeModeTool = Tool.define(
             }),
           )
 
+        // Lazunox (7.17): flujos por script. Solo si LAZUNOX_FLUJOS=1 Y el registro entregó el delegado (ayudantes de fondo encendidos).
+        const delegado = Flujos.activo() ? (ctx.extra?.[Flujos.EXTRA_DELEGADO] as Flujos.Delegado | undefined) : undefined
+        const flujo = delegado
+          ? Flujos.crearFlujos({
+              delegado,
+              ctx: cellCtx,
+              esRechazo: isPermissionRefusal,
+              alRechazar: () => revoke,
+              celdaRevocada: () => record.revoked,
+              mensajeRevocada: CELL_REVOKED_MESSAGE,
+            })
+          : undefined
+        const arbol = toolTree(catalog, callTool)
+        if (flujo) arbol[arbol[Flujos.NAMESPACE] ? Flujos.NAMESPACE_ALTERNO : Flujos.NAMESPACE] = flujo.tree
+
         const runtime = CodeMode.make({
-          tools: toolTree(catalog, callTool),
+          tools: arbol,
           limits: CODE_MODE_LIMITS,
           onToolCallStart: ({ index, name, input }) =>
             Effect.suspend(() => {
@@ -499,6 +520,8 @@ export const CodeModeTool = Tool.define(
           return withLogs(output)
         }).pipe(
           Effect.onInterrupt(() => Effect.sync(() => cellAbort.abort())),
+          // Lazunox (7.17): al terminar, cancelar o revocar el guion, los ayudantes que lanzó y siguen vivos se cancelan.
+          Effect.ensuring(flujo ? flujo.cancelarTodo : Effect.void),
           Effect.ensuring(Effect.sync(() => finishCell(cellId))),
         )
 
