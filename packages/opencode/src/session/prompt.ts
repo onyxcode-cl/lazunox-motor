@@ -1263,7 +1263,7 @@ const layer = Layer.effect(
         .stream({
           agent: ag,
           user: input.lastUser,
-          system: [Objetivo.PROMPT_JUEZ],
+          system: [Objetivo.promptJuez()],
           small: true,
           tools: {},
           model: mdl,

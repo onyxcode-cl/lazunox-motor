@@ -15,6 +15,7 @@ import PROMPT_EXPLORE from "./prompt/explore.txt"
 import PROMPT_SUMMARY from "./prompt/summary.txt"
 import PROMPT_VERIFICADOR from "./prompt/verificador.txt"
 import PROMPT_REVISOR from "./prompt/revisor.txt"
+import { promptRevisor } from "./revisor-afinado"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
 import { mergeDeep, pipe, sortBy, values } from "remeda"
@@ -298,7 +299,7 @@ const layer = Layer.effect(
                 external_directory: readonlyExternalDirectory,
               }),
             ),
-            prompt: PROMPT_REVISOR,
+            prompt: promptRevisor(PROMPT_REVISOR),
             contexto: "minimo",
             modelSmall: true,
             options: {},

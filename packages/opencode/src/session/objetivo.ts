@@ -16,10 +16,12 @@ import type { SessionV1 } from "@opencode-ai/core/v1/session"
 import { neutralizar } from "@/tool/neutralizar"
 import type { Dimension } from "./presupuesto"
 import { estaBloqueado, type ProgresoTurno, TURNOS_SIN_AVANCE } from "./progreso"
+import { afinado } from "@/agent/revisor-afinado"
 
 export const TOPE_DURO = 25
 export const TOPE_POR_DEFECTO = 10
-export const MAX_CONDICION = 2000
+/** Codex admite 4000 caracteres; 2000 antes de la Ola 7 (7.14). */
+export const MAX_CONDICION = 4000
 export const MAX_VERIFICAR = 1000
 export const MAX_EVIDENCIA = 1500
 export const MAX_PEDIDO_JUEZ = 1500
@@ -223,12 +225,18 @@ export function plantillaContinuacion(d: DatosContinuacion): string {
     "4. Si el objetivo es imposible, o necesitas una decisión o un permiso de la persona, dilo con claridad y detente; no inventes avances.",
     "No amplíes ni cambies el objetivo, y no pidas permisos de más.",
   )
+  // Ola 7 (7.14), de la auditoría de cierre de Codex: evidencia ACTUAL, la dudosa no cuenta, y agotar intentos no es cumplir.
+  if (afinado())
+    lineas.push(
+      "Auditoría de cierre: la evidencia debe ser de AHORA (vuelve a ejecutar o a leer; no uses lo que recuerdas de pasos anteriores). La evidencia indirecta, parcial o dudosa cuenta como NO lograda.",
+      "Que se hayan agotado los intentos o el presupuesto no es una razón para decir que el objetivo se cumplió: si no se cumple, dilo así.",
+    )
   return lineas.join("\n")
 }
 
 // ------------------------------------------------------------------------------------------------ juez
 
-export const PROMPT_JUEZ = [
+export const promptJuez = () => [
   `[${MARCA_JUEZ}]`,
   "Eres un revisor estricto y breve. Decides si un objetivo ya se cumplió.",
   "Recibes tres bloques: <objetivo_condicion> (lo que hay que lograr), <objetivo_pedido> (lo último que pidió la persona) y <objetivo_respuesta> (lo que dijo el asistente al terminar su turno).",
@@ -238,6 +246,12 @@ export const PROMPT_JUEZ = [
   "CUMPLIDO: todos los requisitos tienen evidencia concreta.",
   "IMPOSIBLE: el asistente explica con razones sólidas que el objetivo no se puede lograr o necesita algo que solo la persona puede dar.",
   "SIGUE: en cualquier otro caso, incluida la duda.",
+  ...(afinado()
+    ? [
+        "La evidencia indirecta, parcial o dudosa cuenta como NO lograda (SIGUE). Que el asistente diga que agotó los intentos o el presupuesto no es evidencia de cumplimiento.",
+        "No confundas «lo intenté» con «está hecho»: pide evidencia de cada requisito, no del esfuerzo.",
+      ]
+    : []),
 ].join("\n")
 
 /** Entrada del juez: la condición, lo último que pidió la persona y lo que dijo el asistente. SIN resultados de herramientas. */
