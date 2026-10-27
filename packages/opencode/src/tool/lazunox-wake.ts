@@ -1,5 +1,6 @@
 import { Effect } from "effect"
 import { neutralizar } from "./neutralizar"
+import { activoParaElModelo, sanitizar } from "@opencode-ai/core/sanitizar"
 
 // Lazunox: despertar a la conversación cuando termina un shell en segundo plano o una celda de Code Mode que cedió el control.
 // Imita el aviso de `task` en segundo plano (ops.prompt con una parte sintética), pero con tres cautelas:
@@ -57,6 +58,8 @@ export const escapeText = (text: string) => text.replaceAll("<", "&lt;")
 
 /** Últimas ≤ 20 líneas y ≤ 2 KB, ya escapadas. */
 export const tail = (text: string) => {
+  // Lazunox (7.5, nivel 2): el aviso que llega al modelo sale sin secretos si LAZUNOX_SANITIZAR_MODELO=1.
+  text = activoParaElModelo() ? sanitizar(text) : text
   let lines = text.replace(/\s+$/, "").split(/\r?\n/)
   const cutLines = lines.length > MAX_LINES
   if (cutLines) lines = lines.slice(-MAX_LINES)
@@ -100,6 +103,7 @@ export const cellNotice = (input: { id: string; estado: string; output: string }
 // de control (también ESC de colores), se recorta a 500 caracteres y se escapa; no puede cerrar el sobre ni fingir otro.
 export const MONITOR_LINE_MAX = 500
 export const monitorLine = (line: string) => {
+  line = activoParaElModelo() ? sanitizar(line) : line
   const clean = line.replace(/\x1b\[[0-9;?]*[ -\/]*[@-~]/g, "").replace(/[\u0000-\u0008\u000a-\u001f\u007f-\u009f\u2028\u2029\u202a-\u202e\u2066-\u2069]/g, " ")
   const chars = Array.from(clean)
   const cut = chars.length > MONITOR_LINE_MAX

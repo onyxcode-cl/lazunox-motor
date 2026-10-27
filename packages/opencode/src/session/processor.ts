@@ -20,6 +20,7 @@ import * as Respaldo from "./respaldo"
 import * as Presupuesto from "./presupuesto"
 import * as SalidaCortada from "./salida-cortada"
 import * as Uso from "./uso"
+import { entradaGuardada, metadatosGuardados, textoParaElModelo, textoGuardado } from "./sanitizar-partes"
 import { SessionStatus } from "./status"
 import { SessionSummary } from "./summary"
 import type { Provider } from "@/provider/provider"
@@ -157,13 +158,23 @@ const layer = Layer.effect(
         return { call, part }
       })
 
+      // Lazunox (7.5, nivel 1): lo que se muestra y se guarda de la llamada (comando, título, metadatos) sale sin secretos.
+      const limpiarParte = (part: SessionV1.ToolPart): SessionV1.ToolPart => {
+        const state = part.state
+        if (state.status === "pending") return part
+        const input = entradaGuardada(part.tool, state.input)
+        const metadata = state.metadata && metadatosGuardados(state.metadata)
+        if (state.status === "error") return { ...part, state: { ...state, input, metadata } }
+        return { ...part, state: { ...state, input, metadata, title: state.title && textoGuardado(state.title) } } as SessionV1.ToolPart
+      }
+
       const updateToolCall = Effect.fn("SessionProcessor.updateToolCall")(function* (
         toolCallID: string,
         update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
       ) {
         const match = yield* readToolCall(toolCallID)
         if (!match) return undefined
-        const part = yield* session.updatePart(update(match.part))
+        const part = yield* session.updatePart(limpiarParte(update(match.part)))
         ctx.toolcalls[toolCallID] = {
           ...match.call,
           partID: part.id,
@@ -184,35 +195,39 @@ const layer = Layer.effect(
       ) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return
-        yield* session.updatePart({
-          ...match.part,
-          state: {
-            status: "completed",
-            input: match.part.state.input,
-            output: output.output,
-            metadata: output.metadata,
-            title: output.title,
-            time: { start: match.part.state.time.start, end: Date.now() },
-            attachments: output.attachments,
-          },
-        })
+        yield* session.updatePart(
+          limpiarParte({
+            ...match.part,
+            state: {
+              status: "completed",
+              input: match.part.state.input,
+              output: textoParaElModelo(match.part.tool, output.output),
+              metadata: output.metadata,
+              title: output.title,
+              time: { start: match.part.state.time.start, end: Date.now() },
+              attachments: output.attachments,
+            },
+          }),
+        )
         yield* settleToolCall(toolCallID)
       })
 
       const failToolCall = Effect.fn("SessionProcessor.failToolCall")(function* (toolCallID: string, error: unknown) {
         const match = yield* readToolCall(toolCallID)
         if (!match || match.part.state.status !== "running") return false
-        yield* session.updatePart({
-          ...match.part,
-          state: {
-            status: "error",
-            input: match.part.state.input,
-            error: errorMessage(error),
-            // Keep metadata streamed while running so failures retain progress detail (e.g. execute's child calls).
-            metadata: match.part.state.metadata,
-            time: { start: match.part.state.time.start, end: Date.now() },
-          },
-        })
+        yield* session.updatePart(
+          limpiarParte({
+            ...match.part,
+            state: {
+              status: "error",
+              input: match.part.state.input,
+              error: textoParaElModelo(match.part.tool, errorMessage(error)),
+              // Keep metadata streamed while running so failures retain progress detail (e.g. execute's child calls).
+              metadata: match.part.state.metadata,
+              time: { start: match.part.state.time.start, end: Date.now() },
+            },
+          }),
+        )
         if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
           ctx.blocked = ctx.shouldBreak
         }
@@ -351,7 +366,7 @@ const layer = Layer.effect(
             state: {
               status: "error",
               input: {},
-              error: SalidaCortada.mensajeHerramienta(tool, visto.raw),
+              error: textoGuardado(SalidaCortada.mensajeHerramienta(tool, visto.raw)),
               metadata: { lazunox_salida_cortada: true },
               time: { start: "time" in part.state ? part.state.time.start : end, end },
             },

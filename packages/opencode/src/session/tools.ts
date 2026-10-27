@@ -37,6 +37,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { marcaModoPlan } from "./plan-modo"
+import { metadatosGuardados, resultadoParaElModelo } from "./sanitizar-partes"
 import { conCandado, esSoloLectura, mcpSoloLectura } from "./paralelismo"
 import { activa as repararActiva, repararEntrada } from "@/tool/reparar-entrada"
 
@@ -145,7 +146,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         .ask({
           ...req,
           // Lazunox (H4): el motor (no la herramienta) dice qué agente pide el permiso; lo lee `rutas-protegidas`.
-          metadata: { ...req.metadata, lazunox_agente: input.agent.name },
+          // Lazunox (7.5): el comando que se muestra en la petición de permiso sale sin secretos (los patrones no cambian).
+          metadata: { ...metadatosGuardados(req.metadata), lazunox_agente: input.agent.name },
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
           ruleset: Permission.merge(
@@ -473,7 +475,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         // Sin cambios se conserva la MISMA referencia (los ganchos mutan `args` y la herramienta debe verlo).
         const args = reparada && reparada.cambios.length > 0 ? reparada.valor : rawArgs
         return conCandado(input.session.id, esSoloLectura(key) || mcpLectura(key, args), opts.abortSignal, async () =>
-          original(args as never, opts),
+          // Lazunox (7.5, nivel 2): con LAZUNOX_SANITIZAR_MODELO=1 la salida de comandos llega al modelo sin secretos.
+          resultadoParaElModelo(key, await original(args as never, opts)),
         )
       }) as typeof def.execute
     }
