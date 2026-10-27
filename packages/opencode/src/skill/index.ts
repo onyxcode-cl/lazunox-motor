@@ -16,6 +16,7 @@ import { RuntimeFlags } from "@/effect/runtime-flags"
 import { Glob } from "@opencode-ai/core/util/glob"
 import { Discovery } from "./discovery"
 import { isRecord } from "@/util/record"
+import { Politica } from "@/permission/politica"
 import { escapeHtml } from "@/util/html"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import {
@@ -345,21 +346,25 @@ const layer = Layer.effect(
       }),
     )
 
+    // Lazunox (7.20): las habilidades que la política de la organización niega (con o sin permiso del agente) no existen para nadie.
+    // Se filtra al consultar, así que un cambio de la política vale sin reiniciar.
+    const permitida = (name: string) => !Politica.habilidadDenegada(name)
+
     const get = Effect.fn("Skill.get")(function* (name: string) {
       const s = yield* InstanceState.get(state)
-      return s.skills[name]
+      return permitida(name) ? s.skills[name] : undefined
     })
 
     const require = Effect.fn("Skill.require")(function* (name: string) {
       const s = yield* InstanceState.get(state)
-      const info = s.skills[name]
+      const info = permitida(name) ? s.skills[name] : undefined
       if (info) return info
-      return yield* new NotFoundError({ name, available: Object.keys(s.skills).toSorted() })
+      return yield* new NotFoundError({ name, available: Object.keys(s.skills).filter(permitida).toSorted() })
     })
 
     const all = Effect.fn("Skill.all")(function* () {
       const s = yield* InstanceState.get(state)
-      return Object.values(s.skills)
+      return Object.values(s.skills).filter((skill) => permitida(skill.name))
     })
 
     const dirs = Effect.fn("Skill.dirs")(function* () {
@@ -378,7 +383,9 @@ const layer = Layer.effect(
 
     const available = Effect.fn("Skill.available")(function* (agent?: Agent.Info, opts?: { paraModelo?: boolean }) {
       const s = yield* InstanceState.get(state)
-      let list = Object.values(s.skills).toSorted((a, b) => a.name.localeCompare(b.name))
+      let list = Object.values(s.skills)
+        .filter((skill) => permitida(skill.name))
+        .toSorted((a, b) => a.name.localeCompare(b.name))
       if (opts?.paraModelo) list = list.filter((skill) => invocableEn(s, skill.name).ok)
       if (!agent) return list
       return list.filter((skill) => Permission.evaluate("skill", skill.name, agent.permission).action !== "deny")
@@ -390,6 +397,7 @@ const layer = Layer.effect(
     })
 
     const invocable = Effect.fn("Skill.invocable")(function* (name: string) {
+      if (!permitida(name)) return { ok: false as const, motivo: `La skill "${name}" no está disponible: ${Politica.descripcion()}` }
       return invocableEn(yield* InstanceState.get(state), name)
     })
 

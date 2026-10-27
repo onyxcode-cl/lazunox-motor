@@ -17,7 +17,8 @@ import PROMPT_VERIFICADOR from "./prompt/verificador.txt"
 import PROMPT_REVISOR from "./prompt/revisor.txt"
 import PROMPT_TITLE from "./prompt/title.txt"
 import { Permission } from "@/permission"
-import { mergeDeep, pipe, sortBy, values } from "remeda"
+import { filter, mergeDeep, pipe, sortBy, values } from "remeda"
+import { Politica } from "@/permission/politica"
 import { Global } from "@opencode-ai/core/global"
 import path from "path"
 import { Plugin } from "@/plugin"
@@ -421,8 +422,10 @@ const layer = Layer.effect(
           )
         }
 
+        // Lazunox (7.20): los agentes que la política de la organización niega no existen (ni para elegirlos ni para lanzarlos con `task`),
+        // vengan de donde vengan (nativos, configuración, repositorio o plugins). Se filtra al consultar.
         const get = Effect.fnUntraced(function* (agent: string) {
-          return agents[agent]
+          return (Politica.agenteDenegado(agent) ? undefined : agents[agent]) as Info
         })
 
         const list = Effect.fnUntraced(function* () {
@@ -430,6 +433,7 @@ const layer = Layer.effect(
           return pipe(
             agents,
             values(),
+            filter((x) => !Politica.agenteDenegado(x.name)),
             sortBy(
               [(x) => (cfg.default_agent ? x.name === cfg.default_agent : x.name === "build"), "desc"],
               [(x) => x.name, "asc"],
@@ -440,13 +444,13 @@ const layer = Layer.effect(
         const defaultInfo = Effect.fnUntraced(function* () {
           const c = yield* config.get()
           if (c.default_agent) {
-            const agent = agents[c.default_agent]
+            const agent = Politica.agenteDenegado(c.default_agent) ? undefined : agents[c.default_agent]
             if (!agent) throw new Error(`default agent "${c.default_agent}" not found`)
             if (agent.mode === "subagent") throw new Error(`default agent "${c.default_agent}" is a subagent`)
             if (agent.hidden === true) throw new Error(`default agent "${c.default_agent}" is hidden`)
             return agent
           }
-          const visible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true)
+          const visible = Object.values(agents).find((a) => a.mode !== "subagent" && a.hidden !== true && !Politica.agenteDenegado(a.name))
           if (!visible) throw new Error("no primary visible agent found")
           return visible
         })

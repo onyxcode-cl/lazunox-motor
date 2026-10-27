@@ -40,6 +40,7 @@ import { McpBrowser } from "./browser"
 import { McpElicitation } from "./elicitation"
 import { elicitacionActiva } from "./elicitation-esquema"
 import * as EnCurso from "./en-curso"
+import { Politica } from "@/permission/politica"
 
 const DEFAULT_TIMEOUT = 30_000
 // Lazunox: la capacidad `elicitation: { form: {} }` solo se anuncia con LAZUNOX_MCP_ELICITATION=1 (la app lo pone en Code y
@@ -382,6 +383,11 @@ const layer = Layer.effect(
 
     const create = Effect.fn("MCP.create")(
       function* (key: string, mcp: ConfigMCPV1.Info) {
+        // Lazunox (7.20): un servidor que la política de la organización niega NO se conecta ni se lanza (ni su proceso ni su red).
+        if (Politica.mcpDenegado(key)) {
+          yield* Effect.logWarning("MCP server blocked by organization policy", { key })
+          return { status: { status: "failed", error: Politica.descripcion() } } satisfies CreateResult
+        }
         if (mcp.enabled === false) {
           return DISABLED_RESULT
         }
@@ -699,13 +705,15 @@ const layer = Layer.effect(
 
     const clients = Effect.fn("MCP.clients")(function* () {
       const s = yield* InstanceState.get(state)
-      return s.clients
+      // Lazunox (7.20): si la política cambió con el servidor ya conectado, deja de verse (también para recursos, formularios y Code Mode).
+      if (!Politica.hayPolitica()) return s.clients
+      return Object.fromEntries(Object.entries(s.clients).filter(([name]) => !Politica.mcpDenegado(name)))
     })
 
     const instructions = Effect.fn("MCP.instructions")(function* () {
       const s = yield* InstanceState.get(state)
       return Object.entries(s.instructions)
-        .filter(([name]) => s.status[name]?.status === "connected")
+        .filter(([name]) => s.status[name]?.status === "connected" && !Politica.mcpDenegado(name))
         .sort(([a], [b]) => a.localeCompare(b))
         .map(([name, item]) => ({
           name,
@@ -762,7 +770,7 @@ const layer = Layer.effect(
       const defaultTimeout = cfg.experimental?.mcp_timeout
 
       for (const [clientName, client] of Object.entries(s.clients)) {
-        if (s.status[clientName]?.status !== "connected") continue
+        if (s.status[clientName]?.status !== "connected" || Politica.mcpDenegado(clientName)) continue
         const mcpConfig = config[clientName]
         const listed = s.defs[clientName]
         if (!listed) {
@@ -771,7 +779,9 @@ const layer = Layer.effect(
         }
         const timeout = requestTimeout(s, clientName, mcpConfig, defaultTimeout)
         for (const def of listed) {
-          result[McpCatalog.toolName(clientName, def.name)] = { def, client, timeout }
+          const key = McpCatalog.toolName(clientName, def.name)
+          if (Politica.herramientaDenegada(key)) continue // Lazunox (7.20): «tools» de la política también vale para las de MCP
+          result[key] = { def, client, timeout }
         }
       }
       return result
@@ -788,7 +798,8 @@ const layer = Layer.effect(
         const cfg = yield* cfgSvc.get()
         return yield* Effect.forEach(
           Object.entries(s.clients).filter(
-            ([name]) => s.status[name]?.status === "connected" && (!targetClientName || name === targetClientName),
+            ([name]) =>
+              s.status[name]?.status === "connected" && !Politica.mcpDenegado(name) && (!targetClientName || name === targetClientName),
           ),
           ([clientName, client]) =>
             McpCatalog.fetch(

@@ -40,6 +40,7 @@ import { marcaModoPlan } from "./plan-modo"
 import { metadatosGuardados, resultadoParaElModelo } from "./sanitizar-partes"
 import { conCandado, esSoloLectura, mcpSoloLectura } from "./paralelismo"
 import { activa as repararActiva, repararEntrada } from "@/tool/reparar-entrada"
+import { Politica } from "@/permission/politica"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -464,6 +465,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   // Lazunox (Ola 7 — 7.3): candado de lectura/escritura por sesión alrededor de cada `execute` (ver paralelismo.ts).
   // Se envuelve al final, en un solo punto: las de solo lectura comparten el candado; el resto es exclusivo y en orden.
   const conParalelismoSeguro = (mcpLectura: (key: string, args: unknown) => boolean) => {
+    // Lazunox (7.20): último filtro de la política de la organización, para TODAS las herramientas que se arman aquí (registro, MCP directas,
+    // recursos MCP, tool_search, mcp_call): lo denegado no se ofrece al modelo y, si lo nombra igual, no existe para el bucle.
+    if (Politica.hayPolitica()) for (const key of Object.keys(tools)) if (Politica.herramientaDenegada(key)) delete tools[key]
     for (const [key, def] of Object.entries(tools)) {
       const original = def.execute
       if (!original) continue
