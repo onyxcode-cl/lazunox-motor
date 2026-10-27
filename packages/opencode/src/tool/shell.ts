@@ -22,6 +22,8 @@ import { ChildProcessSpawner } from "effect/unstable/process/ChildProcessSpawner
 import { ShellPrompt, type Parameters } from "./shell/prompt"
 import { BashArity } from "@/permission/arity"
 import { ShellBackground, type Job } from "./shell/background"
+import { ShellEndurecer } from "./shell/endurecer"
+import { realpath } from "node:fs/promises"
 import { LazunoxWake } from "./lazunox-wake"
 import { tryCompile, type Compiled } from "./shell/regex-seguro"
 import { TrabajosDisco } from "./shell/trabajos-disco"
@@ -87,6 +89,8 @@ type Scan = {
   dirs: Set<string>
   patterns: Set<string>
   always: Set<string>
+  /** Lazunox (7.7): archivos que una orden de lectura recibe, como los pide la herramienta `read` (relativos al worktree). */
+  reads: Set<string>
 }
 
 type Chunk = {
@@ -125,6 +129,21 @@ function parts(node: Node) {
       continue
     }
     out.push({ type: child.type, text: child.text })
+  }
+  return out
+}
+
+/**
+ * Lazunox (7.7): TODAS las palabras de una orden de bash (nombre y argumentos, números incluidos: `parts` descarta los `number`, y sin el `5` de
+ * `timeout 5 rm x` el desenvolvedor tomaría `rm` por la duración). Sin asignaciones de entorno ni redirecciones.
+ */
+const SIN_PALABRA = new Set(["variable_assignment", "file_redirect", "heredoc_redirect", "herestring_redirect", "comment"])
+function palabras(node: Node) {
+  const out: string[] = []
+  for (let i = 0; i < node.childCount; i++) {
+    const child = node.child(i)
+    if (!child || !child.isNamed || SIN_PALABRA.has(child.type)) continue
+    out.push(child.text)
   }
   return out
 }
@@ -289,6 +308,17 @@ const ask = Effect.fn("ShellTool.ask")(function* (ctx: Tool.Context, scan: Scan,
         directories,
         patterns: globs,
       },
+    })
+  }
+
+  // Lazunox (7.7): lecturas por shell, como permiso `read` (respeta `*.env: ask`, `deny`, etc. igual que la herramienta `read`).
+  if (scan.reads.size > 0) {
+    const archivos = Array.from(scan.reads)
+    yield* ctx.ask({
+      permission: "read",
+      patterns: archivos,
+      always: archivos,
+      metadata: { command: input.command, via: "shell" },
     })
   }
 
@@ -481,7 +511,10 @@ export const ShellTool = Tool.define(
     })
 
     const argPath = Effect.fn("ShellTool.argPath")(function* (arg: string, cwd: string, ps: boolean, shell: string) {
-      const text = ps ? expand(arg, cwd, shell) : home(unquote(arg))
+      // Lazunox (7.7): en bash `$HOME` / `${HOME}` (con o sin comillas) también es una ruta conocida; antes se tomaba por «dinámica» y no se vigilaba.
+      const text = ps
+        ? expand(arg, cwd, shell)
+        : home(ShellEndurecer.activo() ? unquote(arg).replace(/^"?\$\{?HOME\}?"?(?=$|\/)/, os.homedir()) : unquote(arg))
       const file = text && prefix(text)
       if (!file || dynamic(file, ps)) return
       const next = ps ? provider(file) : file
@@ -489,38 +522,175 @@ export const ShellTool = Tool.define(
       return yield* resolvePath(next, cwd, shell)
     })
 
-    const collect = Effect.fn("ShellTool.collect")(function* (
+    // Lazunox (7.7): ruta real (sigue enlaces simbólicos) del tramo que existe + el resto, para juzgar un enlace dentro del proyecto que apunta fuera.
+    const rutaReal = (p: string) =>
+      Effect.promise(async () => {
+        let actual = p
+        const resto: string[] = []
+        for (let i = 0; i < 64; i++) {
+          const real = await realpath(actual).catch(() => undefined)
+          if (real) return path.join(real, ...resto.toReversed())
+          const padre = path.dirname(actual)
+          if (padre === actual) return p
+          resto.push(path.basename(actual))
+          actual = padre
+        }
+        return p
+      })
+
+    const collect: (
       root: Node,
       cwd: string,
       ps: boolean,
       shell: string,
       instance: InstanceContext,
+      hondo?: number,
+    ) => Effect.Effect<Scan> = Effect.fn("ShellTool.collect")(function* (
+      root: Node,
+      cwd: string,
+      ps: boolean,
+      shell: string,
+      instance: InstanceContext,
+      hondo: number = 0,
     ) {
       const scan: Scan = {
         dirs: new Set<string>(),
         patterns: new Set<string>(),
         always: new Set<string>(),
+        reads: new Set<string>(),
       }
       const shellKind = ShellID.toKind(Shell.name(shell))
+      // Lazunox (7.7): solo para bash/zsh/sh (el análisis de PowerShell y cmd queda como estaba).
+      const reforzado = ShellEndurecer.activo() && !ps && shellKind !== "cmd"
+      // Directorios desde los que se pueden resolver las rutas relativas: el de la llamada y, tras un `cd` estático, el nuevo (se mira en ambos).
+      const cwds = [cwd]
+      // La herramienta `read` pide la ruta relativa al worktree; en un proyecto sin git (worktree = «/») eso daría rutas desde la raíz y las reglas
+      // relativas (`secretos/*`) no encajarían, así que se usa la carpeta del proyecto.
+      const raizDeLecturas = instance.worktree === "/" ? instance.directory : instance.worktree
+      const raicesReales = reforzado
+        ? yield* Effect.forEach(
+            [instance.directory, ...(instance.worktree === "/" ? [] : [instance.worktree])],
+            (r) => rutaReal(r),
+          )
+        : []
 
-      for (const node of commands(root)) {
-        const command = parts(node)
+      // ¿Esta ruta (ya resuelta) cae fuera del proyecto? Con el endurecimiento también se juzga la ruta REAL (un enlace del proyecto hacia fuera).
+      const fuera = Effect.fnUntraced(function* (resolved: string) {
+        if (!containsPath(resolved, instance)) return resolved
+        if (!reforzado) return undefined
+        const real = yield* rutaReal(resolved)
+        if (real === resolved || containsPath(real, instance)) return undefined
+        if (raicesReales.some((r) => FSUtil.contains(r, real))) return undefined
+        return real
+      })
+      const agregarDir = Effect.fnUntraced(function* (resolved: string) {
+        const out = yield* fuera(resolved)
+        if (!out) return
+        scan.dirs.add((yield* fs.isDir(out)) ? out : path.dirname(out))
+      })
+
+      const examinar = Effect.fnUntraced(function* (
+        command: Part[],
+        opciones: { patron?: string; siempre: boolean; asignaciones?: string[]; palabras?: string[] },
+      ) {
         const tokens = command.map((item) => item.text)
+        // Para git, lecturas y envoltorios se usan TODAS las palabras (con números); para los archivos de siempre, `tokens`.
+        const todas = opciones.palabras ?? tokens
         const cmd = ps || shellKind === "cmd" ? tokens[0]?.toLowerCase() : tokens[0]
 
         if (cmd && (FILES.has(cmd) || (shellKind === "cmd" && CMD_FILES.has(cmd)))) {
           for (const arg of pathArgs(command, ps, shellKind === "cmd")) {
-            const resolved = yield* argPath(arg, cwd, ps, shell)
-            yield* Effect.logInfo("resolved path", { arg, resolved })
-            if (!resolved || containsPath(resolved, instance)) continue
-            const dir = (yield* fs.isDir(resolved)) ? resolved : path.dirname(resolved)
-            scan.dirs.add(dir)
+            for (const dirActual of cwds) {
+              const resolved = yield* argPath(arg, dirActual, ps, shell)
+              yield* Effect.logInfo("resolved path", { arg, resolved })
+              if (!resolved) continue
+              yield* agregarDir(resolved)
+            }
+          }
+        }
+
+        if (reforzado) {
+          // `git -C DIR`, `--git-dir=`, `--work-tree=` y `GIT_DIR=`: otro repositorio = una ruta más para external_directory.
+          for (const arg of [...ShellEndurecer.rutasDeGit(todas), ...ShellEndurecer.rutasDeAsignaciones(opciones.asignaciones ?? [])]) {
+            for (const dirActual of cwds) {
+              const resolved = yield* argPath(arg, dirActual, false, shell)
+              if (resolved) yield* agregarDir(resolved)
+            }
+          }
+          // Lecturas por shell: también se piden como permiso `read` (así valen `*.env: ask` o un `deny` del agente).
+          for (const arg of ShellEndurecer.rutasLeidas(todas)) {
+            for (const dirActual of cwds) {
+              const resolved = yield* argPath(arg, dirActual, false, shell)
+              if (resolved) scan.reads.add(path.relative(raizDeLecturas, resolved))
+            }
+          }
+          // `cd` estático: lo que sigue se resuelve también desde el directorio nuevo.
+          if (cmd && (cmd === "cd" || cmd === "pushd")) {
+            const destino = pathArgs(command, false)[0]
+            const resolved = destino ? yield* argPath(destino, cwd, false, shell) : undefined
+            if (resolved && !cwds.includes(resolved)) cwds.push(resolved)
           }
         }
 
         if (tokens.length && (!cmd || !CWD.has(cmd))) {
-          scan.patterns.add(source(node))
-          scan.always.add(BashArity.prefix(tokens).join(" ") + " *")
+          if (opciones.patron !== undefined) scan.patterns.add(opciones.patron)
+          if (opciones.siempre) scan.always.add(BashArity.prefix(tokens).join(" ") + " *")
+        }
+      })
+
+      for (const node of commands(root)) {
+        const command = parts(node)
+        const asignaciones = reforzado
+          ? Array.from({ length: node.childCount }, (_, i) => node.child(i))
+              .filter((child): child is Node => child?.type === "variable_assignment")
+              .map((child) => child.text)
+          : []
+        const todas = reforzado ? palabras(node) : undefined
+        yield* examinar(command, { patron: source(node), siempre: true, asignaciones, palabras: todas })
+
+        if (reforzado && todas) {
+          // Envoltorios y programas que ejecutan otra orden: la orden de dentro se evalúa TAMBIÉN (un `deny rm *` no se salta con `timeout 5 rm x`).
+          const dentro = ShellEndurecer.desenvolver(todas)
+          for (const interna of dentro.internas) {
+            yield* examinar(
+              interna.map((text) => ({ type: "word", text })),
+              { patron: interna.join(" "), siempre: false, palabras: interna },
+            )
+          }
+          if (hondo < ShellEndurecer.MAX_SCRIPTS) {
+            for (const script of dentro.scripts) {
+              const analizado = yield* Effect.scoped(
+                Effect.gen(function* () {
+                  const tree = yield* Effect.acquireRelease(parse(script, false), (t) => Effect.sync(() => t.delete()))
+                  return { scan: yield* collect(tree.rootNode, cwd, ps, shell, instance, hondo + 1), conError: tree.rootNode.hasError }
+                }),
+              ).pipe(Effect.catchCause(() => Effect.succeed(undefined)))
+              const sub = analizado?.scan
+              // Script que no se pudo analizar del todo (el analizador recupera lo que puede y descarta el resto): el texto entero llega también a las reglas.
+              if (!sub || analizado?.conError || sub.patterns.size === 0) {
+                if (script.trim()) scan.patterns.add(script.trim())
+                if (!sub) continue
+              }
+              for (const x of sub!.patterns) scan.patterns.add(x)
+              for (const x of sub!.dirs) scan.dirs.add(x)
+              for (const x of sub!.reads) scan.reads.add(x)
+            }
+          }
+        }
+      }
+
+      // Lazunox (7.7): el destino de una redirección (`> /etc/x`, `>> ~/.ssh/y`, `< archivo`) también es una ruta; /dev/null y las duplicaciones (2>&1) no.
+      if (reforzado) {
+        for (const redir of root.descendantsOfType("file_redirect")) {
+          if (!redir) continue
+          const destino = redir.childForFieldName("destination")
+          const operador = Array.from({ length: redir.childCount }, (_, i) => redir.child(i))
+            .find((child) => child && /^[<>&|]+$/.test(child.type))?.text
+          if (!destino || operador === undefined || ShellEndurecer.destinoIgnorable(destino.text, operador)) continue
+          for (const dirActual of cwds) {
+            const resolved = yield* argPath(destino.text, dirActual, false, shell)
+            if (resolved) yield* agregarDir(resolved)
+          }
         }
       }
 
