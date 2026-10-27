@@ -1,0 +1,3 @@
+Load a specialized skill when the task matches one of the skills listed in the system prompt (the name must match one of them). It injects the skill's instructions and resources into the conversation; the output may reference scripts and files next to the skill.
+
+Some skills run as a helper (context: fork): they cannot see this conversation, so pass what the person asked for in `args`; the result comes back as a short report. A skill never grants permissions: if it lists allowed-tools, only those tools stay available until the turn ends.

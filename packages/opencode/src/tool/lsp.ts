@@ -3,6 +3,8 @@ import * as Tool from "./tool"
 import path from "path"
 import { LSP } from "@/lsp/lsp"
 import DESCRIPTION from "./lsp.txt"
+import DESCRIPTION_CORTA from "./lsp-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 import { InstanceState } from "@/effect/instance-state"
 import { pathToFileURL } from "url"
 import { assertExternalDirectoryEffect } from "./external-directory"
@@ -41,7 +43,7 @@ export const LspTool = Tool.define(
     const lsp = yield* LSP.Service
     const fs = yield* FSUtil.Service
     return {
-      description: DESCRIPTION,
+      description: recorteActivo("herramientas") ? DESCRIPTION_CORTA : DESCRIPTION,
       parameters: Parameters,
       execute: (args: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {

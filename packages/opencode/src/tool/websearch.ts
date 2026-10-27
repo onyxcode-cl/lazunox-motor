@@ -3,6 +3,8 @@ import { HttpClient } from "effect/unstable/http"
 import * as Tool from "./tool"
 import * as McpWebSearch from "./mcp-websearch"
 import DESCRIPTION from "./websearch.txt"
+import DESCRIPTION_CORTA from "./websearch-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 import { checksum } from "@opencode-ai/core/util/encode"
 import { InstallationVersion } from "@opencode-ai/core/installation/version"
 import { RuntimeFlags } from "@/effect/runtime-flags"
@@ -104,7 +106,7 @@ export const WebSearchTool = Tool.define(
 
     return {
       get description() {
-        return DESCRIPTION.replace("{{year}}", new Date().getFullYear().toString())
+        return (recorteActivo("herramientas") ? DESCRIPTION_CORTA : DESCRIPTION).replaceAll("{{year}}", new Date().getFullYear().toString())
       },
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>

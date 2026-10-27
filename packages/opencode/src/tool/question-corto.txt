@@ -1,0 +1,5 @@
+Ask the user a question during execution: gather preferences, clarify ambiguous instructions, get decisions on implementation choices, or offer directions to take.
+
+- With `custom` enabled (default) a "Type your own answer" option is added automatically; don't add "Other" or catch-all options.
+- Answers come back as arrays of labels; set `multiple: true` to allow several.
+- If you recommend an option, put it first and end its label with "(Recommended)".

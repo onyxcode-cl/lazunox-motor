@@ -1,0 +1,3 @@
+Search the web with the session's web search provider (real-time results, can scrape specific URLs); use it for information beyond your knowledge cutoff or recent events. Configurable result count; when available: live crawling modes 'fallback' or 'preferred', search types 'auto', 'fast' or 'deep', context length and domain filters.
+
+The current year is {{year}}. You MUST use this year when searching for recent information or current events (e.g. "AI news {{year}}", not an earlier year).

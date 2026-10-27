@@ -4,6 +4,8 @@ import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { Skill } from "../skill"
 import * as Tool from "./tool"
 import DESCRIPTION from "./skill.txt"
+import DESCRIPTION_CORTA from "./skill-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 import { Agent } from "../agent/agent"
 import { Config } from "@/config/config"
 import { Database } from "@opencode-ai/core/database/database"
@@ -296,7 +298,7 @@ export const SkillTool = Tool.define(
     })
 
     return {
-      description: DESCRIPTION,
+      description: recorteActivo("herramientas") ? DESCRIPTION_CORTA : DESCRIPTION,
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         ejecutar(params, ctx).pipe(Effect.orDie),

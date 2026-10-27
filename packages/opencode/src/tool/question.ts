@@ -2,6 +2,8 @@ import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import { Question } from "../question"
 import DESCRIPTION from "./question.txt"
+import DESCRIPTION_CORTA from "./question-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 
 export const Parameters = Schema.Struct({
   questions: Schema.mutable(Schema.Array(Question.Prompt)).annotate({ description: "Questions to ask" }),
@@ -17,7 +19,7 @@ export const QuestionTool = Tool.define<typeof Parameters, Metadata, Question.Se
     const question = yield* Question.Service
 
     return {
-      description: DESCRIPTION,
+      description: recorteActivo("herramientas") ? DESCRIPTION_CORTA : DESCRIPTION,
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
         Effect.gen(function* () {

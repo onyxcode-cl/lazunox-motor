@@ -4,6 +4,8 @@ import { Parser } from "htmlparser2"
 import * as Tool from "./tool"
 import TurndownService from "turndown"
 import DESCRIPTION from "./webfetch.txt"
+import DESCRIPTION_CORTA from "./webfetch-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 import { isImageAttachment } from "@/util/media"
 
 const MAX_RESPONSE_SIZE = 5 * 1024 * 1024 // 5MB
@@ -28,7 +30,7 @@ export const WebFetchTool = Tool.define(
     const httpOk = HttpClient.filterStatusOk(http)
 
     return {
-      description: DESCRIPTION,
+      description: recorteActivo("herramientas") ? DESCRIPTION_CORTA : DESCRIPTION,
       parameters: Parameters,
       execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context) =>
         Effect.gen(function* () {

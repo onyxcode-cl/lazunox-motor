@@ -1,0 +1,3 @@
+Query Language Server Protocol servers for code intelligence. Operations: goToDefinition, findReferences, hover (docs/type info), documentSymbol (symbols in a file), workspaceSymbol (project-wide symbols matching `query`; empty = all), goToImplementation, prepareCallHierarchy, incomingCalls, outgoingCalls.
+
+All operations need filePath, line and character (both 1-based, as in editors). For workspaceSymbol, filePath only selects which LSP server to start. If no server is configured for the file type, an error is returned.
