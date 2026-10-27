@@ -89,9 +89,19 @@ describe("session.retry.delay", () => {
     expect(SessionRetry.delay(1, longError)).toBe(700000)
   })
 
-  test("caps oversized header delays to the runtime timer limit", () => {
+  test("caps oversized header delays to 15 minutes (7.2)", () => {
     const error = apiError({ "retry-after-ms": "999999999999" })
-    expect(SessionRetry.delay(1, error)).toBe(SessionRetry.RETRY_MAX_DELAY)
+    expect(SessionRetry.delay(1, error)).toBe(SessionRetry.RETRY_AFTER_TOPE)
+    expect(SessionRetry.RETRY_AFTER_TOPE).toBe(900_000)
+  })
+
+  test("LAZUNOX_RETRY_TOPE=0 vuelve al tope del temporizador", () => {
+    process.env.LAZUNOX_RETRY_TOPE = "0"
+    try {
+      expect(SessionRetry.delay(1, apiError({ "retry-after-ms": "999999999999" }))).toBe(SessionRetry.RETRY_MAX_DELAY)
+    } finally {
+      delete process.env.LAZUNOX_RETRY_TOPE
+    }
   })
 
   it.instance("policy updates retry status and increments attempts", () =>

@@ -46,3 +46,12 @@ describe("descripción compacta del shell", () => {
     expect(Object.keys(ShellPrompt.parameterSchema(true).fields)).toEqual(Object.keys(ShellPrompt.parameterSchema().fields))
   })
 })
+
+describe("recorte cache", () => {
+  test("la descripción compacta del shell no lleva la ruta temporal (queda en <env>)", async () => {
+    const { Global } = await import("@opencode-ai/core/global")
+    const d = ShellPrompt.renderCompacto("bash", "linux", limits, 1000)
+    expect(d).not.toContain(Global.Path.tmp)
+    expect(d).toContain("<env>")
+  })
+})

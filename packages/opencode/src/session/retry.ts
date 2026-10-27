@@ -40,8 +40,12 @@ const RETRYABLE_MESSAGE_PATTERNS = [
   /\btry again (?:later|in\b)|\b(?:currently|temporarily) at capacity\b/i,
 ]
 
+/** Lazunox (7.2): tope del `retry-after` (15 min, como OpenCode 2.x). Apagar: LAZUNOX_RETRY_TOPE=0. */
+export const RETRY_AFTER_TOPE = 15 * 60_000
+const topeRetryActivo = (env: Record<string, string | undefined> = process.env) => env.LAZUNOX_RETRY_TOPE !== "0"
+
 function cap(ms: number) {
-  return Math.min(ms, RETRY_MAX_DELAY)
+  return Math.min(ms, topeRetryActivo() ? RETRY_AFTER_TOPE : RETRY_MAX_DELAY)
 }
 
 export function delay(attempt: number, error?: SessionV1.APIError, random = Math.random()) {

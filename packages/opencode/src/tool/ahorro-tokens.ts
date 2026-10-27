@@ -8,8 +8,9 @@
 //     herramientas  descripciones más cortas de read, edit, write, glob y grep
 //     sistema       prompt de sistema por defecto sin duplicados ni ejemplos de relleno
 //     busqueda      sin LAZUNOX_TOOL_SEARCH explícito, la búsqueda diferida de herramientas MCP se comporta como `auto`
+//     cache         la ruta temporal sale de la descripción de la terminal y va al bloque de entorno (herramientas idénticas entre proyectos); el subagente usa la clave de caché de su padre
 //   `on` = todos. `0`, `off`, `false` o `no` = ninguno.
-export const RECORTES = ["bash", "task", "todo", "herramientas", "sistema", "busqueda"] as const
+export const RECORTES = ["bash", "task", "todo", "herramientas", "sistema", "busqueda", "cache"] as const
 export type Recorte = (typeof RECORTES)[number]
 
 export function recortesActivos(env: Record<string, string | undefined> = process.env): ReadonlySet<Recorte> {

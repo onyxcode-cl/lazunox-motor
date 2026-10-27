@@ -1,4 +1,5 @@
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
+import { recorteActivo } from "@/tool/ahorro-tokens"
 import type { Auth } from "@/auth"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
@@ -85,7 +86,8 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     ? ProviderTransform.smallOptions(input.model)
     : ProviderTransform.options({
         model: input.model,
-        sessionID: input.sessionID,
+        // Lazunox (7.2, `cache`): el subagente usa la clave de caché de su padre (mismo nodo de caché, herramientas casi iguales).
+        sessionID: recorteActivo("cache") ? (input.parentSessionID ?? input.sessionID) : input.sessionID,
         providerOptions: input.provider.options,
       })
   const options = mergeOptions(mergeOptions(mergeOptions(base, input.model.options), input.agent.options), variant)
@@ -196,8 +198,8 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
             "User-Agent": USER_AGENT,
           }
         : {
-            "x-session-affinity": input.sessionID,
-            "X-Session-Id": input.sessionID,
+            "x-session-affinity": recorteActivo("cache") ? (input.parentSessionID ?? input.sessionID) : input.sessionID,
+            "X-Session-Id": recorteActivo("cache") ? (input.parentSessionID ?? input.sessionID) : input.sessionID,
             "User-Agent": USER_AGENT,
           }),
       ...(input.parentSessionID ? { "x-parent-session-id": input.parentSessionID } : {}),

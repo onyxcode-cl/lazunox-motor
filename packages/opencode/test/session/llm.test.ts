@@ -818,8 +818,8 @@ describe("session.llm.stream", () => {
             expect(headers.get("x-opencode-session")).toBe(sessionID)
             return
           }
-          expect(headers.get("x-session-affinity")).toBe(sessionID)
-          expect(headers.get("X-Session-Id")).toBe(sessionID)
+          expect(headers.get("x-session-affinity")).toBe(parentSessionID ?? sessionID)
+          expect(headers.get("X-Session-Id")).toBe(parentSessionID ?? sessionID)
         }),
       {
         config: () => {

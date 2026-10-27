@@ -296,7 +296,7 @@ export function renderCompacto(name: string, platform: NodeJS.Platform, limits: 
   const nombre = ps ? shellDisplayName(name) : cmd ? "cmd.exe" : "bash"
   return `Executes a ${nombre} command in a persistent shell session with optional timeout (OS: ${platform}, shell: ${name}).
 
-All commands run in the current working directory; use the \`workdir\` parameter instead of \`cd <dir> && <command>\`. Use \`${Global.Path.tmp}\` for temporary work outside the workspace (it already exists and is pre-approved for external directory access).
+All commands run in the current working directory; use the \`workdir\` parameter instead of \`cd <dir> && <command>\`. ${recorteActivo("cache") ? "Temporary work outside the workspace: use the temporary directory named in <env>." : `Use \`${Global.Path.tmp}\` for temporary work outside the workspace (it already exists and is pre-approved for external directory access).`}
 
 IMPORTANT: for terminal operations (git, npm, docker, tests...). DO NOT use it for file operations: read with Read, search with Glob/Grep, edit with Edit, write with Write; talk to the user with plain output, not echo.${ps ? `\n\n${powershellNotes(name)}` : ""}
 

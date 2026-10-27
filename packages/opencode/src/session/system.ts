@@ -7,6 +7,7 @@ import PROMPT_ANTHROPIC from "./prompt/anthropic.txt"
 import PROMPT_DEFAULT from "./prompt/default.txt"
 import PROMPT_DEFAULT_COMPACTO from "./prompt/default-compacto.txt"
 import { recorteActivo } from "@/tool/ahorro-tokens"
+import { Global } from "@opencode-ai/core/global"
 import PROMPT_BEAST from "./prompt/beast.txt"
 import PROMPT_GEMINI from "./prompt/gemini.txt"
 import PROMPT_GPT from "./prompt/gpt.txt"
@@ -109,6 +110,7 @@ const layer = Layer.effect(
             `  Workspace root folder: ${ctx.worktree}`,
             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
             `  Platform: ${process.platform}`,
+            ...(recorteActivo("cache") ? [`  Temporary directory (exists, pre-approved for external directory access): ${Global.Path.tmp}`] : []),
             `  Today's date: ${stableDate()}`,
             `</env>`,
           ].join("\n"),
