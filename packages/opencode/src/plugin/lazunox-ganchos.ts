@@ -9,6 +9,9 @@ import { PartID } from "@/session/schema"
 import { ToolID } from "@/tool/schema"
 import { GanchoRechazoError } from "./lazunox-rechazo"
 import { TRUNCATION_DIR } from "@/tool/truncation-dir"
+import { createHash } from "node:crypto"
+import { aplicaIf, IF_MAX } from "./ganchos-if"
+import { TOPE_CAPTURA, acotar, derrameActivo } from "./ganchos-derrame"
 
 // Lazunox: ganchos de usuario por comando (como los hooks de Claude Code), solo del archivo que la APP fija en LAZUNOX_HOOKS_FILE.
 // Un proyecto NO puede traer sus propios ganchos (sería ejecución de código de un repositorio ajeno): el archivo vive en la carpeta de datos de
@@ -30,7 +33,20 @@ import { TRUNCATION_DIR } from "@/tool/truncation-dir"
 //   PreToolUse        además: stdout {"updatedInput":{…}} (o hookSpecificOutput.updatedInput) reemplaza los argumentos SI validan contra el
 //                     esquema de la herramienta; si no validan (o no se conoce el esquema) se ignora y se registra.
 
-export type Gancho = { matcher?: string; command: string; timeout?: number }
+// Ola 7 (7.6), mismos formato y archivo:
+//   "if"              filtro de UNA regla con la sintaxis de permisos ("Bash(git *)", "Edit(*.ts)"); solo en eventos de herramienta. Mejor esfuerzo:
+//                     si no se puede analizar la llamada, el gancho corre igual.
+//   "onFailure"       "block": si el gancho falla (no arranca, expira, sale con un código que no es 0 ni 2, o devuelve JSON ilegible) la acción se
+//                     BLOQUEA (falla cerrado). Vale en PreToolUse, UserPromptSubmit y PermissionRequest; en el resto se ignora. Por defecto la acción sigue.
+//   PermissionRequest una petición de permiso va a preguntarse a la persona: el gancho solo puede NEGARLA (código 2 o {"decision":"block"}); nunca
+//                     aprobarla (un gancho no amplía permisos).
+//   SubagentStart     nació la sesión de un ayudante (informativo). Interrupt: la persona detuvo la sesión (informativo).
+//   PostToolBatch     terminó el lote de herramientas de un paso del modelo (informativo).
+//   Salida grande     el texto que pasa de su tope (contexto 4000, razones 2000…) se guarda completo en la carpeta de salidas y al modelo llega el
+//                     principio y el final más la ruta (mismo tope). LAZUNOX_GANCHOS_DERRAME=0 lo apaga (corte silencioso, captura de 8 KB).
+//   Confianza         si la app fija LAZUNOX_HOOKS_SHA256 (sha256 en hexadecimal del archivo aprobado), un archivo distinto NO ejecuta nada.
+
+export type Gancho = { matcher?: string; command: string; timeout?: number; if?: string; onFailure?: "block" }
 export type Config = {
   PreToolUse: Gancho[]
   PostToolUse: Gancho[]
@@ -42,6 +58,10 @@ export type Config = {
   SubagentStop: Gancho[]
   PostToolUseFailure: Gancho[]
   PermissionDenied: Gancho[]
+  PermissionRequest: Gancho[]
+  SubagentStart: Gancho[]
+  Interrupt: Gancho[]
+  PostToolBatch: Gancho[]
 }
 const VACIO = (): Config => ({
   PreToolUse: [],
@@ -54,6 +74,10 @@ const VACIO = (): Config => ({
   SubagentStop: [],
   PostToolUseFailure: [],
   PermissionDenied: [],
+  PermissionRequest: [],
+  SubagentStart: [],
+  Interrupt: [],
+  PostToolBatch: [],
 })
 
 const MAX_ARCHIVO = 64 * 1024
@@ -94,6 +118,8 @@ export const leerConfig = (text: string): Config => {
         command: g.command,
         matcher: typeof g.matcher === "string" && g.matcher.length <= 300 ? g.matcher : undefined,
         timeout: typeof g.timeout === "number" && Number.isFinite(g.timeout) ? Math.min(TIEMPO_MAX, Math.max(1, Math.floor(g.timeout))) : undefined,
+        if: typeof g.if === "string" && g.if.trim() && g.if.length <= IF_MAX ? g.if : undefined,
+        onFailure: g.onFailure === "block" ? ("block" as const) : undefined,
       }))
       .slice(0, MAX_GANCHOS)
   return {
@@ -107,6 +133,10 @@ export const leerConfig = (text: string): Config => {
     SubagentStop: lista(hooks.SubagentStop),
     PostToolUseFailure: lista(hooks.PostToolUseFailure),
     PermissionDenied: lista(hooks.PermissionDenied),
+    PermissionRequest: lista(hooks.PermissionRequest),
+    SubagentStart: lista(hooks.SubagentStart),
+    Interrupt: lista(hooks.Interrupt),
+    PostToolBatch: lista(hooks.PostToolBatch),
   }
 }
 
@@ -127,34 +157,54 @@ export const leerSalida = (stdout: string): Salida => {
   const h = o.hookSpecificOutput && typeof o.hookSpecificOutput === "object" ? (o.hookSpecificOutput as Record<string, unknown>) : {}
   const out: Salida = {}
   if (o.decision === "block") out.decision = "block"
-  if (typeof o.reason === "string") out.reason = o.reason.slice(0, MAX_RAZON)
+  if (typeof o.reason === "string") out.reason = o.reason.slice(0, TOPE_CAPTURA)
   const ui = "updatedInput" in o ? o.updatedInput : h.updatedInput
   if (ui !== undefined) out.updatedInput = ui
   const uo = "updatedToolOutput" in o ? o.updatedToolOutput : h.updatedToolOutput
   if (uo !== undefined) out.updatedToolOutput = uo
   const ctx = typeof o.additionalContext === "string" ? o.additionalContext : typeof h.additionalContext === "string" ? h.additionalContext : undefined
-  if (ctx) out.context = ctx.slice(0, MAX_CONTEXTO)
+  if (ctx) out.context = ctx.slice(0, TOPE_CAPTURA)
   return out
 }
 
 /** ¿Este resultado pide seguir/bloquear? Código 2 (con stderr) o JSON `{"decision":"block"}` con código 0. Devuelve la razón. */
 export const pideBloquear = (r: Resultado): string | undefined => {
   if (r.timedOut) return undefined
-  if (r.code === 2) return (r.stderr || r.stdout).trim().slice(0, MAX_RAZON) || "(sin motivo)"
+  if (r.code === 2) return acotar((r.stderr || r.stdout).trim(), MAX_RAZON, "el motivo de un gancho") || "(sin motivo)"
   if (r.code === 0) {
     const s = leerSalida(r.stdout)
-    if (s.decision === "block") return (s.reason ?? "").trim() || "(sin motivo)"
+    if (s.decision === "block") return acotar((s.reason ?? "").trim(), MAX_RAZON, "el motivo de un gancho") || "(sin motivo)"
   }
   return undefined
 }
+
+/** Stdout que empieza como JSON de decisión pero no se puede leer: para `onFailure` cuenta como fallo (una decisión corrupta no se ignora). */
+export const salidaIlegible = (stdout: string): boolean => {
+  const t = stdout.trim()
+  if (!t.startsWith("{")) return false
+  try {
+    const j: unknown = JSON.parse(t)
+    return !j || typeof j !== "object" || Array.isArray(j)
+  } catch {
+    return true
+  }
+}
+
+/** ¿El gancho FALLÓ? No arrancó, expiró, salió con un código que no es 0 (sigue) ni 2 (bloquea a propósito), o dejó un JSON de decisión roto. */
+export const fallo = (r: Resultado): boolean =>
+  r.timedOut || r.code === null || (r.code !== 0 && r.code !== 2) || (r.code === 0 && salidaIlegible(r.stdout))
+
+/** Motivo legible de un fallo, para el mensaje de bloqueo de `onFailure`. */
+export const motivoFallo = (r: Resultado): string =>
+  r.timedOut ? "pasó de su tiempo" : r.code === null ? "no pudo ejecutarse" : r.code === 0 ? "su salida JSON no se puede leer" : `salió con el código ${r.code}`
 
 /** Texto de contexto de un gancho que no bloquea: código 0 y stdout (JSON con additionalContext, o texto plano), acotado. */
 export const textoContexto = (r: Resultado): string => {
   if (r.code !== 0 || r.timedOut) return ""
   const s = leerSalida(r.stdout)
   if (s.decision === "block") return ""
-  if (r.stdout.trim().startsWith("{") && (s.context !== undefined || Object.keys(s).length > 0)) return (s.context ?? "").trim()
-  return r.stdout.trim().slice(0, MAX_CONTEXTO)
+  if (r.stdout.trim().startsWith("{") && (s.context !== undefined || Object.keys(s).length > 0)) return acotar((s.context ?? "").trim(), MAX_CONTEXTO, "un gancho")
+  return acotar(r.stdout.trim(), MAX_CONTEXTO, "un gancho")
 }
 
 /** El texto de un gancho es DATO no confiable: sin escapes ANSI ni control, y sin poder cerrar o fingir las etiquetas de sobre del motor. */
@@ -254,7 +304,7 @@ const matar = (pid: number | undefined) => {
 }
 
 /** Ejecuta un gancho: JSON por stdin, con tiempo máximo y salida acotada. */
-export const ejecutar = (g: Gancho, payload: unknown, cwd: string, maxSalida = MAX_SALIDA): Promise<Resultado> =>
+export const ejecutar = (g: Gancho, payload: unknown, cwd: string, maxSalida = derrameActivo() ? TOPE_CAPTURA : MAX_SALIDA): Promise<Resultado> =>
   new Promise((resolve) => {
     const child = spawn(g.command, [], {
       shell: true,
@@ -286,18 +336,42 @@ export const ejecutar = (g: Gancho, payload: unknown, cwd: string, maxSalida = M
     child.stdin.end(JSON.stringify(payload))
   })
 
-let cache: { file: string; mtime: number; cfg: Config } | undefined
+let cache: { file: string; mtime: number; hash: string | undefined; cfg: Config } | undefined
+let avisoHash = ""
+/** Hash esperado del archivo (lo fija la app al aprobarlo). Ausente = sin comprobación; presente y mal formado = nada se ejecuta. */
+export const hashEsperado = (env: Record<string, string | undefined> = process.env): string | undefined | null => {
+  const v = env.LAZUNOX_HOOKS_SHA256
+  if (v === undefined || v === "") return undefined
+  return /^[0-9a-fA-F]{64}$/.test(v.trim()) ? v.trim().toLowerCase() : null
+}
 const config = (file: string): Config => {
   try {
     const st = fs.statSync(file)
     if (!st.isFile() || st.size > MAX_ARCHIVO) return VACIO()
-    if (cache && cache.file === file && cache.mtime === st.mtimeMs) return cache.cfg
-    const cfg = leerConfig(fs.readFileSync(file, "utf-8"))
-    cache = { file, mtime: st.mtimeMs, cfg }
+    const esperado = hashEsperado()
+    const clave = esperado === null ? "malo" : esperado
+    if (cache && cache.file === file && cache.mtime === st.mtimeMs && cache.hash === clave) return cache.cfg
+    const bytes = fs.readFileSync(file)
+    let cfg: Config
+    if (esperado === null) {
+      cfg = VACIO()
+      anotar("LAZUNOX_HOOKS_SHA256 no es un sha256 válido: no se ejecuta ningún gancho")
+    } else if (esperado !== undefined && createHash("sha256").update(bytes).digest("hex") !== esperado) {
+      cfg = VACIO()
+      anotar("el archivo de ganchos no coincide con el hash aprobado (LAZUNOX_HOOKS_SHA256): no se ejecuta ningún gancho hasta que la app lo apruebe de nuevo")
+    } else cfg = leerConfig(bytes.toString("utf-8"))
+    cache = { file, mtime: st.mtimeMs, hash: clave, cfg }
     return cfg
   } catch {
     return VACIO()
   }
+}
+const anotar = (msg: string) => {
+  const linea = `[ganchos] ${msg}`.slice(0, 500)
+  if (avisoHash === linea) return
+  avisoHash = linea
+  registroGanchos.push(linea)
+  if (registroGanchos.length > 50) registroGanchos.shift()
 }
 
 export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
@@ -351,6 +425,15 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
     return res
   }
 
+  /** Dispara los ganchos de un evento solo informativo: no se espera (no retrasa a la sesión) y nunca lanza. Las pruebas esperan con `esperarPendientes`. */
+  const lanzar = (nombre: keyof Config, payload: unknown, filtro?: (g: Gancho) => boolean) => {
+    if (config(file)[nombre].length === 0) return
+    const p: Promise<unknown> = correr(nombre, payload, filtro)
+      .catch(() => {})
+      .finally(() => pendientes.delete(p))
+    pendientes.add(p)
+  }
+
   const textoDe = (parts: { type: string; text?: string; synthetic?: boolean }[]) =>
     parts
       .filter((p) => p.type === "text" && !p.synthetic && typeof p.text === "string")
@@ -362,7 +445,7 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
     "experimental.session.compacting": async (i, o) => {
       for (const g of config(file).PreCompact) {
         const r = await ejecutar(g, { event: "PreCompact", sessionID: i.sessionID, cwd }, cwd)
-        const txt = r.stdout.trim().slice(0, 4000)
+        const txt = r.code === 0 ? acotar(r.stdout.trim(), 4000, "un gancho PreCompact", registrar) : ""
         if (r.code === 0 && txt) o.context.push(txt)
       }
     },
@@ -371,7 +454,7 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
     "experimental.session.compacted": async (i, o) => {
       for (const g of config(file).PostCompact) {
         const r = await ejecutar(g, { event: "PostCompact", ...i, cwd }, cwd)
-        const txt = r.stdout.trim().slice(0, 4000)
+        const txt = r.code === 0 ? acotar(r.stdout.trim(), 4000, "un gancho PostCompact", registrar) : ""
         if (r.code === 0 && txt) o.context.push(`[Gancho PostCompact]\n${txt}`)
       }
     },
@@ -403,6 +486,9 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
       const props = event.properties as { sessionID?: string; status?: { type?: string }; info?: { id?: string; parentID?: string } } | undefined
       if (event.type === "session.created" && props?.info?.id) {
         hijas.set(props.info.id, !!props.info.parentID)
+        // 7.6 SubagentStart: nació la sesión de un ayudante (informativo).
+        if (props.info.parentID)
+          lanzar("SubagentStart", { event: "SubagentStart", sessionID: props.info.id, parentSessionID: props.info.parentID, title: (props.info as { title?: string }).title?.slice(0, 200), cwd })
         return
       }
       if (event.type === "session.deleted" && props?.info?.id) {
@@ -426,11 +512,15 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
         inicio.set(sid, "")
         if (!(await esHija(sid))) {
           const res = await correr("SessionStart", { event: "SessionStart", sessionID: sid, cwd, source: "startup" })
-          const txt = res
-            .map(({ r }) => textoContexto(r))
-            .filter(Boolean)
-            .join("\n")
-            .slice(0, MAX_CONTEXTO)
+          const txt = acotar(
+            res
+              .map(({ r }) => textoContexto(r))
+              .filter(Boolean)
+              .join("\n"),
+            MAX_CONTEXTO,
+            "un gancho SessionStart",
+            registrar,
+          )
           inicio.set(sid, txt)
         }
       }
@@ -445,9 +535,13 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
       if (config(file).UserPromptSubmit.length === 0) return
       if (await esHija(i.sessionID)) return
       const extra: string[] = []
-      for (const { r } of await correr("UserPromptSubmit", { event: "UserPromptSubmit", sessionID: i.sessionID, cwd, agent: i.agent, prompt: prompt.slice(0, 8000) })) {
+      for (const { g, r } of await correr("UserPromptSubmit", { event: "UserPromptSubmit", sessionID: i.sessionID, cwd, agent: i.agent, prompt: prompt.slice(0, 8000) })) {
         const razon = pideBloquear(r)
         if (razon !== undefined) throw new GanchoRechazoError(razon)
+        if (g.onFailure === "block" && fallo(r)) {
+          registrar(`UserPromptSubmit: «${g.command.slice(0, 80)}» falló (${motivoFallo(r)}) y tiene onFailure=block: se rechaza el mensaje`)
+          throw new GanchoRechazoError(`Un gancho de usuario falló (${motivoFallo(r)}) y está configurado para bloquear: el mensaje no se envió.`)
+        }
         const t = textoContexto(r)
         if (t) extra.push(t)
       }
@@ -457,7 +551,7 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
           sessionID: i.sessionID,
           messageID: o.message.id,
           type: "text",
-          text: `[Gancho UserPromptSubmit]\n${extra.join("\n").slice(0, MAX_CONTEXTO)}`,
+          text: `[Gancho UserPromptSubmit]\n${acotar(extra.join("\n"), MAX_CONTEXTO, "un gancho UserPromptSubmit", registrar)}`,
           synthetic: true,
         })
     },
@@ -468,10 +562,15 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
     },
     "tool.execute.before": async (i, o) => {
       for (const g of config(file).PreToolUse) {
-        if (!aplica(g, i.tool)) continue
+        if (!aplica(g, i.tool) || !aplicaIf(g.if, i.tool, o.args, cwd)) continue
         const r = await ejecutar(g, { event: "PreToolUse", tool: i.tool, args: o.args, sessionID: i.sessionID, cwd }, cwd)
         const razon = pideBloquear(r)
         if (razon !== undefined) throw new Error(`Un gancho de usuario bloqueó esta herramienta${razon && razon !== "(sin motivo)" ? `: ${razon.slice(0, 1000)}` : "."}`)
+        // 7.6 `onFailure: "block"`: un gancho que falla, expira o devuelve un error NO deja pasar la herramienta (falla cerrado).
+        if (g.onFailure === "block" && fallo(r)) {
+          registrar(`PreToolUse: «${g.command.slice(0, 80)}» falló (${motivoFallo(r)}) y tiene onFailure=block: se bloquea ${i.tool}`)
+          throw new Error(`Un gancho de usuario falló (${motivoFallo(r)}) y está configurado para bloquear: no se ejecutó ${i.tool}.`)
+        }
         if (r.code !== 0 || r.timedOut) continue
         const ui = leerSalida(r.stdout).updatedInput
         if (ui === undefined) continue
@@ -488,7 +587,7 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
       }
     },
     "tool.execute.after": async (i, o) => {
-      const lista = config(file).PostToolUse.filter((g) => aplica(g, i.tool))
+      const lista = config(file).PostToolUse.filter((g) => aplica(g, i.tool) && aplicaIf(g.if, i.tool, i.args, cwd))
       if (!lista.length) return
       const inicial = typeof o.output === "string" ? o.output : undefined
       let actual = inicial
@@ -533,12 +632,45 @@ export async function LazunoxGanchosPlugin(input: PluginInput): Promise<Hooks> {
     "tool.execute.failure": async (i, o) => {
       const extra: string[] = []
       for (const g of config(file).PostToolUseFailure) {
-        if (!aplica(g, i.tool)) continue
+        if (!aplica(g, i.tool) || !aplicaIf(g.if, i.tool, i.args, cwd)) continue
         const r = await ejecutar(g, { event: "PostToolUseFailure", tool: i.tool, args: i.args, sessionID: i.sessionID, cwd, error: i.error }, cwd)
         const t = neutralizarSalida(textoContexto(r))
         if (t) extra.push(t)
       }
-      if (extra.length) o.contexto = extra.join("\n").slice(0, MAX_CONTEXTO_FALLO)
+      if (extra.length) o.contexto = acotar(extra.join("\n"), MAX_CONTEXTO_FALLO, "un gancho PostToolUseFailure", registrar)
+    },
+    // 7.6 PermissionRequest: una petición de permiso va a preguntarse a la persona. El gancho SOLO puede negarla (código 2 o {"decision":"block"}, o un
+    // fallo con onFailure=block); nunca aprobarla: un gancho no amplía permisos, y un «allow» en su salida se ignora.
+    "permission.ask": async (i, o) => {
+      const lista = config(file).PermissionRequest.filter((g) => aplica(g, i.type))
+      if (!lista.length) return
+      const patrones = (Array.isArray(i.pattern) ? i.pattern : i.pattern ? [i.pattern] : []).slice(0, 20)
+      const meta = (i.metadata ?? {}) as { command?: unknown }
+      const comando = typeof meta.command === "string" ? meta.command.slice(0, 2000) : undefined
+      const args = i.type === "bash" ? { command: comando } : { filePath: patrones[0], patterns: patrones }
+      for (const g of lista) {
+        if (!aplicaIf(g.if, i.type, args, cwd)) continue
+        const r = await ejecutar(g, { event: "PermissionRequest", permission: i.type, patterns: patrones, command: comando, sessionID: i.sessionID, callID: i.callID, cwd }, cwd)
+        const razon = pideBloquear(r)
+        if (razon !== undefined) {
+          registrar(`PermissionRequest: «${g.command.slice(0, 80)}» negó ${i.type}`)
+          o.status = "deny"
+          return
+        }
+        if (g.onFailure === "block" && fallo(r)) {
+          registrar(`PermissionRequest: «${g.command.slice(0, 80)}» falló (${motivoFallo(r)}) y tiene onFailure=block: se niega ${i.type}`)
+          o.status = "deny"
+          return
+        }
+      }
+    },
+    // 7.6 Interrupt: la persona detuvo la sesión (informativo; no se espera).
+    "session.interrupt": async (i) => {
+      lanzar("Interrupt", { event: "Interrupt", sessionID: i.sessionID, subagente: i.subagente === true, cwd })
+    },
+    // 7.6 PostToolBatch: terminó el lote de herramientas de un paso del modelo (informativo; no se espera).
+    "session.tool-batch": async (i) => {
+      lanzar("PostToolBatch", { event: "PostToolBatch", sessionID: i.sessionID, messageID: i.messageID, tools: i.tools.slice(0, 50), cwd })
     },
     // 6.8 PermissionDenied: solo informa y NO espera (no retrasa la negativa). Sin argumentos de la llamada. No hay reintento.
     "permission.denied": async (i) => {

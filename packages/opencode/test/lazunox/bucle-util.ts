@@ -155,6 +155,27 @@ export const it = testEffect(
   ]),
 )
 
+/** Como `it`, pero con un Plugin falso que registra cada `trigger` (nombre y entrada) y deja la salida intacta. */
+export const registroDeTriggers: { name: string; input: unknown }[] = []
+const pluginRegistrador = Layer.mock(Plugin.Service)({
+  trigger: <Name extends string, Input, Output>(name: Name, input: Input, output: Output) =>
+    Effect.sync(() => {
+      registroDeTriggers.push({ name, input })
+      return output
+    }),
+  list: () => Effect.succeed([]),
+  init: () => Effect.void,
+})
+export const itConPlugin = testEffect(
+  LayerNode.compile(raiz, [
+    [SessionSummary.node, resumen],
+    [LSP.node, lspVacio],
+    [MCP.node, mcpVacio],
+    [RuntimeFlags.node, RuntimeFlags.layer({ experimentalEventSystem: true })],
+    [Plugin.node, pluginRegistrador],
+  ]),
+)
+
 export const proveedor = (url: string) => ({
   provider: {
     test: {

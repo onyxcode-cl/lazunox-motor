@@ -37,8 +37,10 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { marcaModoPlan } from "./plan-modo"
+import { metadatosGuardados, resultadoParaElModelo } from "./sanitizar-partes"
 import { conCandado, esSoloLectura, mcpSoloLectura } from "./paralelismo"
 import { activa as repararActiva, repararEntrada } from "@/tool/reparar-entrada"
+import { Politica } from "@/permission/politica"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -145,7 +147,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         .ask({
           ...req,
           // Lazunox (H4): el motor (no la herramienta) dice qué agente pide el permiso; lo lee `rutas-protegidas`.
-          metadata: { ...req.metadata, lazunox_agente: input.agent.name },
+          // Lazunox (7.5): el comando que se muestra en la petición de permiso sale sin secretos (los patrones no cambian).
+          metadata: { ...metadatosGuardados(req.metadata), lazunox_agente: input.agent.name },
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
           ruleset: Permission.merge(
@@ -462,6 +465,9 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   // Lazunox (Ola 7 — 7.3): candado de lectura/escritura por sesión alrededor de cada `execute` (ver paralelismo.ts).
   // Se envuelve al final, en un solo punto: las de solo lectura comparten el candado; el resto es exclusivo y en orden.
   const conParalelismoSeguro = (mcpLectura: (key: string, args: unknown) => boolean) => {
+    // Lazunox (7.20): último filtro de la política de la organización, para TODAS las herramientas que se arman aquí (registro, MCP directas,
+    // recursos MCP, tool_search, mcp_call): lo denegado no se ofrece al modelo y, si lo nombra igual, no existe para el bucle.
+    if (Politica.hayPolitica()) for (const key of Object.keys(tools)) if (Politica.herramientaDenegada(key)) delete tools[key]
     for (const [key, def] of Object.entries(tools)) {
       const original = def.execute
       if (!original) continue
@@ -473,7 +479,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         // Sin cambios se conserva la MISMA referencia (los ganchos mutan `args` y la herramienta debe verlo).
         const args = reparada && reparada.cambios.length > 0 ? reparada.valor : rawArgs
         return conCandado(input.session.id, esSoloLectura(key) || mcpLectura(key, args), opts.abortSignal, async () =>
-          original(args as never, opts),
+          // Lazunox (7.5, nivel 2): con LAZUNOX_SANITIZAR_MODELO=1 la salida de comandos llega al modelo sin secretos.
+          resultadoParaElModelo(key, await original(args as never, opts)),
         )
       }) as typeof def.execute
     }

@@ -301,6 +301,18 @@ export interface Hooks {
     },
     output: {},
   ) => Promise<void>
+  /**
+   * Lazunox (7.6, ganchos `Interrupt`): la persona detuvo la sesión (Detener). Solo informa; no retrasa la detención.
+   */
+  "session.interrupt"?: (input: { sessionID: string; subagente?: boolean }, output: {}) => Promise<void>
+  /**
+   * Lazunox (7.6, ganchos `PostToolBatch`): terminó el lote de herramientas de un paso del modelo (todas sus llamadas tienen resultado).
+   * Solo informa. `tools` trae el nombre, la llamada y el estado final de cada una (nunca argumentos ni salidas).
+   */
+  "session.tool-batch"?: (
+    input: { sessionID: string; messageID: string; tools: { tool: string; callID: string; status: "completed" | "error" }[] },
+    output: {},
+  ) => Promise<void>
   "experimental.chat.messages.transform"?: (
     input: {},
     output: {

@@ -31,6 +31,7 @@ import { ModelV2 } from "@opencode-ai/core/model"
 import { ModelStatus } from "./model-status"
 import { RuntimeFlags } from "@/effect/runtime-flags"
 import { ProviderError } from "./error"
+import { Politica } from "@/permission/politica"
 
 const OPENAI_HEADER_TIMEOUT_DEFAULT = 300_000
 
@@ -1496,9 +1497,23 @@ const layer = Layer.effect(
         const disabled = new Set(cfg.disabled_providers ?? [])
         const enabled = cfg.enabled_providers ? new Set(cfg.enabled_providers) : null
 
+        // Lazunox (7.20): la política de la organización (LAZUNOX_POLICY_FILE) manda sobre cualquier configuración, también la del repositorio:
+        // todo proveedor que niegue pasa al conjunto de deshabilitados ANTES de usarse (así no se carga ni su autenticación ni su plugin).
+        // Una política rota deniega todos. Se evalúa al cargar la instancia.
+        if (Politica.hayPolitica()) {
+          const candidatos = new Set<string>([
+            ...Object.keys(database),
+            ...configProviders.map(([id]) => id),
+            ...Object.keys(custom(dep)),
+            ...plugins.flatMap((hook) => [hook.provider?.id, hook.auth?.provider].filter((id): id is string => typeof id === "string")),
+          ])
+          for (const id of candidatos) if (Politica.proveedorDenegado(id)) disabled.add(id)
+        }
+
         function isProviderAllowed(providerID: ProviderV2.ID): boolean {
           if (enabled && !enabled.has(providerID)) return false
           if (disabled.has(providerID)) return false
+          if (Politica.proveedorDenegado(providerID)) return false
           return true
         }
 
@@ -1743,6 +1758,7 @@ const layer = Layer.effect(
               delete provider.models[modelID]
             if (model.status === "alpha" && !runtimeFlags.enableExperimentalModels) delete provider.models[modelID]
             if (model.status === "deprecated") delete provider.models[modelID]
+            if (Politica.modeloDenegado(providerID, modelID)) delete provider.models[modelID]
             if (
               (configProvider?.blacklist && configProvider.blacklist.includes(modelID)) ||
               (configProvider?.whitelist && !configProvider.whitelist.includes(modelID))

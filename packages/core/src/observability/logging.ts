@@ -2,8 +2,10 @@ import { Formatter, Logger, type LogLevel } from "effect"
 import path from "path"
 import { Global } from "../global"
 import { runID } from "./shared"
+import { sanitizar } from "../sanitizar"
 
 function formatter(id: string = runID) {
+  // Lazunox (7.5): ningún registro lleva credenciales reconocibles (LAZUNOX_SANITIZAR=0 lo apaga).
   return Logger.map(Logger.formatStructured, (output) => {
     const messages = Array.isArray(output.message) ? output.message : [output.message]
     return [
@@ -17,7 +19,7 @@ function formatter(id: string = runID) {
     ]
       .map(([key, value]) => `${key}=${format(value)}`)
       .join(" ")
-  })
+  }).pipe(Logger.map((linea) => sanitizar(linea)))
 }
 
 function flatten(

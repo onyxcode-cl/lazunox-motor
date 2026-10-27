@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { Politica } from "@/permission/politica"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import path from "path"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
@@ -172,6 +173,10 @@ const layer = Layer.effect(
       // Lazunox: Detener cierra los formularios MCP abiertos de la sesión (publica rejected/abort y contesta cancel al servidor).
       yield* elicitation.cancelSession(sessionID, "abort")
       yield* state.cancel(sessionID)
+      // Lazunox (7.6): gancho de usuario `Interrupt` (informativo: ningún fallo suyo impide la detención).
+      yield* plugin
+        .trigger("session.interrupt", { sessionID: String(sessionID) }, {})
+        .pipe(Effect.catchCause(() => Effect.void))
     })
 
     const resolvePromptParts = Effect.fn("SessionPrompt.resolvePromptParts")(function* (template: string) {
@@ -661,7 +666,13 @@ const layer = Layer.effect(
       if (!ag) {
         const available = (yield* agents.list()).filter((a) => !a.hidden).map((a) => a.name)
         const hint = available.length ? ` Available agents: ${available.join(", ")}` : ""
-        const error = new NamedError.Unknown({ message: `Agent not found: "${agentName}".${hint}` })
+        // Lazunox (7.20): si el agente existe pero la política de la organización lo niega, el mensaje lo dice.
+        const bloqueado = agentName !== undefined && Politica.agenteDenegado(agentName)
+        const error = new NamedError.Unknown({
+          message: bloqueado
+            ? `El agente "${agentName}" no está disponible: ${Politica.descripcion()}`
+            : `Agent not found: "${agentName}".${hint}`,
+        })
         yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
         throw error
       }
