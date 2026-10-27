@@ -1,0 +1,3 @@
+- Fast file pattern matching (e.g. "**/*.js", "src/**/*.ts"); returns matching paths
+- For open-ended searches needing several rounds of globbing and grepping, use the Task tool instead
+- You can call several tools in one response: speculatively batch the searches that may be useful

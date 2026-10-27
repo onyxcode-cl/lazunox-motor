@@ -1,0 +1,4 @@
+Writes a file to the local filesystem, overwriting it if it exists.
+
+- For an existing file you MUST Read it first; the write fails otherwise.
+- Prefer editing existing files; never write new files unless required. Never create documentation files (*.md, README) unless the User asks. No emojis unless asked.

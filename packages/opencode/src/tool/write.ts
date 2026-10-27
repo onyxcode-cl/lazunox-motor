@@ -5,6 +5,8 @@ import * as Tool from "./tool"
 import { LSP } from "@/lsp/lsp"
 import { createTwoFilesPatch } from "diff"
 import DESCRIPTION from "./write.txt"
+import DESCRIPTION_CORTA from "./write-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { FileSystem } from "@opencode-ai/core/filesystem"
 import { Watcher } from "@opencode-ai/core/filesystem/watcher"
@@ -33,7 +35,7 @@ export const WriteTool = Tool.define(
     const format = yield* Format.Service
 
     return {
-      description: DESCRIPTION,
+      description: recorteActivo("herramientas") ? DESCRIPTION_CORTA : DESCRIPTION,
       parameters: Parameters,
       execute: (params: { content: string; filePath: string }, ctx: Tool.Context) =>
         Effect.gen(function* () {

@@ -1,0 +1,15 @@
+Create and maintain a structured task list for the session: tracks progress, organizes multi-step work and shows status to the user.
+
+Use it proactively for work with 3+ distinct steps, several user tasks, or an explicit request for a todo list; capture new instructions as todos. Skip it for a single straightforward task (or <3 trivial steps), informational or conversational requests, or when tracking adds no value. When in doubt, use it.
+
+States: `pending`, `in_progress` (exactly ONE at a time; more are reduced to the first), `completed`, `cancelled`.
+
+Optional fields (leave out unless needed):
+- `verificar`: how to prove the task is done. `$ <command>` runs with normal shell permissions when you mark the task `completed` (non-zero exit keeps it `in_progress` and shows the output); any other text is a note for you.
+- `bloqueado`: `true` when the task cannot move; say why in a follow-up todo.
+- `id` / `depende_de`: ONLY for tasks that truly depend on others (ids of this list that must be `completed` first). Not for a plain sequential list. Cycles or unknown ids reject the list.
+
+Rules:
+- Update status in real time; don't batch completions. Mark `completed` only after the work and its verification are actually done, never on intent.
+- Mark the task `in_progress` before starting it; add follow-ups discovered along the way. If blocked or partial, keep it `in_progress` and add a todo describing the blocker.
+- Preserve user-provided commands verbatim. Items must be specific and actionable; break large work into smaller steps.

@@ -1,0 +1,9 @@
+Launch a subagent to handle a complex, multistep task autonomously. You must pass `subagent_type`.
+
+Do NOT use it to read a known file (use Read/Glob), find a class definition (Grep) or search inside 2-3 files (Read). If no agent fits, use the other tools directly.
+
+Notes:
+1. Launch several agents concurrently when the work is independent: one message with several tool uses. Do not duplicate work you delegated; do something else or wait. Background results arrive automatically.
+2. The agent returns a single message that the user does not see: summarize it for them. The output includes a task_id you can pass later to resume that subagent session.
+3. Each call starts with a fresh context unless you pass task_id, so give a detailed prompt and say exactly what to return. Say whether it should write code or only research, and how to verify its work (e.g. test commands).
+4. Its outputs should generally be trusted. If an agent description says to use it proactively, do so without waiting to be asked.

@@ -5,6 +5,8 @@ import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import DESCRIPTION from "./glob.txt"
+import DESCRIPTION_CORTA from "./glob-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 import * as Tool from "./tool"
 
 export const Parameters = Schema.Struct({
@@ -20,7 +22,7 @@ export const GlobTool = Tool.define(
     const fs = yield* FSUtil.Service
     const ripgrep = yield* Ripgrep.Service
     return {
-      description: DESCRIPTION,
+      description: recorteActivo("herramientas") ? DESCRIPTION_CORTA : DESCRIPTION,
       parameters: Parameters,
       execute: (params: { pattern: string; path?: string }, ctx: Tool.Context) =>
         Effect.gen(function* () {

@@ -1,5 +1,7 @@
 import * as Tool from "./tool"
-import DESCRIPTION from "./task.txt"
+import DESCRIPTION_BASE from "./task.txt"
+import DESCRIPTION_CORTA from "./task-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 import { ToolJsonSchema } from "./json-schema"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { BackgroundJob } from "@/background/job"
@@ -586,6 +588,7 @@ export const TaskTool = Tool.define(
     const parametros = conEsfuerzo ? Schema.Struct({ ...Parameters.fields, ...camposEsfuerzo(true) }) : Parameters
     const parametrosBase = conEsfuerzo ? Schema.Struct({ ...BaseParameters.fields, ...camposEsfuerzo(true) }) : BaseParameters
 
+    const DESCRIPTION = recorteActivo("task") ? DESCRIPTION_CORTA : DESCRIPTION_BASE
     return {
       description: flags.experimentalBackgroundSubagents
         ? [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n")

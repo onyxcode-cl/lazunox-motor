@@ -1,0 +1,6 @@
+Read a file or directory from the local filesystem. Errors if the path does not exist.
+
+- `filePath` should be absolute. Returns up to 2000 lines from the start; `offset` (1-indexed) starts later, so call again with a larger offset for later sections. Avoid tiny repeated slices (30 lines): read a larger window. Lines longer than 2000 characters are truncated.
+- Lines come as `<line>: <content>` (e.g. `1: foo`). Directories list one entry per line, no numbers, with a trailing `/` for subdirectories.
+- Use grep for specific content in large files, glob if unsure of the path. Read several files in parallel when you know you need them.
+- Image files and PDFs come back as attachments.

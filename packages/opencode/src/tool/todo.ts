@@ -1,6 +1,8 @@
 import { Effect, Schema } from "effect"
 import * as Tool from "./tool"
 import DESCRIPTION_WRITE from "./todowrite.txt"
+import DESCRIPTION_WRITE_CORTA from "./todowrite-corto.txt"
+import { recorteActivo } from "./ahorro-tokens"
 import { Todo } from "../session/todo"
 import { ShellTool } from "./shell"
 
@@ -188,7 +190,7 @@ export const TodoWriteTool = Tool.define(
       Effect.gen(function* () {
         const shell = yield* Tool.init(shellInfo)
         return {
-          description: DESCRIPTION_WRITE,
+          description: recorteActivo("todo") ? DESCRIPTION_WRITE_CORTA : DESCRIPTION_WRITE,
           parameters: Parameters,
           execute: (params: Schema.Schema.Type<typeof Parameters>, ctx: Tool.Context<Metadata>) =>
             Effect.gen(function* () {

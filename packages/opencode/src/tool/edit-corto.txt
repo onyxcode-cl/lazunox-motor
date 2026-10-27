@@ -1,0 +1,6 @@
+Performs exact string replacements in files.
+
+- You must Read the file at least once in the conversation before editing; the edit errors otherwise.
+- When copying text from Read output, keep the exact indentation as it appears AFTER the line-number prefix (`1: `, number + colon + space). Never include the prefix in `oldString` or `newString`.
+- Prefer editing existing files; never write new files unless required. No emojis unless asked.
+- It FAILS if `oldString` is not found ("oldString not found in content") or is found several times ("Found multiple matches for oldString"): give more surrounding context to make it unique, or use `replaceAll` to change every instance (e.g. renaming a variable).

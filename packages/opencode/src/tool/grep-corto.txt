@@ -1,0 +1,4 @@
+- Fast content search with full regex syntax (e.g. "log.*Error", "function\s+\w+"); returns file paths and line numbers with the matching lines
+- Filter files with the include parameter (e.g. "*.js", "*.{ts,tsx}")
+- To count matches per file use the Bash tool with `rg`, not `grep`
+- For open-ended searches needing several rounds of globbing and grepping, use the Task tool instead
