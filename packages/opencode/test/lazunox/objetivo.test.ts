@@ -256,7 +256,7 @@ describe("objetivo (núcleo puro)", () => {
     Objetivo.reiniciarParaPruebas()
     expect(Objetivo.obtener("s-x")).toBeUndefined()
     expect(() => Objetivo.crear("s-x", { condicion: "  " }, "m")).toThrow()
-    expect(() => Objetivo.crear("s-x", { condicion: "a".repeat(2001) }, "m")).toThrow()
+    expect(() => Objetivo.crear("s-x", { condicion: "a".repeat(Objetivo.MAX_CONDICION + 1) }, "m")).toThrow()
     expect(() => Objetivo.crear("s-x", { condicion: "a", tope: 0 }, "m")).toThrow()
     expect(() => Objetivo.crear("s-x", { condicion: "a", verificar: 5 }, "m")).toThrow()
     expect(Objetivo.obtener("s-x")).toBeUndefined()
