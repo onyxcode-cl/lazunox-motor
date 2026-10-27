@@ -13,6 +13,7 @@
 // `makeSearchTool`, MIT, mismo repositorio) con los mismos pesos: ruta exacta o segmento 20 > subcadena de ruta 8 >
 // descripción 4 > cualquier texto (parámetros) 2.
 import type { Tool as MCPToolDef } from "@modelcontextprotocol/sdk/types.js"
+import { recorteActivo } from "./ahorro-tokens"
 
 export const TOOL_SEARCH = "tool_search"
 export const MCP_CALL = "mcp_call"
@@ -38,7 +39,8 @@ const sanear = (value: string) => value.replace(/[^a-zA-Z0-9_-]/g, "_").toLowerC
 
 export function config(env: Record<string, string | undefined> = process.env): Config {
   // Variable ausente o desconocida = off: la app pide `auto` explícitamente solo en Chat y Code.
-  const raw = (env.LAZUNOX_TOOL_SEARCH ?? "off").trim().toLowerCase()
+  // Lazunox (7.2): con el recorte `busqueda` de LAZUNOX_AHORRO_TOKENS, la variable ausente vale `auto` (una variable explícita manda siempre).
+  const raw = (env.LAZUNOX_TOOL_SEARCH ?? (recorteActivo("busqueda", env) ? "auto" : "off")).trim().toLowerCase()
   const mode: Mode = raw === "on" || raw === "auto" ? raw : "off"
   const min = Number.parseInt(env.LAZUNOX_TOOL_SEARCH_MIN_TOKENS ?? "", 10)
   const keep = (env.LAZUNOX_TOOL_SEARCH_KEEP ?? "")
