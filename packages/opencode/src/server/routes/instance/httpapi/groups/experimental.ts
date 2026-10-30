@@ -167,6 +167,22 @@ export const ContextoFijoResponse = Schema.Struct({
     instrucciones: NonNegativeInt,
   }),
   reglasPorRuta: NonNegativeInt,
+  // Desglose (feat/contexto-desglose): campos nuevos, siempre presentes desde el servidor; `tokens` es la suma de `desglose`.
+  desglose: Schema.Struct({
+    sistema: NonNegativeInt,
+    herramientas: NonNegativeInt,
+    mcpInstrucciones: NonNegativeInt,
+    mcpHerramientas: NonNegativeInt,
+    skills: NonNegativeInt,
+    memoria: NonNegativeInt,
+    agentes: NonNegativeInt,
+  }),
+  listas: Schema.Struct({
+    mcp: Schema.Array(Schema.Struct({ nombre: Schema.String, servidor: Schema.String, tokens: NonNegativeInt })),
+    memoria: Schema.Array(Schema.Struct({ ruta: Schema.String, tokens: NonNegativeInt })),
+    skills: Schema.Array(Schema.Struct({ nombre: Schema.String, tokens: NonNegativeInt })),
+  }),
+  ventana: Schema.Struct({ contexto: NonNegativeInt, usable: NonNegativeInt, reservado: NonNegativeInt }),
 }).annotate({ identifier: "ContextoFijoResponse" })
 
 // Lazunox: rebobinar por turno (plan PLAN-REBOBINAR-Y-COMPACTACION.md, 2.A). Solo rutas y cifras, nunca contenido salvo el diff bajo demanda.

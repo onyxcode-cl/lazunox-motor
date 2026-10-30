@@ -691,6 +691,20 @@ const scenarios: Scenario[] = [
         "contexto-fijo should break the total down by part",
       )
       check(typeof b.reglasPorRuta === "number", "contexto-fijo should count path rules")
+      const d = (body as { desglose?: Record<string, unknown> }).desglose
+      const claves = ["sistema", "herramientas", "mcpInstrucciones", "mcpHerramientas", "skills", "memoria", "agentes"]
+      check(claves.every((k) => typeof d?.[k] === "number"), "contexto-fijo should include the full breakdown")
+      check(
+        claves.reduce((a, k) => a + Number(d?.[k] ?? 0), 0) === b.tokens,
+        "contexto-fijo tokens should be the sum of the breakdown",
+      )
+      const l = (body as { listas?: Record<string, unknown> }).listas
+      check(["mcp", "memoria", "skills"].every((k) => Array.isArray(l?.[k])), "contexto-fijo should include lists")
+      const v = (body as { ventana?: Record<string, unknown> }).ventana
+      check(
+        ["contexto", "usable", "reservado"].every((k) => typeof v?.[k] === "number"),
+        "contexto-fijo should include the model window",
+      )
     }),
   http.protected
     .get("/experimental/session/{sessionID}/turnos", "experimental.session.turnos")

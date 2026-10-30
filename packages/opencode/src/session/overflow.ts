@@ -18,6 +18,18 @@ export function usable(input: { cfg: ConfigV1.Info; model: Provider.Model; outpu
     : Math.max(0, context - ProviderTransform.maxOutputTokens(input.model, input.outputTokenMax))
 }
 
+/**
+ * Lazunox (contexto-fijo, desglose): ventana del modelo tal como la ve la compactación automática.
+ * `usable` es el mismo valor de `usable()`; `reservado` es lo que queda fuera de él (salida y colchón de compactación).
+ * Con `compaction.auto === false` nunca se compacta: no se reserva nada y lo usable es toda la ventana.
+ */
+export function ventana(input: { cfg: ConfigV1.Info; model: Provider.Model; outputTokenMax?: number }) {
+  const contexto = Math.max(0, input.model.limit.context)
+  if (input.cfg.compaction?.auto === false) return { contexto, usable: contexto, reservado: 0 }
+  const util = usable(input)
+  return { contexto, usable: util, reservado: Math.max(0, contexto - util) }
+}
+
 export function isOverflow(input: {
   cfg: ConfigV1.Info
   tokens: SessionV1.Assistant["tokens"]

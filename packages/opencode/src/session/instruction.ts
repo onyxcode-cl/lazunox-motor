@@ -134,6 +134,8 @@ export interface Interface {
   readonly clear: (messageID: MessageID) => Effect.Effect<void>
   readonly systemPaths: () => Effect.Effect<Set<string>, FSUtil.Error>
   readonly system: () => Effect.Effect<string[], FSUtil.Error>
+  /** Lazunox (contexto-fijo): los mismos bloques que `system()` con la ruta (archivo o URL) de cada uno. */
+  readonly systemConRutas: () => Effect.Effect<{ ruta: string; texto: string }[], FSUtil.Error>
   readonly find: (dir: string) => Effect.Effect<string | undefined, FSUtil.Error>
   readonly resolve: (
     messages: SessionV1.WithParts[],
@@ -269,7 +271,8 @@ const layer: Layer.Layer<
       return paths
     })
 
-    const system = Effect.fn("Instruction.system")(function* () {
+    // Lazunox (contexto-fijo, desglose): mismos bloques que `system()`, con la ruta (archivo o URL) de cada uno.
+    const systemConRutas = Effect.fn("Instruction.systemConRutas")(function* () {
       const config = yield* cfg.get()
       const paths = yield* systemPaths()
       const urls = (config.instructions ?? []).filter(
@@ -280,9 +283,15 @@ const layer: Layer.Layer<
       const remote = yield* Effect.forEach(urls, fetch, { concurrency: 4 })
 
       return [
-        ...Array.from(paths).flatMap((item, i) => (files[i] ? [`Instructions from: ${item}\n${files[i]}`] : [])),
-        ...urls.flatMap((item, i) => (remote[i] ? [`Instructions from: ${item}\n${remote[i]}`] : [])),
+        ...Array.from(paths).flatMap((item, i) =>
+          files[i] ? [{ ruta: item, texto: `Instructions from: ${item}\n${files[i]}` }] : [],
+        ),
+        ...urls.flatMap((item, i) => (remote[i] ? [{ ruta: item, texto: `Instructions from: ${item}\n${remote[i]}` }] : [])),
       ]
+    })
+
+    const system = Effect.fn("Instruction.system")(function* () {
+      return (yield* systemConRutas()).map((item) => item.texto)
     })
 
     const find = Effect.fn("Instruction.find")(function* (dir: string) {
@@ -455,7 +464,7 @@ const layer: Layer.Layer<
       return results
     })
 
-    return Service.of({ clear, systemPaths, system, find, resolve, reglas, regla, contarReglas })
+    return Service.of({ clear, systemPaths, system, systemConRutas, find, resolve, reglas, regla, contarReglas })
   }),
 )
 
