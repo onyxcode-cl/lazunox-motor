@@ -6,7 +6,11 @@ import fs from "fs"
 import path from "path"
 
 const DIRS = new Set([".git", ".opencode", ".claude", ".vscode", ".idea", ".husky"])
-const FILES = new Set([".mcp.json", ".gitmodules", ".gitattributes", ".gitconfig"])
+// lazunox.15: `opencode.json`/`opencode.jsonc` también: el motor los carga del proyecto y de sus carpetas superiores, y un conector
+// MCP `local` escrito ahí arranca su `command` al cargar la carpeta. `package.json` NO (pediría permiso en cada dependencia).
+// `tui.json` NO: solo lo cargan los clientes de terminal (tui/attach/run), no el servidor que usa la app (aunque puede declarar
+// plugins de esa interfaz); `.opencode/tui.json` ya cae bajo `.opencode`.
+const FILES = new Set([".mcp.json", ".gitmodules", ".gitattributes", ".gitconfig", "opencode.json", "opencode.jsonc"])
 
 export const activo = (env: NodeJS.ProcessEnv = process.env) => env.LAZUNOX_PROTECTED_PATHS !== "0"
 

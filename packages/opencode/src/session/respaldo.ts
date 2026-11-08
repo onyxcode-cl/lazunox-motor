@@ -5,12 +5,14 @@
 //  (a) el respaldo es de coste cero (`cost.input === 0 && cost.output === 0`); nunca uno de pago;
 //  (b) del mismo proveedor, o de otro solo si la persona lo consintió (`respaldo.otro_proveedor: true`): el texto de la
 //      conversación saldría hacia otro servicio;
-//  (c) la lista se lee SOLO de la configuración GLOBAL (`Config.getGlobal`), jamás del `opencode.json` del proyecto: un
-//      repositorio hostil no puede redirigir la conversación a su servidor;
+//  (c) la lista se lee SOLO de la configuración GLOBAL (`Config.getGlobal`) y de la config en línea que la app pone en el entorno
+//      del proceso (`OPENCODE_CONFIG_CONTENT`, lazunox.15), jamás del `opencode.json` del proyecto: un repositorio hostil no
+//      controla ni el archivo global ni el entorno, así que no puede redirigir la conversación a su servidor;
 //  (d) como mucho un cambio por turno de la persona y sin bucles; se avisa con una parte de texto.
 // Apagado por defecto (sin `respaldo.modelos` global no hace nada) y con el interruptor `LAZUNOX_RESPALDO=0`.
 // No cambia permisos ni reglas: solo cambia el modelo con el que se llama.
 import { Effect } from "effect"
+import { parse as parseJsonc } from "jsonc-parser"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -25,9 +27,36 @@ export type Motivo = "cuota" | "sobrecarga"
 export type Ajustes = { modelos: { providerID: string; modelID: string }[]; otroProveedor: boolean }
 type ModeloRef = Pick<Provider.Model, "id" | "providerID">
 
-/** Lista de respaldo de la configuración GLOBAL (hasta 3, sin repetidos). Sin ella, `undefined` (apagado). */
-export function leer(global: ConfigV1.Info | undefined): Ajustes | undefined {
-  const bruto = global?.respaldo?.modelos
+/**
+ * Lazunox (lazunox.15): la clave `respaldo` de la config en línea (`OPENCODE_CONFIG_CONTENT`), que la app pone en el entorno del
+ * motor porque no puede escribir en `~/.config/opencode`. Es solo el entorno del proceso: nunca el `opencode.json` del proyecto.
+ * JSON (con comentarios tolerados) roto o sin `respaldo` válido devuelve `undefined`. No expande `{env:…}` ni `{file:…}`.
+ */
+export function respaldoEnLinea(env: NodeJS.ProcessEnv): ConfigV1.Info["respaldo"] | undefined {
+  const texto = env.OPENCODE_CONFIG_CONTENT
+  if (!texto) return undefined
+  try {
+    const valor = parseJsonc(texto, [], { allowTrailingComma: true }) as unknown
+    if (!valor || typeof valor !== "object" || Array.isArray(valor)) return undefined
+    const r = (valor as { respaldo?: unknown }).respaldo
+    if (!r || typeof r !== "object" || Array.isArray(r)) return undefined
+    return r as ConfigV1.Info["respaldo"]
+  } catch {
+    return undefined
+  }
+}
+
+/**
+ * Lista de respaldo (hasta 3, sin repetidos). Sin ella, `undefined` (apagado). Con `env`, la config en línea manda sobre la
+ * global (igual que en la fusión del motor) si trae una lista utilizable; `otro_proveedor` se toma de la MISMA fuente que la lista.
+ */
+export function leer(global: ConfigV1.Info | undefined, env?: NodeJS.ProcessEnv): Ajustes | undefined {
+  const enLinea = env ? leerDe(respaldoEnLinea(env)) : undefined
+  return enLinea ?? leerDe(global?.respaldo)
+}
+
+function leerDe(fuente: ConfigV1.Info["respaldo"] | undefined): Ajustes | undefined {
+  const bruto = fuente?.modelos
   if (!Array.isArray(bruto)) return undefined
   const modelos: Ajustes["modelos"] = []
   for (const valor of bruto) {
@@ -41,7 +70,7 @@ export function leer(global: ConfigV1.Info | undefined): Ajustes | undefined {
     if (modelos.length >= MAX_MODELOS) break
   }
   if (!modelos.length) return undefined
-  return { modelos, otroProveedor: global?.respaldo?.otro_proveedor === true }
+  return { modelos, otroProveedor: fuente?.otro_proveedor === true }
 }
 
 /** Por qué falló el modelo: «cuota» (límite gratuito/de uso agotado), «sobrecarga» (5xx, saturado, red) o `undefined` (no aplica). */
@@ -71,7 +100,7 @@ export type Candidatos = { modelos: Provider.Model[]; otroProveedor: boolean }
 const VACIO: Candidatos = { modelos: [], otroProveedor: false }
 
 /**
- * Resolutor para el procesador: lee SOLO la configuración global y devuelve, en orden, los respaldos válidos para `actual`.
+ * Resolutor para el procesador: lee SOLO la configuración global y la config en línea del entorno, y devuelve, en orden, los respaldos válidos para `actual`.
  * Un modelo que no existe, no está conectado, es de pago o es de otro proveedor sin consentimiento se omite.
  */
 export function resolutor(deps: {
@@ -81,7 +110,7 @@ export function resolutor(deps: {
   return (actual: ModeloRef): Effect.Effect<Candidatos> =>
     Effect.gen(function* () {
       if (!activo()) return VACIO
-      const ajustes = leer(yield* deps.config.getGlobal())
+      const ajustes = leer(yield* deps.config.getGlobal(), process.env)
       if (!ajustes) return VACIO
       const salida: Provider.Model[] = []
       for (const ref of ajustes.modelos) {

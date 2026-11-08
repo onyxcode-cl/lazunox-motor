@@ -290,6 +290,55 @@ describe("respaldo (resolutor)", () => {
     ),
   )
 
+  it.live("lazunox.15: un respaldo solo en OPENCODE_CONFIG_CONTENT (el entorno que pone la app) sí conmuta; la global vacía y el proyecto no cuentan", () =>
+    provideTmpdirInstance(
+      () =>
+        Effect.gen(function* () {
+          const provider = yield* Provider.Service
+          const vacia = Respaldo.resolutor({ config: TestConfig.make({ get: () => Effect.succeed({}), getGlobal: () => Effect.succeed({}) }), provider })
+          const ids = (r: Respaldo.Candidatos) => r.modelos.map((m) => `${m.providerID}/${m.id}`)
+          const antes = process.env.OPENCODE_CONFIG_CONTENT
+          try {
+            process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ respaldo: { modelos: ["test/free-b"] } })
+            expect(ids(yield* vacia(mr("test", "test-model")))).toEqual(["test/free-b"])
+            // coste cero y mismo proveedor se siguen exigiendo con la fuente en línea
+            process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ respaldo: { modelos: ["test/pago", "otro/otro-free"] } })
+            expect(ids(yield* vacia(mr("test", "test-model")))).toEqual([])
+            process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ respaldo: { modelos: ["otro/otro-free"], otro_proveedor: true } })
+            expect(ids(yield* vacia(mr("test", "test-model")))).toEqual(["otro/otro-free"])
+            // JSON roto, sin respaldo, o un arreglo: apagado (no truena)
+            for (const malo of ["{no es json", "{}", "[]", '{"respaldo":"test/free-b"}', '{"respaldo":{"modelos":"test/free-b"}}'])
+              {
+                process.env.OPENCODE_CONFIG_CONTENT = malo
+                expect(ids(yield* vacia(mr("test", "test-model")))).toEqual([])
+              }
+            // con comentarios y coma final (JSONC) también se lee
+            process.env.OPENCODE_CONFIG_CONTENT = '{ // c\n "respaldo": { "modelos": ["test/free-b",], }, }'
+            expect(ids(yield* vacia(mr("test", "test-model")))).toEqual(["test/free-b"])
+            // el interruptor LAZUNOX_RESPALDO=0 sigue mandando
+            process.env.LAZUNOX_RESPALDO = "0"
+            expect(ids(yield* vacia(mr("test", "test-model")))).toEqual([])
+            delete process.env.LAZUNOX_RESPALDO
+            // la lista en línea manda sobre la global, y `otro_proveedor` viene de la MISMA fuente que la lista
+            process.env.OPENCODE_CONFIG_CONTENT = JSON.stringify({ respaldo: { modelos: ["test/free-c"] } })
+            const conGlobal = Respaldo.resolutor({
+              config: TestConfig.make({ getGlobal: () => Effect.succeed(global({ modelos: ["otro/otro-free"], otro_proveedor: true })) }),
+              provider,
+            })
+            expect(ids(yield* conGlobal(mr("test", "test-model")))).toEqual(["test/free-c"])
+            // sin lista utilizable en línea, queda la global
+            process.env.OPENCODE_CONFIG_CONTENT = "{}"
+            expect(ids(yield* conGlobal(mr("test", "test-model")))).toEqual(["otro/otro-free"])
+          } finally {
+            if (antes === undefined) delete process.env.OPENCODE_CONFIG_CONTENT
+            else process.env.OPENCODE_CONFIG_CONTENT = antes
+            delete process.env.LAZUNOX_RESPALDO
+          }
+        }),
+      { config: cfgProveedores },
+    ),
+  )
+
   it.live("la configuración del proyecto se ignora (aunque traiga un respaldo válido) y el interruptor LAZUNOX_RESPALDO=0 lo apaga", () =>
     provideTmpdirInstance(
       () =>

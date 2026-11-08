@@ -16,6 +16,7 @@ import type { MessageID } from "./schema"
 import fsp from "fs/promises"
 import * as ReglasRuta from "./reglas-ruta"
 import * as Imports from "./imports"
+import * as TopeInstrucciones from "./tope-instrucciones"
 
 // Herramientas cuyo resultado puede llevar instrucciones adjuntas (`metadata.loaded`). `edit`/`write`/`apply_patch`
 // solo adjuntan reglas por ruta (Lazunox 4D); `read` también AGENTS.md de subcarpetas.
@@ -204,10 +205,12 @@ const layer: Layer.Layer<
     const read = Effect.fnUntraced(function* (filepath: string) {
       const texto = yield* fs.readFileString(filepath).pipe(Effect.catch(() => Effect.succeed("")))
       // Lazunox (Ola 7, 7.9): `@ruta.md` incluye otros archivos del proyecto (LAZUNOX_IMPORTS=0 lo apaga).
-      if (!texto || !Imports.activo()) return texto
+      if (!texto) return texto
+      // Lazunox (lazunox.15): tope de 32 KiB por archivo, contado DESPUÉS de expandir los `@imports`.
+      if (!Imports.activo()) return TopeInstrucciones.aplicar(texto)
       const ctx = yield* InstanceState.context
       const raiz = ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory
-      return (yield* Effect.promise(() => Imports.expandir(texto, filepath, raiz))).texto
+      return TopeInstrucciones.aplicar((yield* Effect.promise(() => Imports.expandir(texto, filepath, raiz))).texto)
     })
 
     const fetch = Effect.fnUntraced(function* (url: string) {
@@ -217,7 +220,8 @@ const layer: Layer.Layer<
       )
       if (!res) return ""
       const body = yield* res.arrayBuffer.pipe(Effect.catch(() => Effect.succeed(new ArrayBuffer(0))))
-      return new TextDecoder().decode(body)
+      // Lazunox (lazunox.15): las de URL llevan el mismo tope de 32 KiB.
+      return TopeInstrucciones.aplicar(new TextDecoder().decode(body))
     })
 
     const clear = Effect.fn("Instruction.clear")(function* (messageID: MessageID) {
