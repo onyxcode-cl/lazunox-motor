@@ -1,3 +1,4 @@
+import * as GitEndurecido from "./git-endurecido"
 import { Effect, Exit, Fiber, Schema, Scope, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
@@ -718,10 +719,11 @@ export const ShellTool = Tool.define(
         { cwd, sessionID: ctx.sessionID, callID: ctx.callID },
         { env: {} },
       )
-      return {
+      // Lazunox (lazunox.15): entorno de git endurecido (repositorio desnudo falso + fsmonitor). Va DESPUÉS de los plugins.
+      return GitEndurecido.endurecer({
         ...process.env,
         ...extra.env,
-      }
+      })
     })
 
     const run = Effect.fn("ShellTool.run")(function* (

@@ -204,7 +204,17 @@ export const ApplyPatchTool = Tool.define(
       }))
 
       // Check permissions if needed
-      const relativePaths = fileChanges.map((c) => path.relative(instance.worktree, c.filePath).replaceAll("\\", "/"))
+      // Lazunox (lazunox.15): también el DESTINO de «Move to»; si no, mover un archivo sobre opencode.json / .git/config / .mcp.json
+      // evaluaba solo el origen y se saltaba la protección de rutas.
+      const relativePaths = [
+        ...new Set(
+          fileChanges.flatMap((c) =>
+            [c.filePath, ...(c.movePath ? [c.movePath] : [])].map((f) =>
+              path.relative(instance.worktree, f).replaceAll("\\", "/"),
+            ),
+          ),
+        ),
+      ]
       yield* ctx.ask({
         permission: "edit",
         patterns: relativePaths,

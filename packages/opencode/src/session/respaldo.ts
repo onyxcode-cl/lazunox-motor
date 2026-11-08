@@ -12,7 +12,7 @@
 // Apagado por defecto (sin `respaldo.modelos` global no hace nada) y con el interruptor `LAZUNOX_RESPALDO=0`.
 // No cambia permisos ni reglas: solo cambia el modelo con el que se llama.
 import { Effect } from "effect"
-import { parse as parseJsonc } from "jsonc-parser"
+import { parse as parseJsonc, type ParseError } from "jsonc-parser"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { ProviderV2 } from "@opencode-ai/core/provider"
 import type { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -30,13 +30,16 @@ type ModeloRef = Pick<Provider.Model, "id" | "providerID">
 /**
  * Lazunox (lazunox.15): la clave `respaldo` de la config en línea (`OPENCODE_CONFIG_CONTENT`), que la app pone en el entorno del
  * motor porque no puede escribir en `~/.config/opencode`. Es solo el entorno del proceso: nunca el `opencode.json` del proyecto.
- * JSON (con comentarios tolerados) roto o sin `respaldo` válido devuelve `undefined`. No expande `{env:…}` ni `{file:…}`.
+ * JSON (con comentarios y coma final tolerados) con CUALQUIER error de sintaxis, o sin `respaldo` válido devuelve `undefined`. No expande `{env:…}` ni `{file:…}`.
  */
 export function respaldoEnLinea(env: NodeJS.ProcessEnv): ConfigV1.Info["respaldo"] | undefined {
   const texto = env.OPENCODE_CONFIG_CONTENT
   if (!texto) return undefined
   try {
-    const valor = parseJsonc(texto, [], { allowTrailingComma: true }) as unknown
+    const errores: ParseError[] = []
+    const valor = parseJsonc(texto, errores, { allowTrailingComma: true }) as unknown
+    // Falla cerrado: un JSON truncado o con basura al final no se aprovecha a medias.
+    if (errores.length > 0) return undefined
     if (!valor || typeof valor !== "object" || Array.isArray(valor)) return undefined
     const r = (valor as { respaldo?: unknown }).respaldo
     if (!r || typeof r !== "object" || Array.isArray(r)) return undefined

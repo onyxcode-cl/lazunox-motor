@@ -157,6 +157,15 @@ export interface Interface {
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/Instruction") {}
 
+// Lazunox (lazunox.15): `system()` se evalúa en cada paso; el aviso de recorte sale una vez por archivo y tamaño.
+const recortesAvisados = new Set<string>()
+const avisarUnaVez = (clave: string) => {
+  if (recortesAvisados.has(clave)) return false
+  if (recortesAvisados.size >= 256) recortesAvisados.clear()
+  recortesAvisados.add(clave)
+  return true
+}
+
 const layer: Layer.Layer<
   Service,
   never,
@@ -207,10 +216,19 @@ const layer: Layer.Layer<
       // Lazunox (Ola 7, 7.9): `@ruta.md` incluye otros archivos del proyecto (LAZUNOX_IMPORTS=0 lo apaga).
       if (!texto) return texto
       // Lazunox (lazunox.15): tope de 32 KiB por archivo, contado DESPUÉS de expandir los `@imports`.
-      if (!Imports.activo()) return TopeInstrucciones.aplicar(texto)
-      const ctx = yield* InstanceState.context
-      const raiz = ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory
-      return TopeInstrucciones.aplicar((yield* Effect.promise(() => Imports.expandir(texto, filepath, raiz))).texto)
+      let completo = texto
+      if (Imports.activo()) {
+        const ctx = yield* InstanceState.context
+        const raiz = ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory
+        completo = (yield* Effect.promise(() => Imports.expandir(texto, filepath, raiz))).texto
+      }
+      const recortado = TopeInstrucciones.aplicar(completo)
+      // Rastro visible: la persona (o la app, leyendo el registro) puede ver que el modelo no recibió el final del archivo.
+      if (recortado !== completo && avisarUnaVez(`${filepath}:${completo.length}`))
+        yield* Effect.logWarning(
+          `Lazunox: ${filepath} se recortó al tope de instrucciones (${Buffer.byteLength(completo, "utf-8")} bytes → 32 KiB); el modelo no ve el final`,
+        )
+      return recortado
     })
 
     const fetch = Effect.fnUntraced(function* (url: string) {
@@ -221,7 +239,11 @@ const layer: Layer.Layer<
       if (!res) return ""
       const body = yield* res.arrayBuffer.pipe(Effect.catch(() => Effect.succeed(new ArrayBuffer(0))))
       // Lazunox (lazunox.15): las de URL llevan el mismo tope de 32 KiB.
-      return TopeInstrucciones.aplicar(new TextDecoder().decode(body))
+      const completo = new TextDecoder().decode(body)
+      const recortado = TopeInstrucciones.aplicar(completo)
+      if (recortado !== completo && avisarUnaVez(`${url}:${completo.length}`))
+        yield* Effect.logWarning(`Lazunox: las instrucciones de ${url} se recortaron al tope de 32 KiB; el modelo no ve el final`)
+      return recortado
     })
 
     const clear = Effect.fn("Instruction.clear")(function* (messageID: MessageID) {

@@ -8,9 +8,30 @@ import path from "path"
 const DIRS = new Set([".git", ".opencode", ".claude", ".vscode", ".idea", ".husky"])
 // lazunox.15: `opencode.json`/`opencode.jsonc` también: el motor los carga del proyecto y de sus carpetas superiores, y un conector
 // MCP `local` escrito ahí arranca su `command` al cargar la carpeta. `package.json` NO (pediría permiso en cada dependencia).
-// `tui.json` NO: solo lo cargan los clientes de terminal (tui/attach/run), no el servidor que usa la app (aunque puede declarar
-// plugins de esa interfaz); `.opencode/tui.json` ya cae bajo `.opencode`.
-const FILES = new Set([".mcp.json", ".gitmodules", ".gitattributes", ".gitconfig", "opencode.json", "opencode.jsonc"])
+// `tui.json`/`tui.jsonc` también (ronda 2): solo los cargan los clientes de terminal, pero pueden declarar `plugin` (código) y casi
+// nadie los edita con la IA.
+const FILES = new Set([
+  ".mcp.json",
+  ".gitmodules",
+  ".gitattributes",
+  ".gitconfig",
+  "opencode.json",
+  "opencode.jsonc",
+  "tui.json",
+  "tui.jsonc",
+])
+
+/**
+ * Nombres que Windows resuelve al mismo archivo (lazunox.15, ronda 2): `opencode.json.` y `opencode.json ` (Win32 quita el punto y el
+ * espacio finales), `opencode.json::$DATA` (flujo principal), y el nombre corto 8.3 (`OPENCO~1.JSO`, `GIT~1`). Se normaliza SIEMPRE
+ * (también en Mac/Linux: es más prudente y no cuesta nada). Un nombre 8.3 no se puede traducir sin el disco: se trata como protegido.
+ */
+const normalizarParte = (parte: string) => {
+  const i = parte.indexOf(":")
+  const sinFlujo = i >= 0 ? parte.slice(0, i) : parte
+  return sinFlujo.replace(/[. ]+$/, "").trim()
+}
+const esNombreCorto83 = (parte: string) => /^[^.~]{1,6}~\d+(\.[^.]{0,3})?$/.test(parte)
 
 export const activo = (env: NodeJS.ProcessEnv = process.env) => env.LAZUNOX_PROTECTED_PATHS !== "0"
 
@@ -87,6 +108,7 @@ export const esProtegida = (
   ) {
     return false
   }
-  if (partes.some((p) => DIRS.has(p))) return true
-  return FILES.has(partes[partes.length - 1]!)
+  const norm = partes.map(normalizarParte).filter(Boolean)
+  if (norm.some((p) => DIRS.has(p) || esNombreCorto83(p))) return true
+  return norm.length > 0 && FILES.has(norm[norm.length - 1]!)
 }

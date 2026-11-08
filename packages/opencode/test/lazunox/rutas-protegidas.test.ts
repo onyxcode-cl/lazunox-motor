@@ -18,14 +18,37 @@ describe("rutas protegidas", () => {
     ])
       expect(esProtegida(p)).toBe(true)
   })
-  test("lazunox.15: opencode.json y opencode.jsonc (cualquier nivel, mayúsculas, \\) preguntan; package.json y tui.json no", () => {
+  test("lazunox.15: opencode.json y opencode.jsonc (cualquier nivel, mayúsculas, \\) preguntan; package.json no", () => {
     for (const p of ["opencode.json", "opencode.jsonc", "app/opencode.json", "./OpenCode.JSON", "C:\\proy\\opencode.jsonc", "../opencode.json"])
       expect(esProtegida(p)).toBe(true)
     // la protección sigue siendo por nombre exacto: parecidos no se marcan
-    for (const p of ["package.json", "tui.json", "opencode.json.bak", "opencode.jsonl", "docs/opencode.md", "myopencode.json"])
+    for (const p of ["package.json", "opencode.json.bak", "opencode.jsonl", "docs/opencode.md", "myopencode.json"])
       expect(esProtegida(p)).toBe(false)
     // apagable con el interruptor general (la decisión de no preguntar la toma quien llama a `activo`)
     expect(activo({ LAZUNOX_PROTECTED_PATHS: "0" } as NodeJS.ProcessEnv)).toBe(false)
+  })
+  test("ronda 2: tui.json/tui.jsonc y los alias de Windows (punto/espacio final, ::$DATA, nombre 8.3) también", () => {
+    for (const p of [
+      "tui.json",
+      "sub/tui.jsonc",
+      "opencode.json.",
+      "opencode.json...",
+      "opencode.json ",
+      "opencode.json::$DATA",
+      "opencode.jsonc:stream:$DATA",
+      "OPENCO~1.JSO",
+      "sub\\OPENCO~1.JS",
+      "MCP~1.JSO",
+      ".mcp.json.",
+      ".mcp.json::$DATA",
+      ".git./hooks/pre-commit",
+      ".git::$INDEX_ALLOCATION/config",
+      "GIT~1/config",
+      "x\\.git.\\hooks\\pre-commit",
+    ])
+      expect(esProtegida(p)).toBe(true)
+    // sin falsos positivos con nombres normales
+    for (const p of ["notas~backup.md", "a~b.txt", "docs/leeme.txt.", "src/index.ts", "C:/proy/src/a.ts", "~/x.ts"]) expect(esProtegida(p)).toBe(false)
   })
   test("no marca rutas normales ni nombres parecidos", () => {
     for (const p of ["src/index.ts", "README.md", "docs/git.md", ".github/workflows/ci.yml", ".gitignore", "my.git/x", "gitconfig.txt", "", "."])

@@ -142,6 +142,14 @@ describe("respaldo (núcleo)", () => {
     expect(v(m("otro", "x", { input: 0, output: 0 }), true)).toEqual({ ok: true })
     expect(v(m("otro", "x", { input: 2, output: 0 }), true)).toEqual({ ok: false, razon: "pago" }) // el consentimiento no abre el pago
   })
+  test("ronda 2: JSON con cualquier error de sintaxis (truncado o con basura) apaga el respaldo en línea", () => {
+    const ok = JSON.stringify({ respaldo: { modelos: ["a/m1"] } })
+    expect(Respaldo.leer(undefined, { OPENCODE_CONFIG_CONTENT: ok } as NodeJS.ProcessEnv)?.modelos).toEqual([{ providerID: "a", modelID: "m1" }])
+    for (const malo of [ok + " basura", ok.slice(0, -1), '{"respaldo":{"modelos":["a/m1"]}} }'])
+      expect(Respaldo.leer(undefined, { OPENCODE_CONFIG_CONTENT: malo } as NodeJS.ProcessEnv)).toBeUndefined()
+    // con error en la inline, cae a la global (no a una lectura parcial)
+    expect(Respaldo.leer(global({ modelos: ["g/x"] }), { OPENCODE_CONFIG_CONTENT: ok + " basura" } as NodeJS.ProcessEnv)?.modelos).toEqual([{ providerID: "g", modelID: "x" }])
+  })
   test("la configuración del proyecto nunca se lee: el módulo solo usa getGlobal", () => {
     const fuente = readFileSync(path.join(import.meta.dir, "../../src/session/respaldo.ts"), "utf8")
     expect(fuente).not.toMatch(/\.get\(\)/)

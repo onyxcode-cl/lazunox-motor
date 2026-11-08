@@ -204,6 +204,24 @@ describe("tool.apply_patch freeform", () => {
     { git: true },
   )
 
+  it.instance(
+    "lazunox.15: «Move to» mete el DESTINO en los patrones de permiso (para que opencode.json / .git/config / .mcp.json pregunten)",
+    () =>
+    Effect.gen(function* () {
+      const test = yield* TestInstance
+      const { ctx, calls } = makeCtx()
+      yield* writeText(path.join(test.directory, "notas.json"), "viejo\n")
+      const patchText =
+        "*** Begin Patch\n*** Update File: notas.json\n*** Move to: sub/opencode.json\n@@\n-viejo\n+nuevo\n*** End Patch"
+      yield* execute({ patchText }, ctx)
+      expect(calls[0]!.patterns).toEqual(["notas.json", "sub/opencode.json"])
+      // y la protección de rutas lo reconoce
+      const { esProtegida } = yield* Effect.promise(() => import("../../src/permission/rutas-protegidas"))
+      expect(calls[0]!.patterns.some((p) => esProtegida(p))).toBe(true)
+    }),
+    { git: true },
+  )
+
   it.instance("applies multiple hunks to one file", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

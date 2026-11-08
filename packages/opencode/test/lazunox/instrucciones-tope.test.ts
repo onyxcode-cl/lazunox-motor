@@ -58,6 +58,19 @@ describe("tope de instrucciones (puro)", () => {
     expect(e.endsWith(AVISO)).toBe(true)
   })
 
+  test("ronda 2: una línea enorme tras una corta no tira casi todo el archivo (corta en el límite UTF-8)", () => {
+    const r = aplicar("linea1\n" + "y".repeat(40000) + "\nREGLA", E)
+    const cuerpo = r.slice(0, r.length - AVISO.length - 1)
+    expect(bytes(cuerpo)).toBe(TOPE_BYTES)
+    expect(cuerpo.startsWith("linea1\nyyy")).toBe(true)
+    // con una línea completa que conserva más de la mitad, sigue cortando en línea
+    const l = aplicar(lineas(1000), E)
+    expect(l.slice(0, l.length - AVISO.length - 1).split("\n").every((x) => x.length === 86)).toBe(true)
+    // justo en la mitad del tope: se conserva la línea; por debajo, se corta en el límite UTF-8
+    const poco = aplicar("a".repeat(100) + "\n" + "y".repeat(40000), E)
+    expect(bytes(poco.slice(0, poco.length - AVISO.length - 1))).toBe(TOPE_BYTES)
+  })
+
   test("saltos de línea de Windows (CRLF) y un archivo sin ningún salto", () => {
     const crlf = Array.from({ length: 1000 }, (_, i) => `linea ${i} ${"y".repeat(60)}`).join("\r\n")
     const r = aplicar(crlf, E)

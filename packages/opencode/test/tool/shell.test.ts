@@ -1,3 +1,4 @@
+import fsSync from "node:fs"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { describe, expect } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -179,6 +180,36 @@ const mustTruncate = (result: {
     [`shell: ${process.env.SHELL || ""}`, `exit: ${String(result.metadata.exit)}`, "output:", result.output].join("\n"),
   )
 }
+
+describe("tool.shell git endurecido (lazunox.15)", () => {
+  if (process.platform !== "win32" && Bun.which("git")) {
+    each("el shell del agente no ejecuta core.fsmonitor de un repositorio desnudo falso, y LAZUNOX_GIT_ENDURECIDO=0 lo deja como antes", () =>
+      Effect.gen(function* () {
+        const dir = fsSync.realpathSync(fsSync.mkdtempSync(path.join(os.tmpdir(), "lzx-shgit-")))
+        const marca = path.join(dir, "PWNED")
+        fsSync.writeFileSync(path.join(dir, "HEAD"), "ref: refs/heads/main\n")
+        fsSync.writeFileSync(
+          path.join(dir, "config"),
+          `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\tworktree = .\n\tfsmonitor = "touch ${marca}; echo"\n`,
+        )
+        fsSync.mkdirSync(path.join(dir, "objects"))
+        fsSync.mkdirSync(path.join(dir, "refs"))
+        const prev = process.env.LAZUNOX_GIT_ENDURECIDO
+        try {
+          yield* runIn(dir, run({ command: "git status; echo fin" }))
+          expect(fsSync.existsSync(marca)).toBe(false)
+          process.env.LAZUNOX_GIT_ENDURECIDO = "0"
+          yield* runIn(dir, run({ command: "git status; echo fin" }))
+          expect(fsSync.existsSync(marca)).toBe(true) // sin el endurecimiento el exploit sí corre: la prueba demuestra algo
+        } finally {
+          if (prev === undefined) delete process.env.LAZUNOX_GIT_ENDURECIDO
+          else process.env.LAZUNOX_GIT_ENDURECIDO = prev
+          fsSync.rmSync(dir, { recursive: true, force: true })
+        }
+      }),
+    )
+  }
+})
 
 describe("tool.shell", () => {
   each("basic", () =>

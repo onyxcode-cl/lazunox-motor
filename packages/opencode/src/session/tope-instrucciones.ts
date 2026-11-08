@@ -21,7 +21,9 @@ export function aplicar(texto: string, env: NodeJS.ProcessEnv = process.env): st
   while (fin > 0 && (buf[fin]! & 0xc0) === 0x80) fin--
   let corte = buf.subarray(0, fin).toString("utf-8")
   // Límite de línea: si el corte cayó a media línea, quita esa línea incompleta (si no hay saltos, se queda el trozo).
+  // Solo si se conserva una parte razonable (la mitad del tope o más): una línea enorme tras una corta no debe tirar casi todo.
   const salto = Math.max(corte.lastIndexOf("\n"), corte.lastIndexOf("\r"))
-  if (buf[fin] !== 0x0a && buf[fin] !== 0x0d && salto > 0) corte = corte.slice(0, salto)
+  if (buf[fin] !== 0x0a && buf[fin] !== 0x0d && salto > 0 && Buffer.byteLength(corte.slice(0, salto), "utf-8") >= TOPE_BYTES / 2)
+    corte = corte.slice(0, salto)
   return `${corte.replace(/[\r\n]+$/, "")}\n${AVISO}`
 }
