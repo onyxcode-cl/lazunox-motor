@@ -125,17 +125,104 @@ describe("rutas protegidas y enlaces simbólicos", () => {
       fs.rmSync(r, { recursive: true, force: true })
     }
   })
-  test("enlaces benignos y rutas normales no se marcan; un enlace hacia fuera del proyecto lo decide external_directory", () => {
+  test("enlaces benignos y rutas normales no se marcan; un enlace hacia fuera sin nombre protegido tampoco", () => {
     const r = tmp()
     const fuera = tmp()
     try {
       fs.mkdirSync(path.join(r, "src"))
       fs.writeFileSync(path.join(r, "src/a.ts"), "x")
+      fs.writeFileSync(path.join(fuera, "datos.txt"), "x")
       fs.symlinkSync("src/a.ts", path.join(r, "alias.ts"))
       fs.symlinkSync("src", path.join(r, "carpeta-src"))
-      fs.symlinkSync(path.join(fuera, ".git"), path.join(r, "afuera"))
+      fs.symlinkSync(path.join(fuera, "datos.txt"), path.join(r, "afuera"))
+      fs.mkdirSync(path.join(r, "..h"))
+      fs.symlinkSync("..h/x.txt", path.join(r, "dd"))
       const o = { raiz: r }
-      for (const p of ["alias.ts", "carpeta-src/a.ts", "src/nuevo.ts", "nuevo/otro.ts", "afuera"]) expect(esProtegida(p, E, o), p).toBe(false)
+      for (const p of ["alias.ts", "carpeta-src/a.ts", "src/nuevo.ts", "nuevo/otro.ts", "afuera", "dd", "..h/x.txt"]) expect(esProtegida(p, E, o), p).toBe(false)
+    } finally {
+      fs.rmSync(r, { recursive: true, force: true })
+      fs.rmSync(fuera, { recursive: true, force: true })
+    }
+  })
+  test("3.ª ronda: `..` en el destino se aplica sobre la carpeta ya resuelta (s -> .git/hooks, a -> s/../config)", () => {
+    const r = tmp()
+    try {
+      fs.mkdirSync(path.join(r, ".git/hooks"), { recursive: true })
+      fs.writeFileSync(path.join(r, ".git/config"), "[core]\n")
+      fs.symlinkSync(".git/hooks", path.join(r, "s"))
+      fs.symlinkSync("s/../config", path.join(r, "a"))
+      expect(fs.readFileSync(path.join(r, "a"), "utf-8")).toBe("[core]\n") // el sistema SÍ llega a .git/config
+      expect(esProtegida("a", E, { raiz: r })).toBe(true)
+    } finally {
+      fs.rmSync(r, { recursive: true, force: true })
+    }
+  })
+  test("3.ª ronda: destino absoluto con otras mayúsculas (sistemas que no distinguen) se canoniza", () => {
+    const r = tmp()
+    try {
+      // solo tiene sentido si el volumen no distingue mayúsculas (APFS/NTFS por defecto)
+      const mayus = r.toUpperCase()
+      if (!fs.existsSync(mayus)) return
+      fs.mkdirSync(path.join(r, ".git"))
+      fs.writeFileSync(path.join(r, ".git/config"), "x")
+      fs.symlinkSync(path.join(mayus, ".git", "config"), path.join(r, "mayus"))
+      expect(esProtegida("mayus", E, { raiz: r })).toBe(true)
+    } finally {
+      fs.rmSync(r, { recursive: true, force: true })
+    }
+  })
+  test("3.ª ronda: proyecto SIN git: el patrón viene relativo a `/` (base) y la raíz es la carpeta", () => {
+    const r = tmp()
+    try {
+      fs.mkdirSync(path.join(r, ".git"))
+      fs.symlinkSync(".git", path.join(r, "carpeta"))
+      fs.symlinkSync(".git/config", path.join(r, "directo"))
+      const rel = (f: string) => path.relative("/", path.join(r, f)) // como lo construyen edit/write/apply_patch con worktree "/"
+      expect(esProtegida(rel("directo"), E, { raiz: r, base: "/" })).toBe(true)
+      expect(esProtegida(rel("carpeta/hooks/x"), E, { raiz: r, base: "/" })).toBe(true)
+      expect(esProtegida(rel("src/a.ts"), E, { raiz: r, base: "/" })).toBe(false)
+      // sin la base correcta (el fallo de antes) el patrón apuntaba a una ruta que no existe
+      expect(esProtegida(rel("directo"), E, { raiz: r })).toBe(false)
+    } finally {
+      fs.rmSync(r, { recursive: true, force: true })
+    }
+  })
+  test("3.ª ronda: en POSIX un nombre con `\\` es un nombre más (b\\c -> .git/config)", () => {
+    if (path.sep !== "/") return
+    const r = tmp()
+    try {
+      fs.mkdirSync(path.join(r, ".git"))
+      fs.writeFileSync(path.join(r, ".git/config"), "x")
+      fs.symlinkSync(".git/config", path.join(r, "b\\c"))
+      expect(esProtegida("b\\c", E, { raiz: r })).toBe(true)
+      expect(esProtegida("b\\otro", E, { raiz: r })).toBe(false)
+    } finally {
+      fs.rmSync(r, { recursive: true, force: true })
+    }
+  })
+  test("3.ª ronda: una carpeta cuyo nombre empieza por `..` (..h) no es «fuera» del proyecto", () => {
+    const r = tmp()
+    try {
+      fs.mkdirSync(path.join(r, "..h/.git"), { recursive: true })
+      fs.writeFileSync(path.join(r, "..h/.git/config"), "x")
+      fs.symlinkSync("..h/.git/config", path.join(r, "dotdot"))
+      expect(esProtegida("dotdot", E, { raiz: r })).toBe(true)
+    } finally {
+      fs.rmSync(r, { recursive: true, force: true })
+    }
+  })
+  test("3.ª ronda: un enlace hacia FUERA del proyecto cuyo destino tiene nombre protegido (opencode.json global, .gitconfig, .git ajeno) pregunta", () => {
+    const r = tmp()
+    const fuera = tmp()
+    try {
+      fs.mkdirSync(path.join(fuera, ".config/opencode"), { recursive: true })
+      fs.mkdirSync(path.join(fuera, "otro/.git"), { recursive: true })
+      fs.writeFileSync(path.join(fuera, ".config/opencode/opencode.json"), "{}")
+      fs.writeFileSync(path.join(fuera, ".gitconfig"), "")
+      fs.symlinkSync(path.join(fuera, ".config/opencode/opencode.json"), path.join(r, "cfg"))
+      fs.symlinkSync(path.join(fuera, ".gitconfig"), path.join(r, "gc"))
+      fs.symlinkSync(path.join(fuera, "otro/.git/config"), path.join(r, "ajeno")) // roto, destino previsto
+      for (const p of ["cfg", "gc", "ajeno"]) expect(esProtegida(p, E, { raiz: r }), p).toBe(true)
     } finally {
       fs.rmSync(r, { recursive: true, force: true })
       fs.rmSync(fuera, { recursive: true, force: true })

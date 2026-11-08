@@ -103,75 +103,89 @@ export function dentroDeLosPlanes(pattern: string, raiz: string): boolean {
 
 /**
  * `pattern` es la ruta tal como la pide la herramienta (relativa al proyecto o absoluta; con / o \).
- * `opts.agente` y `opts.raiz` (carpeta del proyecto) son necesarios para la excepción del archivo del plan.
+ * `opts.agente` y `opts.raiz` (carpeta del proyecto) son necesarios para la excepción del archivo del plan y para resolver enlaces;
+ * `opts.base` es la carpeta contra la que se construyó `pattern` (por defecto `raiz`).
  */
 export const esProtegida = (
   pattern: string,
   env: NodeJS.ProcessEnv = process.env,
-  opts?: { agente?: string; raiz?: string },
+  opts?: { agente?: string; raiz?: string; base?: string },
 ) => {
   const porNombre = nombreProtegido(pattern, env, opts)
   if (porNombre !== null) return porNombre
-  return opts?.raiz !== undefined && protegidoPorEnlace(pattern, opts.raiz)
+  return opts?.raiz !== undefined && protegidoPorEnlace(pattern, opts.raiz, opts.base ?? opts.raiz)
 }
 
 /**
- * Enlaces simbólicos (lazunox.15, 2.ª ronda): las escrituras siguen el enlace, así que `notas.cfg -> .git/config` o el enlace roto
- * `ajustes.json -> opencode.json` editarían un destino protegido sin tarjeta. Se resuelve la ruta con todos sus enlaces (también los
- * rotos: se usa el destino previsto) y se vuelve a mirar el nombre del destino si queda dentro del proyecto. Un bucle de enlaces
- * (ELOOP) se trata como protegido. Fuera del proyecto decide `external_directory`.
+ * Enlaces simbólicos (lazunox.15, 2.ª y 3.ª ronda): las escrituras siguen el enlace, así que `notas.cfg -> .git/config` o el enlace roto
+ * `ajustes.json -> opencode.json` editarían un destino protegido sin tarjeta. Se resuelve la ruta de forma FÍSICA (componente a
+ * componente, como el sistema: `..` se aplica sobre la carpeta ya resuelta, no sobre el texto), también con enlaces rotos (se usa el
+ * destino previsto) y en cadena; se canoniza con `realProfundo` (mayúsculas/forma de lo que existe) y se mira el nombre del destino:
+ * relativo al proyecto si queda dentro, o la ruta absoluta si queda fuera (`external_directory` es léxico y no sigue enlaces, así que
+ * no frena un enlace del repositorio hacia `~/.config/opencode/opencode.json`, `~/.gitconfig` o un `.git` ajeno). Un bucle de enlaces
+ * se trata como protegido. Carrera entre pedir y escribir (TOCTOU) y enlaces duros: no cubiertos.
  */
 function destinoConEnlaces(abs: string): string | "bucle" {
-  let actual = path.resolve(abs)
-  for (let vuelta = 0; vuelta < 40; vuelta++) {
-    const { root } = path.parse(actual)
-    const trozos = actual.slice(root.length).split(path.sep).filter(Boolean)
-    let cur = root
-    let cambio = false
-    for (let i = 0; i < trozos.length; i++) {
-      const sig = path.join(cur, trozos[i]!)
-      let st: fs.Stats
-      try {
-        st = fs.lstatSync(sig)
-      } catch (e) {
-        if ((e as NodeJS.ErrnoException).code === "ELOOP") return "bucle"
-        return path.join(cur, ...trozos.slice(i)) // no existe (o no se puede mirar): el resto queda tal cual
-      }
-      if (st.isSymbolicLink()) {
-        let destino: string
-        try {
-          destino = fs.readlinkSync(sig)
-        } catch {
-          return "bucle"
-        }
-        actual = path.resolve(cur, destino, ...trozos.slice(i + 1))
-        cambio = true
-        break
-      }
-      cur = sig
+  const { root } = path.parse(path.resolve(abs))
+  let cola = path.resolve(abs).slice(root.length).split(path.sep).filter(Boolean)
+  let cur = root
+  let saltos = 0
+  while (cola.length) {
+    const c = cola.shift()!
+    if (c === ".") continue
+    if (c === "..") {
+      cur = path.dirname(cur)
+      continue
     }
-    if (!cambio) return actual
+    const sig = path.join(cur, c)
+    let st: fs.Stats
+    try {
+      st = fs.lstatSync(sig)
+    } catch (e) {
+      if ((e as NodeJS.ErrnoException).code === "ELOOP") return "bucle"
+      return path.join(sig, ...cola) // no existe (o no se puede mirar): el resto queda tal cual
+    }
+    if (st.isSymbolicLink()) {
+      if (++saltos > 40) return "bucle"
+      let d: string
+      try {
+        d = fs.readlinkSync(sig)
+      } catch {
+        return "bucle"
+      }
+      if (process.platform === "win32") d = d.replace(/^\\\\\?\\/, "") // prefijo `\\?\` de las rutas largas
+      if (path.isAbsolute(d)) {
+        const r = path.parse(d).root
+        cur = r
+        d = d.slice(r.length)
+      }
+      cola = [...d.split(process.platform === "win32" ? /[\\/]/ : "/").filter(Boolean), ...cola]
+      continue
+    }
+    cur = sig
   }
-  return "bucle"
+  return cur
 }
 
-function protegidoPorEnlace(pattern: string, raiz: string): boolean {
-  if (path.sep === "/" && pattern.includes("\\")) return false
+/**
+ * `raiz` es el proyecto (para decidir dentro/fuera); `base` es la carpeta contra la que las herramientas construyeron `pattern`
+ * (`worktree` del motor, que en un proyecto SIN git es `/`): si no coinciden, en carpetas sin git el patrón se resolvía a una ruta que no existe.
+ */
+function protegidoPorEnlace(pattern: string, raiz: string, base: string): boolean {
   const realRaiz = realProfundo(raiz) ?? path.resolve(raiz)
-  const destino = destinoConEnlaces(path.resolve(raiz, pattern))
-  if (destino === "bucle") return true
+  const fisico = destinoConEnlaces(path.resolve(base, pattern))
+  if (fisico === "bucle") return true
+  const destino = realProfundo(fisico) ?? fisico
   const rel = path.relative(realRaiz, destino)
-  if (rel === "" || rel.startsWith("..") || path.isAbsolute(rel)) return false
-  const lexico = path.relative(path.resolve(raiz), path.resolve(raiz, pattern))
-  if (rel === lexico) return false // sin enlaces de por medio: ya se miró por nombre
-  return nombreProtegido(rel, {} as NodeJS.ProcessEnv, undefined) === true
+  const fuera = rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)
+  return nombreProtegido(fuera ? destino : rel, {} as NodeJS.ProcessEnv, undefined) === true
 }
 
 /** `true`/`false` si el NOMBRE de la ruta ya decide (protegida, o la excepción del plan); `null` si no decide y hay que mirar los enlaces. */
 function nombreProtegido(
   pattern: string,
   env: NodeJS.ProcessEnv,
-  opts?: { agente?: string; raiz?: string },
+  opts?: { agente?: string; raiz?: string; base?: string },
 ): boolean | null {
   const partes = pattern
     .replaceAll("\\", "/")

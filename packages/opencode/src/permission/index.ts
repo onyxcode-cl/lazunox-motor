@@ -35,6 +35,8 @@ interface State {
   approved: PermissionV1.Rule[]
   directory: string
   worktree: string
+  /** Carpeta contra la que las herramientas construyen los patrones de `edit` (el worktree real; `/` en un proyecto sin git). */
+  baseRutas: string
 }
 
 export function evaluate(permission: string, pattern: string, ...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule {
@@ -64,6 +66,7 @@ const layer = Layer.effect(
           approved: SiempreDisco.cargar(ctx.directory).map((r) => ({ ...r, action: "allow" as const })),
           directory: ctx.directory,
           worktree: ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory,
+          baseRutas: ctx.worktree || ctx.directory,
         }
 
         yield* Effect.addFinalizer(() =>
@@ -80,7 +83,7 @@ const layer = Layer.effect(
     )
 
     const ask = Effect.fn("Permission.ask")(function* (input: PermissionV1.AskInput) {
-      const { approved, pending, worktree } = yield* InstanceState.get(state)
+      const { approved, pending, worktree, baseRutas } = yield* InstanceState.get(state)
       const { ruleset, ...request } = input
       const agente = typeof request.metadata?.["lazunox_agente"] === "string" ? request.metadata["lazunox_agente"] : undefined
       let needsAsk = false
@@ -107,7 +110,7 @@ const layer = Layer.effect(
       let protegido = false
 
       for (const pattern of request.patterns) {
-        if (request.permission === "edit" && RutasProtegidas.activo() && RutasProtegidas.esProtegida(pattern, process.env, { agente, raiz: worktree })) {
+        if (request.permission === "edit" && RutasProtegidas.activo() && RutasProtegidas.esProtegida(pattern, process.env, { agente, raiz: worktree, base: baseRutas })) {
           if (evaluate(request.permission, pattern, ruleset).action === "deny") {
             return yield* negar(ruleset, "regla")
           }

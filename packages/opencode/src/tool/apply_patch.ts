@@ -210,7 +210,8 @@ export const ApplyPatchTool = Tool.define(
         ...new Set(
           fileChanges.flatMap((c) =>
             [c.filePath, ...(c.movePath ? [c.movePath] : [])].map((f) =>
-              path.relative(instance.worktree, f).replaceAll("\\", "/"),
+              // En POSIX `\` es un carácter válido de un nombre: no se cambia (si no, el patrón apuntaba a otro archivo).
+              path.sep === "\\" ? path.relative(instance.worktree, f).replaceAll("\\", "/") : path.relative(instance.worktree, f),
             ),
           ),
         ),
