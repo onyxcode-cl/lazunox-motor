@@ -77,6 +77,34 @@ describe("git endurecido (con git real)", () => {
     fs.rmSync(b, { recursive: true, force: true })
   })
 
+  // Escenario que `core.fsmonitor=false` por sí solo NO neutraliza: `diff.external` en un desnudo falso con `git diff`.
+  // Si alguien quita `safe.bareRepository=explicit`, esta prueba se pone en rojo.
+  test.skipIf(!hay)("desnudo falso con diff.external: ni con git diff se ejecuta; y fsmonitor=false SOLO no basta", () => {
+    const falsoDiff = (dir: string) => {
+      const marca = path.join(dir, "PWN_DIFF")
+      fs.writeFileSync(path.join(dir, "HEAD"), "ref: refs/heads/main\n")
+      fs.writeFileSync(path.join(dir, "config"), `[core]\n\trepositoryformatversion = 0\n\tbare = false\n\n[diff]\n\texternal = touch ${marca}; echo\n`)
+      fs.mkdirSync(path.join(dir, "objects"))
+      fs.mkdirSync(path.join(dir, "refs"))
+      fs.writeFileSync(path.join(dir, "a"), "a\n")
+      fs.writeFileSync(path.join(dir, "b"), "b\n")
+      return marca
+    }
+    const corre = (env: NodeJS.ProcessEnv) => {
+      const d = tmp()
+      const marca = falsoDiff(d)
+      git(d, ["diff", "--no-index", "a", "b"], env)
+      const ejecuto = fs.existsSync(marca)
+      fs.rmSync(d, { recursive: true, force: true })
+      return ejecuto
+    }
+    const soloFsmonitor = { ...base(), GIT_CONFIG_COUNT: "1", GIT_CONFIG_KEY_0: "core.fsmonitor", GIT_CONFIG_VALUE_0: "false" }
+    // git con safe.bareRepository (>= 2.38): sin él ejecuta y con fsmonitor=false solo también
+    const vulnerable = corre(base())
+    if (vulnerable) expect(corre(soloFsmonitor)).toBe(true)
+    expect(corre(endurecer(base()))).toBe(false)
+  })
+
   test.skipIf(!hay)("también dentro de un repositorio real (sub/ falso) y un fsmonitor del .git/config real", () => {
     const r = tmp()
     const env = endurecer(base())
