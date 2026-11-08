@@ -80,9 +80,10 @@ export const EditTool = Tool.define(
           }
 
           const instance = yield* InstanceState.context
-          const filePath = path.isAbsolute(params.filePath)
-            ? params.filePath
-            : path.join(instance.directory, params.filePath)
+          // Lazunox (lazunox.15): SIEMPRE se normaliza (resolve), también la ruta absoluta: el permiso se calcula con `path.relative`, que
+          // aplica `..` sobre el texto; si se escribiera la ruta cruda, `<proyecto>/s/../config` con `s -> .git/hooks` pediría permiso
+          // para `config` y el sistema escribiría `.git/config`.
+          const filePath = path.resolve(instance.directory, params.filePath)
           yield* assertExternalDirectoryEffect(ctx, filePath)
 
           let diff = ""

@@ -571,4 +571,28 @@ describe("tool.edit", () => {
       }),
     )
   })
+
+  describe("lazunox.15: la ruta absoluta se normaliza igual que la que se comprueba", () => {
+    const probar = (git: boolean) =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const dir = test.directory
+        yield* Effect.promise(async () => {
+          await fs.mkdir(path.join(dir, ".cfgdir", "hooks"), { recursive: true })
+          await fs.writeFile(path.join(dir, ".cfgdir", "config"), "valor = ORIGINAL\n")
+          await fs.writeFile(path.join(dir, "config"), "valor = RAIZ\n")
+          await fs.symlink(path.join(".cfgdir", "hooks"), path.join(dir, "s"))
+        })
+        const patrones: string[] = []
+        yield* run(
+          { filePath: `${dir}/s/../config`, oldString: "valor = RAIZ", newString: "valor = CAMBIADO" },
+          { ...ctx, ask: (req: { patterns: string[] }) => Effect.sync(() => void patrones.push(...req.patterns)) } as any,
+        )
+        expect(yield* Effect.promise(() => fs.readFile(path.join(dir, ".cfgdir", "config"), "utf-8"))).toBe("valor = ORIGINAL\n")
+        expect(yield* Effect.promise(() => fs.readFile(path.join(dir, "config"), "utf-8"))).toBe("valor = CAMBIADO\n")
+        expect(patrones).toEqual([path.relative(git ? dir : "/", path.join(dir, "config"))]) // sin git el patrón sale relativo a `/`
+      })
+    it.instance("proyecto con git", () => probar(true), { git: true })
+    it.instance("proyecto sin git", () => probar(false))
+  })
 })

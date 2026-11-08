@@ -48,7 +48,8 @@ export const CuadernoTool = Tool.define(
         Effect.gen(function* () {
           if (!params.filePath) throw new Error("filePath is required")
           const instance = yield* InstanceState.context
-          const filepath = path.isAbsolute(params.filePath) ? params.filePath : path.join(instance.directory, params.filePath)
+          // Lazunox (lazunox.15): siempre `resolve` (ver write.ts): el permiso y la escritura deben ver la misma ruta.
+          const filepath = path.resolve(instance.directory, params.filePath)
           if (!filepath.toLowerCase().endsWith(".ipynb"))
             throw new Error(`cuaderno_editar solo edita archivos .ipynb. Para ${filepath} usa edit o write.`)
           yield* assertExternalDirectoryEffect(ctx, filepath)

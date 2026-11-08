@@ -222,6 +222,26 @@ describe("tool.apply_patch freeform", () => {
     { git: true },
   )
 
+  it.instance(
+    "lazunox.15: en POSIX un nombre con \\ no se cambia en el patrón (b\\c es un archivo, no b/c), y el enlace b\\c -> .git/config se detecta",
+    () =>
+      Effect.gen(function* () {
+        if (path.sep !== "/") return
+        const test = yield* TestInstance
+        const { ctx, calls } = makeCtx()
+        yield* Effect.promise(async () => {
+          await fs.writeFile(path.join(test.directory, ".git", "config"), "[core]\n")
+          await fs.symlink(".git/config", path.join(test.directory, "b\\c"))
+        })
+        const patchText = "*** Begin Patch\n*** Update File: b\\c\n@@\n-[core]\n+[core]\n+\teditor = x\n*** End Patch"
+        yield* execute({ patchText }, ctx)
+        expect(calls[0]!.patterns).toEqual(["b\\c"])
+        const { esProtegida } = yield* Effect.promise(() => import("../../src/permission/rutas-protegidas"))
+        expect(esProtegida(calls[0]!.patterns[0]!, process.env, { raiz: test.directory, base: test.directory })).toBe(true)
+      }),
+    { git: true },
+  )
+
   it.instance("applies multiple hunks to one file", () =>
     Effect.gen(function* () {
       const test = yield* TestInstance

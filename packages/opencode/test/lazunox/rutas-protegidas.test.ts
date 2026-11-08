@@ -228,4 +228,23 @@ describe("rutas protegidas y enlaces simbólicos", () => {
       fs.rmSync(fuera, { recursive: true, force: true })
     }
   })
+  test("4.ª ronda: un error de lstat que no es «no existe» (EACCES) falla cerrado: pregunta", () => {
+    if (process.platform === "win32" || (process.getuid && process.getuid() === 0)) return
+    const r = tmp()
+    try {
+      // no se puede fabricar ENAMETOOLONG con seguridad (PATH_MAX al crear las carpetas); EACCES ejercita la misma rama:
+      // antes cualquier error distinto de ELOOP dejaba pasar «el resto de la ruta como texto»
+      fs.mkdirSync(path.join(r, "cerrada/sub"), { recursive: true })
+      fs.symlinkSync("cerrada/sub/f.txt", path.join(r, "x"))
+      fs.chmodSync(path.join(r, "cerrada"), 0)
+      try {
+        expect(esProtegida("x", E, { raiz: r })).toBe(true)
+        expect(esProtegida("normal.ts", E, { raiz: r })).toBe(false)
+      } finally {
+        fs.chmodSync(path.join(r, "cerrada"), 0o755)
+      }
+    } finally {
+      fs.rmSync(r, { recursive: true, force: true })
+    }
+  })
 })

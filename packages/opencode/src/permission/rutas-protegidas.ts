@@ -68,8 +68,9 @@ function realProfundo(p: string): string | undefined {
     try {
       fs.lstatSync(actual)
     } catch (e) {
-      // ENOENT: sube un nivel. Cualquier otra cosa (ELOOP, permisos): no se puede garantizar.
-      if ((e as NodeJS.ErrnoException).code !== "ENOENT") return undefined
+      // ENOENT/ENOTDIR: sube un nivel. Cualquier otra cosa (ELOOP, permisos): no se puede garantizar.
+      const code = (e as NodeJS.ErrnoException).code
+      if (code !== "ENOENT" && code !== "ENOTDIR") return undefined
       existe = false
     }
     if (existe) {
@@ -142,8 +143,11 @@ function destinoConEnlaces(abs: string): string | "bucle" {
     try {
       st = fs.lstatSync(sig)
     } catch (e) {
-      if ((e as NodeJS.ErrnoException).code === "ELOOP") return "bucle"
-      return path.join(sig, ...cola) // no existe (o no se puede mirar): el resto queda tal cual
+      const code = (e as NodeJS.ErrnoException).code
+      // Solo «no existe» (o un componente que no es carpeta) deja el resto tal cual; cualquier otro error (ELOOP, ENAMETOOLONG,
+      // EACCES…) = no se puede garantizar = protegido (pregunta), porque el sistema podría resolverlo distinto.
+      if (code !== "ENOENT" && code !== "ENOTDIR") return "bucle"
+      return path.join(sig, ...cola)
     }
     if (st.isSymbolicLink()) {
       if (++saltos > 40) return "bucle"
@@ -175,7 +179,8 @@ function protegidoPorEnlace(pattern: string, raiz: string, base: string): boolea
   const realRaiz = realProfundo(raiz) ?? path.resolve(raiz)
   const fisico = destinoConEnlaces(path.resolve(base, pattern))
   if (fisico === "bucle") return true
-  const destino = realProfundo(fisico) ?? fisico
+  const destino = realProfundo(fisico)
+  if (destino === undefined) return true // enlace roto o error al canonizar: no se puede garantizar
   const rel = path.relative(realRaiz, destino)
   const fuera = rel === ".." || rel.startsWith(".." + path.sep) || path.isAbsolute(rel)
   return nombreProtegido(fuera ? destino : rel, {} as NodeJS.ProcessEnv, undefined) === true

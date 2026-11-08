@@ -229,6 +229,22 @@ describe("7.15 la herramienta", () => {
       expect(n.cells[2].source).toEqual(["2 + 2"])
     }),
   )
+  it.instance("lazunox.15: una ruta absoluta con `..` sobre un enlace edita el archivo que el permiso muestra, no el del enlace", () =>
+    Effect.gen(function* () {
+      const dir = (yield* TestInstance).directory
+      yield* Effect.promise(async () => {
+        await fs.mkdir(path.join(dir, ".cfgdir/hooks"), { recursive: true })
+        await fs.symlink(path.join(".cfgdir", "hooks"), path.join(dir, "s"))
+      })
+      const protegido = path.join(dir, ".cfgdir", "n.ipynb")
+      yield* escribir(protegido, texto(nb()))
+      yield* escribir(path.join(dir, "n.ipynb"), texto(nb()))
+      yield* ejecutar({ filePath: `${dir}/s/../n.ipynb`, operacion: "reemplazar", celdaId: "cccc3333", contenido: "PWN" })
+      expect(JSON.parse(yield* leer(protegido)).cells[2].source).not.toEqual(["PWN"])
+      expect(JSON.parse(yield* leer(path.join(dir, "n.ipynb"))).cells[2].source).toEqual(["PWN"])
+    }),
+  )
+
   it.instance("si el permiso se niega, el archivo queda igual", () =>
     Effect.gen(function* () {
       const dir = (yield* TestInstance).directory

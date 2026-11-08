@@ -276,4 +276,30 @@ describe("tool.write", () => {
       }),
     )
   })
+
+  describe("lazunox.15: la ruta absoluta se normaliza igual que la que se comprueba", () => {
+    // Con `s -> .cfgdir/hooks`, el sistema resolvía `<proyecto>/s/../config` a `.cfgdir/config` mientras el permiso (path.relative) veía `config`.
+    const probar = (git: boolean) =>
+      Effect.gen(function* () {
+        const test = yield* TestInstance
+        const dir = test.directory
+        yield* Effect.promise(async () => {
+          await fs.mkdir(path.join(dir, ".cfgdir", "hooks"), { recursive: true })
+          await fs.writeFile(path.join(dir, ".cfgdir", "config"), "ORIGINAL")
+          await fs.symlink(path.join(".cfgdir", "hooks"), path.join(dir, "s"))
+        })
+        const patrones: string[] = []
+        yield* run(
+          { filePath: `${dir}/s/../config`, content: "PWNED" },
+          { ...ctx, ask: (req: { patterns: string[] }) => Effect.sync(() => void patrones.push(...req.patterns)) } as any,
+        )
+        const protegido = yield* Effect.promise(() => fs.readFile(path.join(dir, ".cfgdir", "config"), "utf-8"))
+        const raiz = yield* Effect.promise(() => fs.readFile(path.join(dir, "config"), "utf-8"))
+        expect(protegido).toBe("ORIGINAL") // el destino al que llevaba el enlace NO se tocó
+        expect(raiz).toBe("PWNED") // se escribió lo que el permiso decía: `<proyecto>/config`
+        expect(patrones).toEqual([path.relative(git ? dir : "/", path.join(dir, "config"))]) // sin git el patrón sale relativo a `/`
+      })
+    it.instance("proyecto con git", () => probar(true), { git: true })
+    it.instance("proyecto sin git", () => probar(false))
+  })
 })

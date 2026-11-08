@@ -40,9 +40,10 @@ export const WriteTool = Tool.define(
       execute: (params: { content: string; filePath: string }, ctx: Tool.Context) =>
         Effect.gen(function* () {
           const instance = yield* InstanceState.context
-          const filepath = path.isAbsolute(params.filePath)
-            ? params.filePath
-            : path.join(instance.directory, params.filePath)
+          // Lazunox (lazunox.15): SIEMPRE se normaliza (resolve), también la ruta absoluta: el permiso se calcula con `path.relative`, que
+          // aplica `..` sobre el texto; si se escribiera la ruta cruda, `<proyecto>/s/../config` con `s -> .git/hooks` pediría permiso
+          // para `config` y el sistema escribiría `.git/config`.
+          const filepath = path.resolve(instance.directory, params.filePath)
           yield* assertExternalDirectoryEffect(ctx, filepath)
 
           const exists = yield* fs.existsSafe(filepath)
