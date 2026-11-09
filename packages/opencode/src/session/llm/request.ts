@@ -4,6 +4,7 @@ import type { Auth } from "@/auth"
 import { SessionV1 } from "@opencode-ai/core/v1/session"
 import type { RuntimeFlags } from "@/effect/runtime-flags"
 import { InstanceState } from "@/effect/instance-state"
+import { InstanceRef } from "@/effect/instance-ref"
 import { Permission } from "@/permission"
 import type { Agent } from "@/agent/agent"
 import type { MessageV2 } from "../message-v2"
@@ -147,7 +148,8 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     },
   )
 
-  const directory = yield* InstanceState.directory
+  // Sin instancia (pruebas o usos sin carpeta) no hay carpeta: el piso de la config queda vacío, como en lazunox.15.
+  const directory = (yield* InstanceRef)?.directory
   const tools = resolveTools({ ...input, directory })
   // Codex parity: OpenAI Responses-family providers hardcode `strict: false`
   // on every function tool so MCP-sourced and dynamic schemas that don't
