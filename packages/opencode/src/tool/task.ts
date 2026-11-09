@@ -94,6 +94,9 @@ const BACKGROUND_DESCRIPTION = [
   "Use background only for independent work that can run while you continue elsewhere.",
   "You will be notified automatically when it finishes.",
 ].join(" ")
+// Lazunox (lazunox.16, recorte `task`): lo mismo en menos texto.
+const BACKGROUND_DESCRIPTION_CORTA =
+  "Background mode: background=true launches the subagent asynchronously and returns at once (the default, foreground, is for when you need the result before continuing); you are notified when it finishes. Use it only for independent work."
 const BACKGROUND_STARTED = [
   "The task is working in the background. You will be notified automatically when it finishes.",
   "DO NOT sleep, poll for progress, ask the task for status, or duplicate this task's work — avoid working with the same files or topics it is using.",
@@ -591,7 +594,7 @@ export const TaskTool = Tool.define(
     const DESCRIPTION = recorteActivo("task") ? DESCRIPTION_CORTA : DESCRIPTION_BASE
     return {
       description: flags.experimentalBackgroundSubagents
-        ? [DESCRIPTION, BACKGROUND_DESCRIPTION].join("\n\n")
+        ? [DESCRIPTION, recorteActivo("task") ? BACKGROUND_DESCRIPTION_CORTA : BACKGROUND_DESCRIPTION].join("\n\n")
         : DESCRIPTION,
       parameters: parametros,
       jsonSchema: flags.experimentalBackgroundSubagents ? undefined : ToolJsonSchema.fromSchema(parametrosBase),

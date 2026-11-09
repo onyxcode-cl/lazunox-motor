@@ -62,6 +62,7 @@ import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import { McpCatalog } from "@/mcp/catalog"
 import { Politica } from "@/permission/politica"
+import { descripcionAyudante } from "@/agent/descripciones-cortas"
 
 export function webSearchEnabled(providerID: ProviderV2.ID, flags = { exa: false, parallel: false }) {
   return (
@@ -331,7 +332,7 @@ const layer = Layer.effect(
       const description = list
         .map(
           (item) =>
-            `- ${item.name}: ${item.description ?? "This subagent should only be called manually by the user."}`,
+            `- ${item.name}: ${descripcionAyudante(item) ?? "This subagent should only be called manually by the user."}`,
         )
         .join("\n")
       return ["Available agent types and the tools they have access to:", description].join("\n")
