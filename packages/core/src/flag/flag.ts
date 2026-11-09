@@ -54,6 +54,12 @@ export const Flag = {
   get OPENCODE_DISABLE_PROJECT_CONFIG() {
     return truthy("OPENCODE_DISABLE_PROJECT_CONFIG")
   },
+  // Lazunox (lazunox.16, B2): confianza de carpetas. Solo `unset`, "", "0" y "false" la apagan; cualquier otro valor la enciende
+  // (falla cerrado). Se evalúa al usar (los exámenes y la app cambian el entorno en tiempo de ejecución).
+  get LAZUNOX_TRUST_REQUIRED() {
+    const value = process.env["LAZUNOX_TRUST_REQUIRED"]
+    return !(value === undefined || value === "" || value === "0" || value === "false")
+  },
   get OPENCODE_EXPERIMENTAL_REFERENCES() {
     return enabledByExperimental("OPENCODE_EXPERIMENTAL_REFERENCES")
   },

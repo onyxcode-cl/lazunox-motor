@@ -21,6 +21,29 @@ import { testEffect } from "../lib/effect"
 
 const it = testEffect(Layer.empty)
 
+// Lazunox (lazunox.16, B2, ronda 2): como en core/test/plugin/provider.test.ts, para prender LAZUNOX_TRUST_REQUIRED
+// solo durante una prueba.
+function withEnv<A, E, R>(vars: Record<string, string | undefined>, effect: () => Effect.Effect<A, E, R>) {
+  return Effect.acquireUseRelease(
+    Effect.sync(() => {
+      const previous = Object.fromEntries(Object.keys(vars).map((key) => [key, process.env[key]]))
+      Object.entries(vars).forEach(([key, value]) => {
+        if (value === undefined) delete process.env[key]
+        else process.env[key] = value
+      })
+      return previous
+    }),
+    effect,
+    (previous) =>
+      Effect.sync(() =>
+        Object.entries(previous).forEach(([key, value]) => {
+          if (value === undefined) delete process.env[key]
+          else process.env[key] = value
+        }),
+      ),
+  )
+}
+
 function testLayer(
   directory: string,
   globalDirectory = path.join(directory, "global"),
@@ -790,6 +813,86 @@ describe("Config", () => {
                 store: AbsolutePath.make(path.join(root, ".git")),
               }),
             ),
+          )
+        })
+      }),
+    ),
+  )
+
+  // Lazunox (lazunox.16, B2, ronda 2): RI1-B2, bloqueante 1 (B2-24, E3). Sin git y con la confianza encendida, la vía
+  // v2 (location services) no debe subir más allá de la carpeta abierta: antes de este arreglo, `discovered` llegaba
+  // hasta "/" y traía el `.opencode` de cualquier carpeta madre (de ahí que sus plugins se cargaran en el turno).
+  it.live("sin git y con LAZUNOX_TRUST_REQUIRED, no sube a las carpetas madre (E3)", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) => {
+        const global = path.join(tmp.path, "global")
+        const m = path.join(tmp.path, "M")
+        const t = path.join(m, "t")
+        return Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.mkdir(global, { recursive: true })
+            await fs.mkdir(path.join(m, ".opencode"), { recursive: true })
+            await fs.mkdir(path.join(t, ".opencode"), { recursive: true })
+            await fs.writeFile(path.join(m, ".opencode", "opencode.json"), JSON.stringify({ $schema: "madre" }))
+            await fs.writeFile(path.join(t, ".opencode", "opencode.json"), JSON.stringify({ $schema: "hija" }))
+          })
+
+          // El entorno hay que fijarlo ANTES de construir la capa de Config (que lee `Flag.LAZUNOX_TRUST_REQUIRED` al
+          // abrir la ubicación): por eso `Effect.provide` va DENTRO de `withEnv`, no fuera.
+          return yield* withEnv({ LAZUNOX_TRUST_REQUIRED: "1" }, () =>
+            Effect.gen(function* () {
+              const config = yield* Config.Service
+              const entries = yield* config.entries()
+              const directories = entries.filter((entry) => entry.type === "directory").map((entry) => entry.path)
+              const documents = entries
+                .filter((entry) => entry.type === "document")
+                .map((entry) => entry.info.$schema)
+
+              // Sin git, `project.directory` es la raíz del disco ("/"): sin este arreglo `t` también traería el
+              // `.opencode` (y el `opencode.json`) de `M`, su carpeta madre.
+              expect(directories).not.toContain(AbsolutePath.make(path.join(m, ".opencode")))
+              expect(directories).toContain(AbsolutePath.make(path.join(t, ".opencode")))
+              expect(documents).not.toContain("madre")
+              expect(documents).toContain("hija")
+              // Sin git: `project.directory` es "/" (ver `packages/core/src/project.ts`, `Project.resolve`).
+            }).pipe(Effect.provide(testLayer(t, global, "/"))),
+          )
+        })
+      }),
+    ),
+  )
+
+  // Lazunox (lazunox.16, B2, ronda 2): RI1-B2, bloqueante 2 (B2-22, E8). Un `opencode.json` en la raíz de la carpeta
+  // confiada que es un ENLACE SIMBÓLICO con destino fuera de la cadena del proyecto no debe cargarse: confiar en una
+  // carpeta es confiar en lo que HAY en ella, no en lo que un enlace apunte fuera.
+  it.live("no carga un opencode.json enlazado fuera de la carpeta confiada (E8)", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) => {
+        const global = path.join(tmp.path, "global")
+        const f = path.join(tmp.path, "F")
+        const ext = path.join(tmp.path, "EXT")
+        return Effect.gen(function* () {
+          yield* Effect.promise(async () => {
+            await fs.mkdir(global, { recursive: true })
+            await fs.mkdir(f, { recursive: true })
+            await fs.mkdir(ext, { recursive: true })
+            await fs.writeFile(path.join(ext, "opencode.json"), JSON.stringify({ $schema: "ext" }))
+            await fs.symlink(path.join(ext, "opencode.json"), path.join(f, "opencode.json"))
+          })
+
+          return yield* withEnv({ LAZUNOX_TRUST_REQUIRED: "1" }, () =>
+            Effect.gen(function* () {
+              const config = yield* Config.Service
+              const documents = (yield* config.entries()).filter((entry) => entry.type === "document")
+
+              expect(documents.map((document) => document.info.$schema)).not.toContain("ext")
+            }).pipe(Effect.provide(testLayer(f, global))),
           )
         })
       }),

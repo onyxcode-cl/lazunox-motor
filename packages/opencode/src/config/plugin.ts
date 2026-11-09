@@ -15,7 +15,7 @@ export type Origin = {
   scope: Scope
 }
 
-export async function load(dir: string) {
+export async function load(dir: string, permitido?: (file: string) => boolean) {
   const plugins: ConfigPluginV1.Spec[] = []
 
   for (const item of await Glob.scan("{plugin,plugins}/*.{ts,js}", {
@@ -24,6 +24,7 @@ export async function load(dir: string) {
     dot: true,
     symlink: true,
   })) {
+    if (permitido && !permitido(item)) continue
     plugins.push(pathToFileURL(item).href)
   }
   return plugins

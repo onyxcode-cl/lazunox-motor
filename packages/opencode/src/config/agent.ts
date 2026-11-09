@@ -10,7 +10,10 @@ import { ConfigParse } from "./parse"
 import { esNombreReservado, fusionarConClaude, nombreDeRutaValido, pareceClaude, traducirClaude } from "./agent-claude"
 export { esNombreReservado, fusionarConClaude }
 
-export async function load(dir: string) {
+/** `permitido`: filtro por archivo (lazunox.16, E8: con la confianza encendida se omiten los enlaces que salen de la carpeta confiada). */
+export type Permitido = (file: string) => boolean
+
+export async function load(dir: string, permitido?: Permitido) {
   const result: Record<string, ConfigAgentV1.Info> = {}
   for (const item of await Glob.scan("{agent,agents}/**/*.md", {
     cwd: dir,
@@ -18,6 +21,7 @@ export async function load(dir: string) {
     dot: true,
     symlink: true,
   })) {
+    if (permitido && !permitido(item)) continue
     const md = await ConfigMarkdown.parse(item).catch(() => undefined)
     if (!md) continue
 
@@ -41,11 +45,12 @@ export async function load(dir: string) {
  * (ver `agent/restringir-permisos.ts`). No pisan a los agentes nativos. Un archivo roto se omite sin romper la configuración.
  * `LAZUNOX_SIN_AGENTES_CLAUDE=1` lo apaga.
  */
-export async function loadClaude(root: string, env: NodeJS.ProcessEnv = process.env) {
+export async function loadClaude(root: string, env: NodeJS.ProcessEnv = process.env, permitido?: Permitido) {
   const result: Record<string, ConfigAgentV1.Info> = {}
   if (env.LAZUNOX_SIN_AGENTES_CLAUDE === "1") return result
   const cwd = path.join(root, ".claude", "agents")
   for (const item of await Glob.scan("**/*.md", { cwd, absolute: true, dot: false, symlink: false }).catch(() => [])) {
+    if (permitido && !permitido(item)) continue
     const md = await ConfigMarkdown.parse(item).catch(() => undefined)
     if (!md) continue
     const data = md.data as Record<string, unknown>
@@ -66,7 +71,7 @@ export async function loadClaude(root: string, env: NodeJS.ProcessEnv = process.
   return result
 }
 
-export async function loadMode(dir: string) {
+export async function loadMode(dir: string, permitido?: Permitido) {
   const result: Record<string, ConfigAgentV1.Info> = {}
   for (const item of await Glob.scan("{mode,modes}/*.md", {
     cwd: dir,
@@ -74,6 +79,7 @@ export async function loadMode(dir: string) {
     dot: true,
     symlink: true,
   })) {
+    if (permitido && !permitido(item)) continue
     const md = await ConfigMarkdown.parse(item).catch(() => undefined)
     if (!md) continue
 

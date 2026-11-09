@@ -6,6 +6,7 @@ import { Effect, Schema } from "effect"
 import path from "path"
 import { fileURLToPath, pathToFileURL } from "url"
 import { Config } from "../../config"
+import { Confianza } from "../confianza"
 import { FSUtil } from "../../fs-util"
 import { Location } from "../../location"
 import { Npm } from "../../npm"
@@ -37,11 +38,17 @@ export const Plugin = define({
     const location = yield* Location.Service
     const npm = yield* Npm.Service
     yield* Effect.gen(function* () {
+      // Lazunox (lazunox.16, B2, ronda 2, E8): un enlace simbólico dentro de la carpeta confiada no debe cargar un
+      // plugin con destino fuera de la cadena del proyecto. Antes de este arreglo esta vía (location services) no
+      // aplicaba el filtro; ver RI1-B2, bloqueante 2.
+      const tope = Confianza.topeDeProyecto(location.directory, location.project.directory)
+
       const configured: { package: string; options?: Record<string, any> }[] = []
 
       for (const entry of yield* config.entries()) {
         if (entry.type === "document") {
           const directory = entry.path ? path.dirname(entry.path) : location.directory
+          const enlaceFuera = Confianza.filtroDeEnlaces(tope, directory)
           for (const item of entry.info.plugins ?? []) {
             const ref = typeof item === "string" ? { package: item } : item
             const packageName = (() => {
@@ -51,11 +58,13 @@ export const Plugin = define({
               }
               return ref.package
             })()
+            if (path.isAbsolute(packageName) && enlaceFuera && !enlaceFuera(packageName)) continue
             configured.push({ package: packageName, options: ref.options })
           }
         }
 
         if (entry.type === "directory") {
+          const enlaceFuera = Confianza.filtroDeEnlaces(tope, entry.path)
           const files = yield* fs
             .glob("{plugin,plugins}/*.{ts,js}", {
               cwd: entry.path,
@@ -66,7 +75,10 @@ export const Plugin = define({
             })
             .pipe(Effect.orElseSucceed(() => []))
           files.sort()
-          for (const file of files) configured.push({ package: file })
+          for (const file of files) {
+            if (enlaceFuera && !enlaceFuera(file)) continue
+            configured.push({ package: file })
+          }
         }
       }
 

@@ -1,12 +1,31 @@
 import { LocalContext } from "@/util/local-context"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Flag } from "@opencode-ai/core/flag/flag"
+import { topeDeProyecto as topeDeProyectoCore } from "@opencode-ai/core/config/confianza"
 import type * as Project from "./project"
 
 export interface InstanceContext {
   directory: string
   worktree: string
   project: Project.Info
+  /**
+   * Lazunox (lazunox.16, B2): instancia «fría» de una carpeta NO confiada (solo con LAZUNOX_TRUST_REQUIRED). Solo lee la
+   * configuración global/inline: sin config del proyecto ni de carpetas superiores, sin instalar dependencias, sin plugins, conectores,
+   * agentes, comandos, skills ni instrucciones de la carpeta. Es el reemplazo POR INSTANCIA de OPENCODE_DISABLE_PROJECT_CONFIG.
+   */
+  cold?: boolean
 }
+
+/** ¿Hay que ignorar la configuración del proyecto? Bandera global heredada (OPENCODE_DISABLE_PROJECT_CONFIG) o instancia fría. */
+export const sinConfigDeProyecto = (ctx?: { cold?: boolean }) => Flag.OPENCODE_DISABLE_PROJECT_CONFIG || ctx?.cold === true
+
+/**
+ * Hasta dónde sube la carga de config/instrucciones/skills desde la carpeta. Normal: la raíz del repo git (`worktree`). Con la
+ * confianza encendida y SIN git (`worktree === "/"`), solo la carpeta misma: sin repo no hay límite razonable, así que no se hereda
+ * nada de las carpetas madre (decisión E3).
+ */
+export const topeDeProyecto = (ctx: { directory: string; worktree: string }) =>
+  topeDeProyectoCore(ctx.directory, ctx.worktree)
 
 export const context = LocalContext.create<InstanceContext>("instance")
 

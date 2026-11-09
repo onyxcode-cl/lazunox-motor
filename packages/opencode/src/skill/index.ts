@@ -5,6 +5,7 @@ import { NamedError } from "@opencode-ai/core/util/error"
 import type { Agent } from "@/agent/agent"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { InstanceState } from "@/effect/instance-state"
+import { topeDeProyecto } from "@/project/instance-context"
 import { Global } from "@opencode-ai/core/global"
 import { SkillPlugin } from "@opencode-ai/core/plugin/skill"
 import { Permission } from "@/permission"
@@ -225,6 +226,8 @@ const discoverSkills = Effect.fnUntraced(function* (
   disableClaudeCodeSkills: boolean,
   directory: string,
   worktree: string,
+  // Lazunox (B2): instancia fría de una carpeta no confiada: sin skills del proyecto ni de carpetas superiores.
+  cold = false,
 ) {
   const state: ScanState = { matches: new Set(), dirs: new Set() }
 
@@ -239,9 +242,11 @@ const discoverSkills = Effect.fnUntraced(function* (
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "global" })
     }
 
-    const upDirs = yield* fsys
-      .up({ targets: externalDirs, start: directory, stop: worktree })
-      .pipe(Effect.catch(() => Effect.succeed([] as string[])))
+    const upDirs = cold
+      ? []
+      : yield* fsys
+          .up({ targets: externalDirs, start: directory, stop: worktree })
+          .pipe(Effect.catch(() => Effect.succeed([] as string[])))
 
     for (const root of upDirs) {
       yield* scan(state, root, EXTERNAL_SKILL_PATTERN, { dot: true, scope: "project" })
@@ -256,6 +261,7 @@ const discoverSkills = Effect.fnUntraced(function* (
   const cfg = yield* config.get()
   for (const item of cfg.skills?.paths ?? []) {
     const expanded = item.startsWith("~/") ? path.join(global.home, item.slice(2)) : item
+    if (cold && !path.isAbsolute(expanded)) continue
     const dir = path.isAbsolute(expanded) ? expanded : path.join(directory, expanded)
     if (!(yield* fsys.isDir(dir))) {
       yield* Effect.logWarning("skill path not found", { path: dir })
@@ -312,7 +318,8 @@ const layer = Layer.effect(
           flags.disableExternalSkills,
           flags.disableClaudeCodeSkills,
           ctx.directory,
-          ctx.worktree,
+          topeDeProyecto(ctx),
+          ctx.cold === true,
         )
       }),
     )

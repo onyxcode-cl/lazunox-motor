@@ -20,11 +20,16 @@ export const files = Effect.fn("ConfigPaths.projectFiles")(function* (
   })).toReversed()
 })
 
-export const directories = Effect.fn("ConfigPaths.directories")(function* (directory: string, worktree?: string) {
+export const directories = Effect.fn("ConfigPaths.directories")(function* (
+  directory: string,
+  worktree?: string,
+  // Lazunox (B2): instancia fría de una carpeta no confiada: no se miran las `.opencode` del proyecto (ni de carpetas superiores).
+  options?: { sinProyecto?: boolean },
+) {
   const afs = yield* FSUtil.Service
   return unique([
     Global.Path.config,
-    ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG
+    ...(!Flag.OPENCODE_DISABLE_PROJECT_CONFIG && !options?.sinProyecto
       ? yield* afs.up({
           targets: [".opencode"],
           start: directory,
