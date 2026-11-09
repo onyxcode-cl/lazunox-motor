@@ -10,11 +10,15 @@ import { Plugin } from "@/plugin"
 import * as SiempreDisco from "./siempre-disco"
 import * as RutasProtegidas from "./rutas-protegidas"
 import * as Sugerencia from "./sugerencia"
+import * as Capas from "./capas"
 
 export const Event = PermissionV1.Event
 
+/** Lazunox (lazunox.16, B1): `AskInput` más las capas (`Permission.efectivo`). Sin `efectivo` (o con la bandera apagada) se evalúa solo `ruleset`, como siempre. */
+export type AskInput = PermissionV1.AskInput & { readonly efectivo?: Capas.Efectivo }
+
 export interface Interface {
-  readonly ask: (input: PermissionV1.AskInput) => Effect.Effect<void, PermissionV1.Error>
+  readonly ask: (input: AskInput) => Effect.Effect<void, PermissionV1.Error>
   readonly reply: (input: PermissionV1.ReplyInput) => Effect.Effect<void, PermissionV1.NotFoundError>
   readonly list: () => Effect.Effect<ReadonlyArray<PermissionV1.Request>>
   /** Lazunox (Ola 7, 7.22): gestionar los «siempre» guardados de esta carpeta (opcional para no romper dobles de prueba). */
@@ -51,6 +55,9 @@ export function evaluate(permission: string, pattern: string, ...rulesets: Permi
   )
 }
 
+const coincide = (permission: string, pattern: string) => (rule: PermissionV1.Rule) =>
+  Wildcard.match(permission, rule.permission) && Wildcard.match(pattern, rule.pattern)
+
 export class Service extends Context.Service<Service, Interface>()("@opencode/Permission") {}
 
 const layer = Layer.effect(
@@ -82,9 +89,13 @@ const layer = Layer.effect(
       }),
     )
 
-    const ask = Effect.fn("Permission.ask")(function* (input: PermissionV1.AskInput) {
+    const ask = Effect.fn("Permission.ask")(function* (input: AskInput) {
       const { approved, pending, worktree, baseRutas } = yield* InstanceState.get(state)
-      const { ruleset, ...request } = input
+      const { ruleset: rulesetPlano, efectivo: efectivoIn, ...request } = input
+      // Lazunox (B1): con capas, `decidir` aplica política > `deny` de la config > agente+modo > padre; sin ellas es `evaluate(ruleset)`.
+      const ef: Capas.Efectivo = efectivoIn ?? { ruleset: rulesetPlano, piso: [] }
+      const ruleset: PermissionV1.Ruleset = ef.piso.length ? [...ef.ruleset, ...ef.piso.flat()] : ef.ruleset
+      const decidir = (pattern: string) => Capas.decidir(ef, request.permission, pattern)
       const agente = typeof request.metadata?.["lazunox_agente"] === "string" ? request.metadata["lazunox_agente"] : undefined
       let needsAsk = false
       // Lazunox (6.8): aviso `permission.denied` a los plugins (solo informa; sin argumentos de la llamada) y el error de siempre.
@@ -111,7 +122,7 @@ const layer = Layer.effect(
 
       for (const pattern of request.patterns) {
         if (request.permission === "edit" && RutasProtegidas.activo() && RutasProtegidas.esProtegida(pattern, process.env, { agente, raiz: worktree, base: baseRutas })) {
-          if (evaluate(request.permission, pattern, ruleset).action === "deny") {
+          if (decidir(pattern).action === "deny") {
             return yield* negar(ruleset, "regla")
           }
           protegido = true
@@ -119,10 +130,8 @@ const layer = Layer.effect(
           continue
         }
         // Lazunox: un «siempre» (de esta sesión o guardado en disco) nunca levanta un `deny` vigente de las reglas de la llamada.
-        const rule =
-          evaluate(request.permission, pattern, ruleset).action === "deny"
-            ? evaluate(request.permission, pattern, ruleset)
-            : evaluate(request.permission, pattern, ruleset, approved)
+        const base = decidir(pattern)
+        const rule = base.action === "deny" ? base : (approved.findLast(coincide(request.permission, pattern)) ?? base)
         yield* Effect.logInfo("evaluated", { permission: request.permission, pattern, action: rule })
         if (rule.action === "deny") {
           return yield* negar(ruleset, "regla")
@@ -167,7 +176,7 @@ const layer = Layer.effect(
         regla: request.patterns
           .slice(0, 5)
           .map((p) => {
-            const r = evaluate(request.permission, p, ruleset, approved)
+            const r = approved.findLast(coincide(request.permission, p)) ?? decidir(p)
             return `${r.action} (${r.permission}: ${r.pattern})`
           })
           .join("; "),
@@ -339,11 +348,21 @@ export function merge(...rulesets: PermissionV1.Ruleset[]): PermissionV1.Rule[] 
 // Nombres reservados de la búsqueda diferida (ver tool/tool-search.ts; se repiten aquí para no importar la herramienta).
 const DEFERRED_TOOL_NAMES = ["tool_search", "mcp_call"]
 
-export function disabled(tools: string[], ruleset: PermissionV1.Ruleset): Set<string> {
+/** Lazunox (B1): una sola función que arma las reglas de UNA llamada (agente + sesión + cola) y, con LAZUNOX_PERMISOS_CAPAS=1, el piso de la config. Ver `capas.ts`. */
+export const efectivo = Capas.efectivo
+export type Efectivo = Capas.Efectivo
+export const decidir = Capas.decidir
+export const capasActivas = Capas.activo
+
+export function disabled(tools: string[], rulesetOEfectivo: PermissionV1.Ruleset | Capas.Efectivo): Set<string> {
+  const conCapas = "ruleset" in rulesetOEfectivo
+  const ruleset: PermissionV1.Ruleset = conCapas ? rulesetOEfectivo.ruleset : rulesetOEfectivo
+  const piso = conCapas ? rulesetOEfectivo.piso : []
   const edits = ["edit", "write", "apply_patch"]
   const reads = ["list_mcp_resources", "list_mcp_resource_templates", "read_mcp_resource"]
   return new Set(
     tools.filter((tool) => {
+      if (piso.length && Capas.pisoOculta(piso, tool)) return true
       // Lazunox: tool_search y mcp_call no se ocultan por un `*: deny` genérico (su contenido ya viene filtrado por
       // permisos), solo por una regla que los nombre exactamente.
       if (DEFERRED_TOOL_NAMES.includes(tool)) {
@@ -357,7 +376,7 @@ export function disabled(tools: string[], ruleset: PermissionV1.Ruleset): Set<st
   )
 }
 
-export function visibleTools<T>(tools: Record<string, T>, ruleset: PermissionV1.Ruleset): Record<string, T> {
+export function visibleTools<T>(tools: Record<string, T>, ruleset: PermissionV1.Ruleset | Capas.Efectivo): Record<string, T> {
   const hidden = disabled(Object.keys(tools), ruleset)
   return Object.fromEntries(Object.entries(tools).filter(([name]) => !hidden.has(name)))
 }

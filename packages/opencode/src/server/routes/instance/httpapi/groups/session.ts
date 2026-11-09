@@ -95,6 +95,8 @@ export const UpdatePayload = Schema.Struct({
   title: Schema.optional(Schema.String),
   metadata: Schema.optional(Session.Metadata),
   permission: Schema.optional(PermissionV1.Ruleset),
+  // Lazunox (lazunox.16, B1): "replace" = `permission` SUSTITUYE el bloque del modo (no se anexa). Sin el campo, se anexa como siempre.
+  permissionMode: Schema.optional(Schema.Literal("replace")),
   time: Schema.optional(
     Schema.Struct({
       archived: Schema.optional(Session.ArchivedTimestamp),

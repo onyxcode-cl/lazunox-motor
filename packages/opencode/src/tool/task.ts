@@ -1,3 +1,4 @@
+import { PermisoCapas } from "@/permission/capas"
 import * as Tool from "./tool"
 import DESCRIPTION_BASE from "./task.txt"
 import DESCRIPTION_CORTA from "./task-corto.txt"
@@ -224,6 +225,9 @@ export function permisoDeHija(input: {
           (rule) => rule.permission === deny.permission && rule.pattern === deny.pattern && rule.action === deny.action,
         ),
     ),
+    // Lazunox (B1, LAZUNOX_PERMISOS_CAPAS=1): foto de lo vigente del padre (su bloque de sesión) y nombre de su agente. Solo aprieta: la hija
+    // nunca puede más que el padre (ver `permission/capas.ts`). Se vuelve a tomar al reanudar la hija (esta misma función).
+    ...(PermisoCapas.activo() ? PermisoCapas.bloquePadre(input.parent.permission ?? [], input.parentAgent?.name ?? "build") : []),
   ]
 }
 

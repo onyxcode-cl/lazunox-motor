@@ -147,7 +147,8 @@ export const prepare = Effect.fn("LLMRequestPrep.prepare")(function* (input: Pre
     },
   )
 
-  const tools = resolveTools(input)
+  const directory = yield* InstanceState.directory
+  const tools = resolveTools({ ...input, directory })
   // Codex parity: OpenAI Responses-family providers hardcode `strict: false`
   // on every function tool so MCP-sourced and dynamic schemas that don't
   // satisfy OpenAI's structured-outputs constraints still register.
@@ -215,10 +216,11 @@ export function ordenarHerramientas<T>(tools: Record<string, T>): Record<string,
   return Object.fromEntries(Object.entries(tools).toSorted(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
 }
 
-function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user">) {
+function resolveTools(input: Pick<PrepareInput, "tools" | "agent" | "permission" | "user"> & { readonly directory?: string }) {
+  // Lazunox (B1): mismo `Permission.efectivo` que usa `ask`, para que lo que se oculta y lo que se rechaza coincidan.
   const disabled = Permission.disabled(
     Object.keys(input.tools),
-    Permission.merge(input.agent.permission, input.permission ?? []),
+    Permission.efectivo({ agent: input.agent, session: { permission: input.permission }, directory: input.directory }),
   )
   return Record.filter(input.tools, (_, k) => input.user.tools?.[k] !== false && !disabled.has(k))
 }

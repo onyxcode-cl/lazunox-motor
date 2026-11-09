@@ -1,3 +1,4 @@
+import { PermisoCapas } from "@/permission/capas"
 import * as GitEndurecido from "./git-endurecido"
 import { Effect, Exit, Fiber, Schema, Scope, Stream } from "effect"
 import os from "os"
@@ -648,6 +649,12 @@ export const ShellTool = Tool.define(
 
         if (tokens.length && (!cmd || !CWD.has(cmd))) {
           if (opciones.patron !== undefined) scan.patterns.add(opciones.patron)
+          // Lazunox (B1, LAZUNOX_PERMISOS_CAPAS=1): también se evalúa la forma NORMALIZADA de la orden (sin asignaciones `VAR=1`, sin comillas alrededor de las
+          // palabras, con un solo espacio): un `deny` por patrón (`git push*`) no se salta con `FOO=1 git push`, `"git" push` ni `git   push`.
+          if (opciones.patron !== undefined && PermisoCapas.activo() && !ps && shellKind !== "cmd") {
+            const normal = todas.map((t) => unquote(t)).join(" ").trim()
+            if (normal && normal !== opciones.patron) scan.patterns.add(normal)
+          }
           if (opciones.siempre) scan.always.add(BashArity.prefix(tokens).join(" ") + " *")
         }
       })

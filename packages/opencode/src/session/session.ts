@@ -276,6 +276,8 @@ export const CreateInput = Schema.optional(
     model: Schema.optional(Model),
     metadata: Schema.optional(Metadata),
     permission: Schema.optional(PermissionV1.Ruleset),
+    // Lazunox (lazunox.16, B1): "replace" marca `permission` como BLOQUE DEL MODO (luego `PATCH` con la misma marca lo reemplaza en vez de anexarlo).
+    permissionMode: Schema.optional(Schema.Literal("replace")),
     workspaceID: Schema.optional(WorkspaceV2.ID),
   }),
 )

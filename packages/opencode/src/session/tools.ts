@@ -111,6 +111,20 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
     }
   })
 
+  const efectivoDeLlamada = () => {
+    const e = Permission.efectivo({
+      agent: input.agent,
+      session: input.session,
+      // Lazunox (2C): en modo plan las reglas de `edit` del agente van al FINAL: un `* allow` de la sesión (modo «sin preguntar»)
+      // no puede abrir la edición fuera del archivo del plan.
+      cola:
+        flags.lazunoxPlan && input.agent.name === "plan"
+          ? [input.agent.permission.filter((rule) => rule.permission === "edit")]
+          : [],
+    })
+    return { ruleset: e.ruleset, efectivo: e }
+  }
+
   const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
     sessionID: input.session.id,
     abort: options.abortSignal!,
@@ -151,15 +165,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           metadata: { ...metadatosGuardados(req.metadata), lazunox_agente: input.agent.name },
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
-          ruleset: Permission.merge(
-            input.agent.permission,
-            input.session.permission ?? [],
-            // Lazunox (2C): en modo plan las reglas de `edit` del agente van al FINAL: un `* allow` de la sesión (modo «sin preguntar»)
-            // no puede abrir la edición fuera del archivo del plan.
-            ...(flags.lazunoxPlan && input.agent.name === "plan"
-              ? [input.agent.permission.filter((rule) => rule.permission === "edit")]
-              : []),
-          ),
+          // Lazunox (B1): UNA función arma las reglas (`Permission.efectivo`); con LAZUNOX_PERMISOS_CAPAS apagada es el mismo `merge` de siempre.
+          ...efectivoDeLlamada(),
         })
         .pipe(Effect.orDie),
   })
@@ -492,7 +499,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   // Lazunox: búsqueda diferida (ver tool/tool-search.ts). Las herramientas MCP diferibles salen de la lista y se
   // alcanzan con tool_search + mcp_call; todo pasa por McpInvocar.run, igual que la llamada directa.
   const searchConfig = ToolSearch.config()
-  const ruleset = Permission.merge(input.agent.permission, input.session.permission ?? [])
+  const ruleset = Permission.efectivo({ agent: input.agent, session: input.session })
   const catalog = Effect.fn("SessionTools.catalog")(function* () {
     const [mcpTools, clients] = yield* Effect.all([mcp.tools(), mcp.clients()])
     const entries: ToolSearch.Entry<MCP.McpTool>[] = Object.entries(mcpTools).map(([key, source]) => ({

@@ -5,6 +5,7 @@ import { SessionV1 } from "@opencode-ai/core/v1/session"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Command } from "@/command"
 import { Permission } from "@/permission"
+import { PermisoCapas } from "@/permission/capas"
 import { Question } from "@/question"
 import { McpElicitation } from "@/mcp/elicitation"
 import { Provider } from "@/provider/provider"
@@ -169,6 +170,14 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
     })
 
     const create = Effect.fn("SessionHttpApi.create")(function* (ctx: { payload?: Session.CreateInput }) {
+      // Lazunox (B1): `permissionMode:"replace"` deja el bloque inicial marcado como bloque del modo.
+      if (ctx.payload?.permissionMode === "replace") {
+        const { permissionMode: _modo, ...resto } = ctx.payload
+        return yield* shareSvc.create({
+          ...resto,
+          permission: [...PermisoCapas.reemplazarBloqueModo([], resto.permission ?? [])],
+        })
+      }
       return yield* shareSvc.create(ctx.payload)
     })
 
@@ -210,7 +219,11 @@ export const sessionHandlers = HttpApiBuilder.group(InstanceHttpApi, "session", 
       if (ctx.payload.permission !== undefined) {
         yield* session.setPermission({
           sessionID: ctx.params.sessionID,
-          permission: Permission.merge(current.permission ?? [], ctx.payload.permission),
+          // Lazunox (B1): con `permissionMode:"replace"` el bloque del modo se SUSTITUYE; sin el campo se anexa (comportamiento de lazunox.15).
+          permission:
+            ctx.payload.permissionMode === "replace"
+              ? PermisoCapas.reemplazarBloqueModo(current.permission ?? [], ctx.payload.permission)
+              : Permission.merge(current.permission ?? [], ctx.payload.permission),
         })
       }
       if (ctx.payload.time?.archived !== undefined) {
