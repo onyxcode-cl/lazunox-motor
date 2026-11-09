@@ -107,7 +107,7 @@ const layer = Layer.effect(
             `Here is some useful information about the environment you are running in:`,
             `<env>`,
             `  Working directory: ${ctx.directory}`,
-            `  Workspace root folder: ${ctx.worktree}`,
+            ...(recorteActivo("sistema") && ctx.worktree === ctx.directory ? [] : [`  Workspace root folder: ${ctx.worktree}`]),
             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
             `  Platform: ${process.platform}`,
             ...(recorteActivo("cache") ? [`  Temporary directory (exists, pre-approved for external directory access): ${Global.Path.tmp}`] : []),
@@ -141,8 +141,12 @@ const layer = Layer.effect(
         const list = yield* skill.available(agent, { paraModelo: true })
 
         return [
-          "Skills provide specialized instructions and workflows for specific tasks.",
-          "Use the skill tool to load a skill when a task matches its description.",
+          ...(recorteActivo("sistema")
+            ? ["Use the skill tool to load a skill when a task matches its description."]
+            : [
+                "Skills provide specialized instructions and workflows for specific tasks.",
+                "Use the skill tool to load a skill when a task matches its description.",
+              ]),
           // the agents seem to ingest the information about skills a bit better if we present a more verbose
           // version of them here and a less verbose version in tool description, rather than vice versa.
           Skill.fmt(list, { verbose: true }),

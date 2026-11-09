@@ -442,6 +442,18 @@ type WaitParameters = Schema.Schema.Type<typeof WaitParameters>
 
 const WAIT_DESCRIPTION =
   "Wait for a command started with shell and background: true (use its shell_id), or stop it with terminate: true. Returns ONLY the output produced since the last read plus the status: still running, finished with an exit code, terminated by you, or stopped for exceeding its lifetime cap. Only works on shells started from this same session."
+// Lazunox (lazunox.16, recorte `bash`): misma información, menos texto. Los nombres de campo no cambian.
+const WAIT_DESCRIPTION_COMPACTA =
+  "Wait for a command started with `background: true` (use its shell_id), or stop it with `terminate: true`. Returns ONLY the output since the last read plus the status: running, finished (exit code), terminated, or stopped at its lifetime cap. Only for shells started in this session."
+const WaitParametersCompactos = Schema.Struct({
+  shell_id: Schema.String,
+  yield_ms: Schema.optional(Schema.Number).annotate({
+    description: "Optional. ms to wait before returning (default 10000, minimum 1000).",
+  }),
+  terminate: Schema.optional(Schema.Boolean).annotate({
+    description: "Optional. true kills the command's process group instead of waiting.",
+  }),
+})
 
 export const SHELL_WAIT_TOOL = "shell_wait"
 
@@ -450,8 +462,8 @@ export const ShellWaitTool = Tool.define(
   Effect.gen(function* () {
     const trunc = yield* Truncate.Service
     const init: Tool.DefWithoutID<typeof WaitParameters, BgMetadata> = {
-      description: WAIT_DESCRIPTION,
-      parameters: WaitParameters,
+      description: recorteActivo("bash") ? WAIT_DESCRIPTION_COMPACTA : WAIT_DESCRIPTION,
+      parameters: recorteActivo("bash") ? WaitParametersCompactos : WaitParameters,
       execute: (params, ctx) =>
         Effect.gen(function* () {
           ShellBackground.sweepDirectory(yield* InstanceState.directory)

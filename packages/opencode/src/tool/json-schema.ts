@@ -1,6 +1,7 @@
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import { JsonSchema, Schema } from "effect"
 import type * as Tool from "./tool"
+import { parametrosCortos } from "./esquema-compacto"
 
 type JsonObject = Record<string, unknown>
 const cache = new WeakMap<Schema.Top, JSONSchema7>()
@@ -22,7 +23,8 @@ export function fromSchema(schema: Schema.Top): JSONSchema7 {
 }
 
 export function fromTool(tool: Tool.Def): JSONSchema7 {
-  return tool.jsonSchema ?? fromSchema(tool.parameters as Schema.Top)
+  // Lazunox (lazunox.16, recorte `esquemas`): descripciones de parámetros más cortas (sin mutar el esquema en caché).
+  return parametrosCortos(tool.id, tool.jsonSchema ?? fromSchema(tool.parameters as Schema.Top))
 }
 
 function normalize(value: unknown, options: { stripNull?: boolean } = {}): unknown {

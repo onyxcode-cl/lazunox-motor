@@ -1,4 +1,5 @@
 import type { ModelMessage, ToolResultPart } from "ai"
+import { esquemaCompacto } from "@/tool/esquema-compacto"
 import { mergeDeep, unique } from "remeda"
 import type { JSONSchema7 } from "@ai-sdk/provider"
 import type * as Provider from "./provider"
@@ -1714,7 +1715,8 @@ export function schema(model: Provider.Model, schema: JSONSchema7): JSONSchema7 
     schema = sanitizeGemini(schema)
   }
 
-  return schema
+  // Lazunox (lazunox.16, recorte `esquemas`): sin `$schema` ni límites de entero seguro.
+  return esquemaCompacto(schema)
 }
 
 export function reasoningVariants(model: ModelsDev.Model, target: Provider.Model): Provider.Model["variants"] {

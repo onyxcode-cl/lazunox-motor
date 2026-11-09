@@ -1,4 +1,5 @@
 import { Client } from "@modelcontextprotocol/sdk/client/index.js"
+import { descripcionMcp } from "@/tool/esquema-compacto"
 import {
   CallToolResultSchema,
   ListToolsResultSchema,
@@ -48,7 +49,7 @@ export function convertTool(mcpTool: MCPToolDef, client: Client, timeout?: numbe
   }
 
   return dynamicTool({
-    description: mcpTool.description ?? "",
+    description: descripcionMcp(mcpTool.description ?? ""),
     inputSchema: jsonSchema(inputSchema),
     execute: async (args: unknown, options) => {
       const result = await client.callTool(
