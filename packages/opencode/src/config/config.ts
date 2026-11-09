@@ -21,7 +21,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { Context, Duration, Effect, Exit, Fiber, Layer, Option, Schema } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/http"
 import { EffectFlock } from "@opencode-ai/core/util/effect-flock"
-import { containsPath, type InstanceContext } from "../project/instance-context"
+import { containsPath, sinConfigDeProyecto, topeDeProyecto, type InstanceContext } from "../project/instance-context"
+import { filtroDeEnlaces } from "./confianza"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
 import { RemoteAuthError } from "@opencode-ai/core/v1/config/error"
 import { ConfigPermissionV1 } from "@opencode-ai/core/v1/config/permission"
@@ -417,8 +418,13 @@ const layer = Layer.effect(
           yield* Effect.logDebug("loaded custom config", { path: Flag.OPENCODE_CONFIG })
         }
 
-        if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
-          for (const file of yield* ConfigPaths.files("opencode", ctx.directory, ctx.worktree).pipe(Effect.orDie)) {
+        // Lazunox (B2): `sinProyecto` es por instancia (carpeta no confiada = instancia fría), no solo la bandera global.
+        const sinProyecto = sinConfigDeProyecto(ctx)
+        const tope = topeDeProyecto(ctx)
+        if (!sinProyecto) {
+          const enlaceFuera = filtroDeEnlaces(tope, tope)
+          for (const file of yield* ConfigPaths.files("opencode", ctx.directory, tope).pipe(Effect.orDie)) {
+            if (enlaceFuera && !enlaceFuera(file)) continue
             yield* merge(file, yield* loadFile(file, authEnv), "local")
           }
         }
@@ -427,7 +433,7 @@ const layer = Layer.effect(
         result.mode = result.mode || {}
         result.plugin = result.plugin || []
 
-        const directories = yield* ConfigPaths.directories(ctx.directory, ctx.worktree)
+        const directories = yield* ConfigPaths.directories(ctx.directory, tope, { sinProyecto })
 
         if (Flag.OPENCODE_CONFIG_DIR) {
           yield* Effect.logDebug("loading config from OPENCODE_CONFIG_DIR", { path: Flag.OPENCODE_CONFIG_DIR })
@@ -437,7 +443,7 @@ const layer = Layer.effect(
 
         // Lazunox (2A): agentes de Claude Code: ~/.claude/agents (prioridad más baja) y .claude/agents del proyecto; los de .opencode ganan.
         const raicesClaude = [Global.Path.home]
-        if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+        if (!sinProyecto) {
           // Del tope del proyecto hacia la carpeta actual (la más cercana gana). Sin repositorio solo la carpeta actual.
           const raiz = ctx.worktree && ctx.worktree !== "/" ? ctx.worktree : ctx.directory
           const cadena: string[] = []
@@ -450,12 +456,19 @@ const layer = Layer.effect(
         let agentesClaude: Record<string, any> = {}
         for (const root of raicesClaude)
           // El más cercano reemplaza al más lejano del mismo nombre (sin mezclar campos entre archivos).
-          agentesClaude = { ...agentesClaude, ...(yield* Effect.promise(() => ConfigAgent.loadClaude(root))) }
+          agentesClaude = {
+            ...agentesClaude,
+            ...(yield* Effect.promise(() =>
+              ConfigAgent.loadClaude(root, process.env, filtroDeEnlaces(tope, root)),
+            )),
+          }
 
         for (const dir of directories) {
+          const enlaceFuera = filtroDeEnlaces(tope, dir)
           if (dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR) {
             for (const file of ["opencode.json", "opencode.jsonc"]) {
               const source = path.join(dir, file)
+              if (enlaceFuera && !enlaceFuera(source)) continue
               yield* Effect.logDebug(`loading config from ${source}`)
               yield* merge(source, yield* loadFile(source, authEnv))
               result.agent ??= {}
@@ -464,35 +477,44 @@ const layer = Layer.effect(
             }
           }
 
-          yield* ensureGitignore(dir).pipe(Effect.orDie)
+          // Lazunox (B2): una instancia fría no toca el disco ni instala nada (ni siquiera en las carpetas globales).
+          if (!ctx.cold) {
+            yield* ensureGitignore(dir).pipe(Effect.orDie)
 
-          const dep = yield* npmSvc
-            .install(dir, {
-              add: [
-                {
-                  name: "@opencode-ai/plugin",
-                  version: InstallationLocal ? undefined : InstallationVersion,
-                },
-              ],
-            })
-            .pipe(
-              Effect.exit,
-              Effect.tap((exit) =>
-                Exit.isFailure(exit)
-                  ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
-                  : Effect.void,
-              ),
-              Effect.asVoid,
-              Effect.forkDetach,
-            )
-          deps.push(dep)
+            const dep = yield* npmSvc
+              .install(dir, {
+                add: [
+                  {
+                    name: "@opencode-ai/plugin",
+                    version: InstallationLocal ? undefined : InstallationVersion,
+                  },
+                ],
+              })
+              .pipe(
+                Effect.exit,
+                Effect.tap((exit) =>
+                  Exit.isFailure(exit)
+                    ? Effect.logWarning("background dependency install failed", { dir, error: String(exit.cause) })
+                    : Effect.void,
+                ),
+                Effect.asVoid,
+                Effect.forkDetach,
+              )
+            deps.push(dep)
+          }
 
-          result.command = mergeDeep(result.command ?? {}, yield* Effect.promise(() => ConfigCommand.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir)))
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.loadMode(dir)))
+          result.command = mergeDeep(
+            result.command ?? {},
+            yield* Effect.promise(() => ConfigCommand.load(dir, enlaceFuera)),
+          )
+          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir, enlaceFuera)))
+          result.agent = mergeDeep(
+            result.agent ?? {},
+            yield* Effect.promise(() => ConfigAgent.loadMode(dir, enlaceFuera)),
+          )
           // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
           // returns normalized Specs and we only need to attach origin metadata here.
-          const list = yield* Effect.promise(() => ConfigPlugin.load(dir))
+          const list = yield* Effect.promise(() => ConfigPlugin.load(dir, enlaceFuera))
           yield* mergePluginOrigins(dir, list)
         }
 

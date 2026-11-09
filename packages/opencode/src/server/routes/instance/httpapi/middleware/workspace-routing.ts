@@ -3,6 +3,7 @@ import type { Target } from "@/control-plane/types"
 import { Workspace } from "@/control-plane/workspace"
 import { WorkspaceAdapterRuntime } from "@/control-plane/workspace-adapter-runtime"
 import { Session } from "@/session/session"
+import { SessionID } from "@/session/schema"
 import { HttpApiProxy } from "./proxy"
 import * as Fence from "@/server/shared/fence"
 import { getWorkspaceRouteSessionID, isLocalWorkspaceRoute, workspaceProxyURL } from "@/server/shared/workspace-routing"
@@ -31,7 +32,7 @@ type RemoteTarget = Extract<Target, { type: "remote" }>
 type RequestPlan = Data.TaggedEnum<{
   InvalidWorkspace: {}
   MissingWorkspace: { readonly workspaceID: WorkspaceV2.ID }
-  Local: { readonly directory: string; readonly workspaceID?: WorkspaceV2.ID }
+  Local: { readonly directory: string; readonly workspaceID?: WorkspaceV2.ID; readonly sessionDirectory?: string }
   Remote: {
     readonly request: HttpServerRequest.HttpServerRequest
     readonly workspace: Workspace.Info
@@ -47,6 +48,8 @@ export class WorkspaceRouteContext extends Context.Service<
   {
     readonly directory: string
     readonly workspaceID?: WorkspaceV2.ID
+    /** Lazunox (B2): carpeta de la sesión nombrada en la ruta (solo con LAZUNOX_TRUST_REQUIRED), para exigir su confianza también. */
+    readonly sessionDirectory?: string
   }
 >()("@opencode/ExperimentalHttpApiWorkspaceRouteContext") {}
 
@@ -81,6 +84,16 @@ function selectedV2WorkspaceID(
   const workspaceID = Schema.decodeUnknownOption(WorkspaceV2.ID)(workspaceParam)
   if (Option.isNone(workspaceID)) return InvalidWorkspaceID
   return workspaceID.value
+}
+
+function trustSessionID(url: URL) {
+  const id = url.pathname.match(/^\/experimental\/session\/([^/]+)/)?.[1]
+  if (!id) return null
+  try {
+    return SessionID.make(id)
+  } catch {
+    return null
+  }
 }
 
 function defaultDirectory(request: HttpServerRequest.HttpServerRequest, url: URL): string {
@@ -160,6 +173,7 @@ function planWorkspaceRequest(
 function planRequest(
   request: HttpServerRequest.HttpServerRequest,
   session?: Session.Info,
+  trustSession?: Session.Info,
 ): Effect.Effect<RequestPlan, never, Workspace.Service> {
   return Effect.gen(function* () {
     const url = requestURL(request)
@@ -181,6 +195,7 @@ function planRequest(
     return RequestPlan.Local({
       directory: session?.directory || defaultDirectory(request, url),
       workspaceID: envWorkspaceID ?? workspaceID,
+      sessionDirectory: trustSession?.directory,
     })
   })
 }
@@ -204,8 +219,13 @@ function routeWorkspace<E>(
       ),
     MissingWorkspace: ({ workspaceID }) => Effect.succeed(missingWorkspaceResponse(workspaceID)),
     Remote: ({ request, workspace, target, url }) => proxyRemote(client, request, workspace, target, url),
-    Local: ({ directory, workspaceID }) =>
-      effect.pipe(Effect.provideService(WorkspaceRouteContext, WorkspaceRouteContext.of({ directory, workspaceID }))),
+    Local: ({ directory, workspaceID, sessionDirectory }) =>
+      effect.pipe(
+        Effect.provideService(
+          WorkspaceRouteContext,
+          WorkspaceRouteContext.of({ directory, workspaceID, sessionDirectory }),
+        ),
+      ),
   })
 }
 
@@ -229,7 +249,19 @@ function routeHttpApiWorkspace<E>(
           Effect.catchDefect(() => Effect.succeed(undefined)),
         )
       : undefined
-    const plan = yield* planRequest(request, session)
+    // Lazunox (B2): con la confianza encendida, también las rutas `/experimental/session/{id}/…` (que cargan la carpeta del query) y
+    // cualquier otra con una sesión en la ruta exigen la confianza de la carpeta de ESA sesión.
+    const trustID = Flag.LAZUNOX_TRUST_REQUIRED && !sessionID ? trustSessionID(requestURL(request)) : null
+    const trustSession = trustID
+      ? yield* Session.Service.use((svc) => svc.get(trustID)).pipe(
+          Effect.catchIf(
+            (error): error is NotFoundError => NotFoundError.isInstance(error),
+            () => Effect.succeed(undefined),
+          ),
+          Effect.catchDefect(() => Effect.succeed(undefined)),
+        )
+      : session
+    const plan = yield* planRequest(request, session, trustSession)
     return yield* routeWorkspace(client, effect, plan)
   })
 }

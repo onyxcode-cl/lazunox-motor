@@ -15,6 +15,12 @@ export interface LoadInput {
   directory: string
   worktree?: string
   project?: Project.Info
+  /**
+   * Lazunox (B2): carga «en frío» (carpeta no confiada, solo con LAZUNOX_TRUST_REQUIRED). No arranca nada de la carpeta (sin
+   * `bootstrap`: ni config del proyecto, ni plugins, ni conectores, ni instalación) y no escribe en la base. Vive en su propia caché,
+   * separada de la de las instancias plenas, y nunca se sirve a una carpeta confiada.
+   */
+  cold?: boolean
 }
 
 export interface Interface {
@@ -22,6 +28,8 @@ export interface Interface {
   readonly reload: (input: LoadInput) => Effect.Effect<InstanceContext>
   readonly dispose: (ctx: InstanceContext) => Effect.Effect<void>
   readonly disposeDirectory: (directory: string) => Effect.Effect<void>
+  /** Lazunox (B2): descarga la instancia plena (si hay) Y descarta la fría de esa carpeta. Se usa al confiar y al quitar la confianza. */
+  readonly evict: (directory: string) => Effect.Effect<void>
   readonly disposeAll: () => Effect.Effect<void>
   readonly provide: <A, E, R>(input: LoadInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
@@ -34,6 +42,10 @@ interface Entry {
   readonly deferred: Deferred.Deferred<InstanceContext>
 }
 
+interface ColdEntry {
+  readonly deferred: Deferred.Deferred<InstanceContext>
+}
+
 const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Service> = Layer.effect(
   Service,
   Effect.gen(function* () {
@@ -41,6 +53,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     const bootstrap = yield* InstanceBootstrap.Service
     const scope = yield* Scope.Scope
     const cache = new Map<string, Entry>()
+    const coldCache = new Map<string, ColdEntry>()
 
     const boot = (input: LoadInput & { directory: string }) =>
       Effect.gen(function* () {
@@ -105,7 +118,33 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       return true
     })
 
+    // Lazunox (B2): instancia fría. No pasa por `bootstrap` ni por la caché plena.
+    const loadCold = (input: LoadInput): Effect.Effect<InstanceContext> => {
+      const directory = FSUtil.resolve(input.directory)
+      return Effect.uninterruptibleMask((restore) =>
+        Effect.gen(function* () {
+          const existing = coldCache.get(directory)
+          if (existing) return yield* restore(Deferred.await(existing.deferred))
+
+          const entry: ColdEntry = { deferred: Deferred.makeUnsafe<InstanceContext>() }
+          coldCache.set(directory, entry)
+          yield* Effect.gen(function* () {
+            const built = yield* project.fromDirectoryCold(directory)
+            const ctx: InstanceContext = {
+              directory,
+              worktree: built.sandbox,
+              project: built.project,
+              cold: true,
+            }
+            yield* Deferred.succeed(entry.deferred, ctx)
+          }).pipe(Effect.forkIn(scope, { startImmediately: true }))
+          return yield* restore(Deferred.await(entry.deferred))
+        }),
+      ).pipe(Effect.withSpan("InstanceStore.loadCold"))
+    }
+
     const load = (input: LoadInput): Effect.Effect<InstanceContext> => {
+      if (input.cold) return loadCold(input)
       const directory = FSUtil.resolve(input.directory)
       return Effect.uninterruptibleMask((restore) =>
         Effect.gen(function* () {
@@ -145,6 +184,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
     }
 
     const dispose = Effect.fn("InstanceStore.dispose")(function* (ctx: InstanceContext) {
+      if (ctx.cold) return
       const entry = cache.get(ctx.directory)
       if (!entry) return yield* disposeContext(ctx)
 
@@ -163,7 +203,17 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       yield* disposeEntry(directory, entry, exit.value).pipe(Effect.asVoid)
     })
 
+    const evict = Effect.fn("InstanceStore.evict")(function* (input: string) {
+      const directory = FSUtil.resolve(input)
+      // La fría primero: nadie debe poder recibirla mientras se descarga la plena.
+      coldCache.delete(directory)
+      yield* disposeDirectory(directory)
+      // Estados por carpeta que una instancia fría pudo dejar (todo lo que cuelga de InstanceState se indexa por carpeta).
+      yield* Effect.promise(() => runDisposers(directory))
+    })
+
     const disposeAllOnce = Effect.fnUntraced(function* () {
+      coldCache.clear()
       yield* Effect.logInfo("disposing all instances")
       yield* Effect.forEach(
         [...cache.entries()],
@@ -196,6 +246,7 @@ const layer: Layer.Layer<Service, never, Project.Service | InstanceBootstrap.Ser
       reload,
       dispose,
       disposeDirectory,
+      evict,
       disposeAll,
       provide,
     })

@@ -115,6 +115,32 @@ const scenarios: Scenario[] = [
       },
       "status",
     ),
+  // Lazunox (lazunox.16, B2): confianza de carpetas (rutas globales; LAZUNOX_TRUST_REQUIRED apagada en este arnés).
+  http.protected
+    .get("/lazunox/trust", "lazunox.trust.list")
+    .global()
+    .json(200, (body) => {
+      object(body)
+      check(body.required === false && Array.isArray(body.directories), "trust list should report the flag and the folders")
+    }),
+  http.protected
+    .post("/lazunox/trust", "lazunox.trust.add")
+    .global()
+    .mutating()
+    .at(() => ({ path: "/lazunox/trust", body: { directory: process.cwd() } }))
+    .json(200, (body) => {
+      object(body)
+      check(body.trusted === true && typeof body.directory === "string", "trust add should return the canonical path")
+    }),
+  http.protected
+    .delete("/lazunox/trust", "lazunox.trust.remove")
+    .global()
+    .mutating()
+    .at(() => ({ path: "/lazunox/trust", body: { directory: process.cwd() } }))
+    .json(200, (body) => {
+      object(body)
+      check(body.trusted === false, "trust remove should report the folder as untrusted")
+    }),
   http.protected.get("/path", "path.get").json(200, (body, ctx) => {
     object(body)
     check(body.directory === ctx.directory, "directory should resolve from x-opencode-directory")

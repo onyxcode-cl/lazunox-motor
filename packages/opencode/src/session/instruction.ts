@@ -7,7 +7,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/unstable/
 import { Config } from "@/config/config"
 import { InstanceState } from "@/effect/instance-state"
 import { RuntimeFlags } from "@/effect/runtime-flags"
-import { Flag } from "@opencode-ai/core/flag/flag"
+import { sinConfigDeProyecto, topeDeProyecto } from "@/project/instance-context"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { withTransientReadRetry } from "@/util/effect-http-client"
 import { Global } from "@opencode-ai/core/global"
@@ -201,9 +201,9 @@ const layer: Layer.Layer<
 
     const relative = Effect.fnUntraced(function* (instruction: string) {
       const ctx = yield* InstanceState.context
-      if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+      if (!sinConfigDeProyecto(ctx)) {
         return yield* fs
-          .globUp(instruction, ctx.directory, ctx.worktree)
+          .globUp(instruction, ctx.directory, topeDeProyecto(ctx))
           .pipe(Effect.catch(() => Effect.succeed([] as string[])))
       }
       return yield* fs
@@ -265,10 +265,10 @@ const layer: Layer.Layer<
       }
 
       // The first project-level match wins so we don't stack AGENTS.md/CLAUDE.md from every ancestor.
-      if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+      if (!sinConfigDeProyecto(ctx)) {
         for (const file of instructionFiles) {
           const matches = yield* fs
-            .findUp(file, ctx.directory, ctx.worktree)
+            .findUp(file, ctx.directory, topeDeProyecto(ctx))
             .pipe(Effect.catch(() => Effect.succeed([])))
           if (matches.length > 0) {
             matches.forEach((item) => paths.add(path.resolve(item)))
@@ -329,10 +329,10 @@ const layer: Layer.Layer<
     })
 
     // --- Lazunox (4D): reglas por ruta ---
-    const carpetasDeReglas = () => {
-      if (Flag.OPENCODE_DISABLE_PROJECT_CONFIG) return [] as string[]
+    const carpetasDeReglas = Effect.fnUntraced(function* () {
+      if (sinConfigDeProyecto(yield* InstanceState.context)) return [] as string[]
       return [".opencode/rules", ...(!flags.disableClaudeCodePrompt ? [".claude/rules"] : [])]
-    }
+    })
 
     const raizReal = Effect.fnUntraced(function* () {
       const directorio = yield* InstanceState.directory
@@ -346,7 +346,7 @@ const layer: Layer.Layer<
     ) {
       const vacio = [] as { filepath: string; content: string; regla: true }[]
       if (!ReglasRuta.activo()) return vacio
-      const carpetas = carpetasDeReglas()
+      const carpetas = yield* carpetasDeReglas()
       if (carpetas.length === 0) return vacio
       const raiz = yield* raizReal()
       const destino = yield* Effect.promise(() => realpathTolerante(filepath))
@@ -402,7 +402,7 @@ const layer: Layer.Layer<
 
     const regla = Effect.fn("Instruction.regla")(function* (filepath: string) {
       if (!ReglasRuta.activo()) return undefined
-      const carpetas = carpetasDeReglas()
+      const carpetas = yield* carpetasDeReglas()
       if (carpetas.length === 0) return undefined
       const raiz = yield* raizReal()
       return yield* Effect.promise(async () => {
@@ -428,10 +428,11 @@ const layer: Layer.Layer<
     const contarReglas = Effect.fn("Instruction.contarReglas")(function* () {
       if (!ReglasRuta.activo()) return 0
       const raiz = yield* raizReal()
+      const carpetas = yield* carpetasDeReglas()
       return yield* Effect.promise(async () => {
         let n = 0
         const vistas = new Set<string>()
-        for (const carpeta of carpetasDeReglas()) {
+        for (const carpeta of carpetas) {
           for (const archivo of await listarArchivosRegla(raiz, path.join(raiz, carpeta))) {
             const leida = await leerRegla(raiz, archivo)
             if (leida && !vistas.has(leida.real)) {

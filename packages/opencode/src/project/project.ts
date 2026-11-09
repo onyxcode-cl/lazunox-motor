@@ -88,6 +88,12 @@ export interface Interface {
    */
   readonly init: () => Effect.Effect<void>
   readonly fromDirectory: (directory: string) => Effect.Effect<{ project: Info; sandbox: string }>
+  /**
+   * Lazunox (B2): como `fromDirectory` pero SOLO LECTURA (no inserta ni actualiza el proyecto, no escribe en el repo, no emite eventos,
+   * no sigue descubriendo iconos). Para las instancias frías de carpetas no confiadas. Si la carpeta no existe o git falla, cae al
+   * proyecto global.
+   */
+  readonly fromDirectoryCold: (directory: string) => Effect.Effect<{ project: Info; sandbox: string }>
   readonly discover: (input: Info) => Effect.Effect<void>
   readonly list: () => Effect.Effect<Info[]>
   readonly get: (id: ProjectV2.ID) => Effect.Effect<Info | undefined>
@@ -309,6 +315,35 @@ const layer = Layer.effect(
       return { project: result, sandbox: data.vcs ? data.directory : worktree }
     })
 
+    const fromDirectoryCold = Effect.fn("Project.fromDirectoryCold")(function* (directory: string) {
+      const global = {
+        project: {
+          id: ProjectV2.ID.global,
+          worktree: "/",
+          vcs: fakeVcs,
+          sandboxes: [] as string[],
+          time: { created: Date.now(), updated: Date.now() },
+        } as Info,
+        sandbox: "/",
+      }
+      return yield* Effect.gen(function* () {
+        const data = yield* projectV2.resolve(AbsolutePath.make(directory))
+        const worktree = data.id === ProjectV2.ID.make("global") && !data.vcs ? "/" : data.directory
+        const projectID = ProjectV2.ID.make(data.id)
+        const row = yield* db.select().from(ProjectTable).where(eq(ProjectTable.id, projectID)).get().pipe(Effect.orDie)
+        const project: Info = row
+          ? { ...fromRow(row), vcs: data.vcs?.type ?? fakeVcs }
+          : {
+              id: projectID,
+              worktree,
+              vcs: data.vcs?.type ?? fakeVcs,
+              sandboxes: [] as string[],
+              time: { created: Date.now(), updated: Date.now() },
+            }
+        return { project, sandbox: data.vcs ? data.directory : worktree }
+      }).pipe(Effect.catchCause(() => Effect.succeed(global)))
+    })
+
     const discover = Effect.fn("Project.discover")(function* (input: Info) {
       if (input.vcs !== "git") return
       if (input.icon?.override) return
@@ -450,6 +485,7 @@ const layer = Layer.effect(
     return Service.of({
       init,
       fromDirectory,
+      fromDirectoryCold,
       discover,
       list,
       get,
