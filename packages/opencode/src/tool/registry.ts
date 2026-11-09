@@ -342,7 +342,11 @@ const layer = Layer.effect(
       permission?: PermissionV1.Ruleset
     }) {
       if (!codeMode) return
-      const ruleset = Permission.merge(input.agent.permission, input.permission ?? [])
+      const ruleset = Permission.efectivo({
+        agent: input.agent,
+        session: { permission: input.permission },
+        directory: (yield* InstanceState.context).directory,
+      })
       const tools = Permission.visibleTools(yield* mcp.tools(), ruleset)
       const conFlujos = Flujos.activo() && flags.experimentalBackgroundSubagents
       if (Object.keys(tools).length === 0 && !conFlujos) return

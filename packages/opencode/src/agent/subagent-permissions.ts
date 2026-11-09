@@ -2,6 +2,7 @@ import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 import type { Agent } from "./agent"
 import { topeDelPadre } from "./restringir-permisos"
 import { topeDeModoPlan } from "@/session/plan-modo"
+import { PermisoCapas } from "@/permission/capas"
 
 /**
  * Lazunox (privacidad): los agentes nativos de SOLO LECTURA del proyecto no heredan nunca el `external_directory: allow` del padre
@@ -44,9 +45,14 @@ export function deriveSubagentSessionPermission(input: {
   const canTask = input.subagent.permission.some((rule) => rule.permission === "task")
   const externos = ayudanteDeSoloLectura(input.subagent) ? topeExternos(input.subagent) : []
   const canTodo = input.subagent.permission.some((rule) => rule.permission === "todowrite")
+  // Lazunox (B1, LAZUNOX_PERMISOS_CAPAS=1): la hija ya NO copia los `deny` de la sesión del padre (incluían restos de modos anteriores: «Solo explorar»
+  // dejaba al ayudante sin editar para siempre). Lo vigente del padre viaja como foto en `bloquePadre` (la agrega `permisoDeHija`) y solo aprieta;
+  // los `deny` de la config los pone el piso. `external_directory` se sigue heredando.
+  // Con el contrato viejo (sin marca de bloque del modo, app 1.8.12) la hija sigue copiando los `deny` de la sesión (D5: conducta de lazunox.15).
+  const capas = PermisoCapas.activo() && PermisoCapas.tieneMarcaDeModo(input.parentSessionPermission)
   return [
-    ...input.parentSessionPermission.filter(
-      (rule) => rule.permission === "external_directory" || rule.action === "deny",
+    ...(capas ? PermisoCapas.sinPadre(input.parentSessionPermission) : input.parentSessionPermission).filter(
+      (rule) => rule.permission === "external_directory" || (!capas && rule.action === "deny"),
     ),
     ...(input.subagent.usuario
       ? topeDelPadre(

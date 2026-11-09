@@ -142,7 +142,7 @@ const layer = Layer.effect(
       const skills = minimo ? 0 : tokensDe(yield* sys.skills(agente))
 
       // MCP: instrucciones de los servidores y definiciones (nombre, descripción y esquema) de las herramientas visibles.
-      const ruleset = Permission.merge(agente.permission, session.permission ?? [])
+      const ruleset = Permission.efectivo({ agent: agente, session })
       const defs: Record<string, MCP.McpTool> = yield* mcp.tools().pipe(Effect.orElseSucceed(() => ({})))
       const clientes: Record<string, unknown> = yield* mcp.clients().pipe(Effect.orElseSucceed(() => ({})))
       const servidorDe = (clave: string, client: unknown) =>

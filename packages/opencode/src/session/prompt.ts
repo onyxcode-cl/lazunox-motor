@@ -371,7 +371,7 @@ const layer = Layer.effect(
               .ask({
                 ...req,
                 sessionID,
-                ruleset: Permission.merge(taskAgent.permission, session.permission ?? []),
+                ...((e) => ({ ruleset: e.ruleset, efectivo: e }))(Permission.efectivo({ agent: taskAgent, session })),
               })
               .pipe(Effect.orDie),
         })
@@ -493,6 +493,16 @@ const layer = Layer.effect(
               const error = new NamedError.Unknown({ message: `Agent not found: "${input.agent}".${hint}` })
               yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
               throw error
+            }
+            // Lazunox (B1, LAZUNOX_PERMISOS_CAPAS=1): la orden `!comando` del usuario también respeta un `deny` de la política/config sobre `bash`
+            // (antes no pasaba por ninguna regla). Solo niega; no pregunta (la persona misma escribió la orden).
+            if (Permission.capasActivas()) {
+              const e = Permission.efectivo({ agent, session })
+              if (Permission.decidir(e, "bash", input.command).action === "deny") {
+                const error = new NamedError.Unknown({ message: "Bloqueado: un permiso `bash: deny` de la configuración o de la política de la organización lo impide." })
+                yield* events.publish(Session.Event.Error, { sessionID: input.sessionID, error: error.toObject() })
+                throw error
+              }
             }
             const model = input.model ?? agent.model ?? (yield* currentModel(input.sessionID))
             const userMsg: SessionV1.User = {
@@ -1228,12 +1238,12 @@ const layer = Layer.effect(
               ...req,
               metadata: { ...req.metadata, lazunox_agente: agent.name, lazunox_objetivo: "verificar" },
               sessionID: session.id,
-              ruleset: Permission.merge(
-                agent.permission,
-                session.permission ?? [],
-                ...(flags.lazunoxPlan && agent.name === "plan"
-                  ? [agent.permission.filter((rule) => rule.permission === "edit")]
-                  : []),
+              ...((e) => ({ ruleset: e.ruleset, efectivo: e }))(
+                Permission.efectivo({
+                  agent,
+                  session,
+                  cola: flags.lazunoxPlan && agent.name === "plan" ? [agent.permission.filter((rule) => rule.permission === "edit")] : [],
+                }),
               ),
             })
             .pipe(
