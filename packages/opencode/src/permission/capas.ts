@@ -309,14 +309,27 @@ const propiaDe = (permiso: string) => PROPIAS.find((p) => minus(permiso).startsW
 /** D4: `bgshell_start` sigue a `bash` y `documentos_crear` a `write`/`edit`, pero solo por reglas que nombran a ese permiso. */
 const SIGUE: Record<string, string[]> = { bgshell_start: ["bash"], documentos_crear: ["write", "edit"] }
 
-function ultimaDe(capa: Reglas, permiso: string, patron: string, soloNombradas: boolean): Regla | undefined {
+function casaRegla(r: Regla, permiso: string, patron: string, soloNombradas: boolean) {
   const propia = soloNombradas ? undefined : propiaDe(permiso)
-  return capa.findLast(
-    (r) =>
-      claveCasa(permiso, r.permission) &&
-      (soloNombradas ? prefijo(r.permission) === minus(permiso) : propia ? prefijo(r.permission).startsWith(propia) : true) &&
-      Wildcard.match(patron, r.pattern),
+  return (
+    claveCasa(permiso, r.permission) &&
+    (soloNombradas ? prefijo(r.permission) === minus(permiso) : propia ? prefijo(r.permission).startsWith(propia) : true) &&
+    Wildcard.match(patron, r.pattern)
   )
+}
+
+function ultimaDe(capa: Reglas, permiso: string, patron: string, soloNombradas: boolean): Regla | undefined {
+  const r = capa.findLast((x) => casaRegla(x, permiso, patron, soloNombradas))
+  // B1-07/08/09: un `deny` con patron especifico escrito ANTES de un `*` mas general de la MISMA clave sigue negando
+  // (`{"rm *":"deny","*":"ask"}`). `{"*":"deny","git status":"allow"}` no cambia: ahi el `deny` es el comodin.
+  if (r && r.action !== "deny" && r.pattern === "*") {
+    const i = capa.lastIndexOf(r)
+    for (let j = i - 1; j >= 0; j--) {
+      const d = capa[j]
+      if (d.action === "deny" && d.pattern !== "*" && d.permission === r.permission && casaRegla(d, permiso, patron, soloNombradas)) return d
+    }
+  }
+  return r
 }
 
 /** ¿Alguna capa del piso niega (permiso, patrón)? Devuelve la regla que niega. */

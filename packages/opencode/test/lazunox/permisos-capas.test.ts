@@ -150,6 +150,39 @@ describe("B1-05/B1-06 clave * y texto", () => {
   })
 })
 
+describe("BL-1 (RI1): deny especifico ANTES de `*` en el mismo mapa (orden de la bateria)", () => {
+  test("B1-07: rm * y *.env niegan aunque vayan antes del comodin", () => {
+    inline({ bash: { "rm *": "deny", "*": "ask" }, edit: { "*.env": "deny", "*": "ask" } })
+    for (const modo of MODOS) {
+      expect(decide("bash", modo, { patron: "rm -rf x" }), modo).toBe("deny")
+      expect(decide("edit", modo, { patron: "a.env" }), modo).toBe("deny")
+    }
+    expect(decide("bash", "manual", { patron: "echo hola" })).toBe("ask")
+    expect(decide("bash", "bypass", { patron: "echo hola" })).toBe("allow")
+  })
+  test("B1-08: git push* antes de * allow niega las variantes que casan", () => {
+    inline({ bash: { "git push*": "deny", "*": "allow" } })
+    for (const modo of MODOS) {
+      expect(decide("bash", modo, { patron: "git push origin x" }), modo).toBe("deny")
+      expect(decide("bash", modo, { patron: "git status" }), modo).not.toBe("deny")
+    }
+  })
+  test("B1-09: secreto/* antes de * allow niega edit", () => {
+    inline({ edit: { "secreto/*": "deny", "*": "allow" } })
+    for (const modo of MODOS) {
+      expect(decide("edit", modo, { patron: "secreto/k.txt" }), modo).toBe("deny")
+      if (modo !== "plan") expect(decide("edit", modo, { patron: "otro/k.txt" }), modo).not.toBe("deny")
+    }
+  })
+  test("no cambia: `*: deny` primero con excepciones, y allow especifico despues de un deny especifico", () => {
+    inline({ bash: { "*": "deny", "git status": "allow" } })
+    expect(decide("bash", "bypass", { patron: "git status" })).toBe("allow")
+    expect(decide("bash", "bypass", { patron: "rm x" })).toBe("deny")
+    inline({ bash: { "git *": "deny", "git status": "allow" } })
+    expect(decide("bash", "bypass", { patron: "git status" })).toBe("allow")
+  })
+})
+
 describe("B1-07 mapas por patrón", () => {
   test("el deny vale por patrón, no por herramienta entera", () => {
     // OJO (B1-07 de la batería lo escribe al revés): con `"*": "ask"` DESPUÉS del deny por patrón, la última regla que casa es `ask` (posición dentro de la
