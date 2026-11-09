@@ -1,6 +1,7 @@
 import { LocalContext } from "@/util/local-context"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Flag } from "@opencode-ai/core/flag/flag"
+import { topeDeProyecto as topeDeProyectoCore } from "@opencode-ai/core/config/confianza"
 import type * as Project from "./project"
 
 export interface InstanceContext {
@@ -24,7 +25,7 @@ export const sinConfigDeProyecto = (ctx?: { cold?: boolean }) => Flag.OPENCODE_D
  * nada de las carpetas madre (decisión E3).
  */
 export const topeDeProyecto = (ctx: { directory: string; worktree: string }) =>
-  Flag.LAZUNOX_TRUST_REQUIRED && ctx.worktree === "/" ? ctx.directory : ctx.worktree
+  topeDeProyectoCore(ctx.directory, ctx.worktree)
 
 export const context = LocalContext.create<InstanceContext>("instance")
 

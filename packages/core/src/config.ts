@@ -11,6 +11,7 @@ import { Location } from "./location"
 import { Policy } from "./policy"
 import { AbsolutePath } from "./schema"
 import { ConfigAgent } from "./config/agent"
+import { Confianza } from "./config/confianza"
 import { ConfigAttachments } from "./config/attachments"
 import { ConfigCompaction } from "./config/compaction"
 import { ConfigCommand } from "./config/command"
@@ -161,11 +162,18 @@ const layer = Layer.effect(
       return new Document({ type: "document", path: filepath, info })
     })
 
+    // Lazunox (lazunox.16, B2, ronda 2, E3/E8): tope del proyecto (sin git, con la confianza encendida, no se sube a las
+    // carpetas madre) y filtro de enlaces (un enlace dentro de la carpeta confiada no carga algo con destino fuera del
+    // proyecto). Antes de este arreglo esta vía (location services) no aplicaba ninguna de las dos reglas; ver RI1-B2.
+    const tope = Confianza.topeDeProyecto(location.directory, location.project.directory)
+
     const loadDirectory = Effect.fnUntraced(function* (directory: AbsolutePath) {
+      const enlaceFuera = Confianza.filtroDeEnlaces(tope, directory)
       return [
-        ...(yield* Effect.forEach(names, (file) => loadFile(path.join(directory, file))).pipe(
-          Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
-        )),
+        ...(yield* Effect.forEach(names, (file) => {
+          const filepath = path.join(directory, file)
+          return enlaceFuera && !enlaceFuera(filepath) ? Effect.succeed(undefined) : loadFile(filepath)
+        }).pipe(Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)))),
         new Directory({ type: "directory", path: directory }),
       ]
     })
@@ -180,7 +188,7 @@ const layer = Layer.effect(
           .up({
             targets: [".opencode", ...names.toReversed()],
             start: location.directory,
-            stop: location.project.directory,
+            stop: tope,
           })
           .pipe(Effect.orDie)
     const directories = [
@@ -193,7 +201,10 @@ const layer = Layer.effect(
     // A config closer to the opened directory should win over one higher up.
     // Search starts nearby, so reverse the results before applying them.
     const directPaths = discovered.filter((item) => path.basename(item) !== ".opencode").toReversed()
-    const direct = yield* Effect.forEach(directPaths, loadFile).pipe(
+    const direct = yield* Effect.forEach(directPaths, (file) => {
+      const enlaceFuera = Confianza.filtroDeEnlaces(tope, path.dirname(file))
+      return enlaceFuera && !enlaceFuera(file) ? Effect.succeed(undefined) : loadFile(file)
+    }).pipe(
       Effect.orDie,
       Effect.map((configs) => configs.filter((config): config is Document => config !== undefined)),
     )
