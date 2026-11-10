@@ -20,6 +20,7 @@ import { Plugin } from "../plugin"
 import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
+import { McpCatalog } from "../mcp/catalog"
 import { McpElicitation } from "../mcp/elicitation"
 import * as McpEspera from "../mcp/espera"
 import { LSP } from "@/lsp/lsp"
@@ -1672,7 +1673,16 @@ const layer = Layer.effect(
             }
             const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model)
             // Lazunox (Q1.1): mientras haya conectores MCP conectando, nota efímera al final (no se guarda ni toca el sistema fijo: la caché del inicio se conserva).
-            const notaMcp = McpEspera.nota(mcp.pendientes ? yield* mcp.pendientes() : [])
+            // Solo se nombran los conectores cuyas herramientas el agente podría ver: misma comprobación que oculta las herramientas MCP
+            // (`Permission.disabled` con las reglas efectivas del agente y la sesión), sobre un nombre de herramienta de ese conector.
+            const pendientesMcp = mcp.pendientes ? yield* mcp.pendientes() : []
+            const reglasMcp =
+              pendientesMcp.length > 0
+                ? Permission.efectivo({ agent, session, directory: (yield* InstanceState.context).directory })
+                : undefined
+            const notaMcp = McpEspera.nota(
+              reglasMcp ? pendientesMcp.filter((n) => Permission.disabled([McpCatalog.toolName(n, "herramienta")], reglasMcp).size === 0) : [],
+            )
             // Lazunox (P02): orden estable para la caché; el entorno (con la fecha) va al final.
             const system = SystemPrompt.assemble({ env, instructions, mcp: mcpInstructions, skills })
             const format = lastUser.format ?? { type: "text" as const }
