@@ -95,11 +95,12 @@ describe("7.5 falsos positivos: no se tapa", () => {
 })
 
 describe("7.5 interruptores y utilidades", () => {
-  test("LAZUNOX_SANITIZAR=0 lo apaga; el modo del modelo es otra cosa y viene apagado", () => {
+  test("LAZUNOX_SANITIZAR=0 lo apaga; el modo del modelo es otra cosa y (Q28) viene encendido", () => {
     expect(activo({})).toBe(true)
     expect(activo({ LAZUNOX_SANITIZAR: "0" })).toBe(false)
     expect(sanitizar(FALSA, { LAZUNOX_SANITIZAR: "0" })).toBe(FALSA)
-    expect(activoParaElModelo({})).toBe(false)
+    expect(activoParaElModelo({})).toBe(true)
+    expect(activoParaElModelo({ LAZUNOX_SANITIZAR_MODELO: "0" })).toBe(false)
     expect(activoParaElModelo({ LAZUNOX_SANITIZAR_MODELO: "1" })).toBe(true)
     expect(activoParaElModelo({ LAZUNOX_SANITIZAR_MODELO: "1", LAZUNOX_SANITIZAR: "0" })).toBe(false)
   })
