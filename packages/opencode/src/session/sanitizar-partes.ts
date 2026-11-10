@@ -1,20 +1,19 @@
 // Lazunox (Ola 7, 7.5): dónde se aplica el sanitizador de secretos (`@opencode-ai/core/sanitizar`) a las partes de herramienta.
 //   Nivel 1 (siempre, salvo LAZUNOX_SANITIZAR=0): lo que se MUESTRA y se guarda del llamado: el comando de shell, el título y los
 //     metadatos (vista previa de la salida, ruta del comando…). El comando que se ejecuta NO cambia: solo lo que queda en la parte.
-//   Nivel 2 (LAZUNOX_SANITIZAR_MODELO=1): además lo que VE EL MODELO de la salida de shell y de celdas de Code Mode.
+//   Nivel 2 (encendido por defecto desde Q28; LAZUNOX_SANITIZAR_MODELO=0 lo apaga): además lo que VE EL MODELO de la salida de las herramientas.
 import fs from "fs/promises"
 import path from "path"
 import { TRUNCATION_DIR } from "@/tool/truncation-dir"
 import { activo, activoParaElModelo, sanitizar, sanitizarProfundo } from "@opencode-ai/core/sanitizar"
 
 /**
- * Herramientas cuya salida puede traer secretos hacia el modelo (el nivel 2 solo toca estas): comandos, guiones y también
- * `read`/`grep` (el banco mostró que el modelo lee `.entorno` con `read`). Solo se enmascaran los patrones que el sanitizador
- * reconoce como secretos; el archivo en disco no cambia, así que `edit` sigue funcionando salvo que el texto citado sea el secreto.
+ * Q28: el nivel 2 cubre la salida de TODAS las herramientas (comandos, `read`/`grep`, conectores MCP, ayudantes, web…): cualquiera
+ * puede traer una clave hacia el modelo, y los metadatos ya se tapaban para todas. Solo se enmascaran los patrones que el
+ * sanitizador reconoce como secretos; el archivo en disco no cambia, así que `edit` sigue funcionando salvo que el texto citado sea
+ * el secreto. Sin coincidencias el texto pasa idéntico (misma cadena).
  */
-const SALIDA_DE_COMANDO = new Set(["bash", "shell_wait", "execute", "execute_wait", "read", "grep"])
-
-export const esSalidaDeComando = (tool: string) => SALIDA_DE_COMANDO.has(tool)
+export const esSalidaDeComando = (_tool: string) => true
 
 /** Entrada que se guarda: del shell se sanea `command` y `description`; el resto queda igual. */
 export function entradaGuardada(tool: string, input: Record<string, unknown>): Record<string, unknown> {
@@ -33,7 +32,7 @@ export function metadatosGuardados<T>(metadata: T): T {
   return activo() ? sanitizarProfundo(metadata) : metadata
 }
 
-/** Texto que llega al modelo desde un comando: solo con LAZUNOX_SANITIZAR_MODELO=1. */
+/** Texto que llega al modelo desde una herramienta: salvo LAZUNOX_SANITIZAR_MODELO=0 o LAZUNOX_SANITIZAR=0. */
 export function textoParaElModelo(tool: string, texto: string) {
   return activoParaElModelo() && esSalidaDeComando(tool) ? sanitizar(texto) : texto
 }

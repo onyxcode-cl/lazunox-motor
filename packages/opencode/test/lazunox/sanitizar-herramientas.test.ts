@@ -71,8 +71,8 @@ describe("7.5 sanitizador en el bucle real (T28)", () => {
     ),
   )
 
-  it.instance("por defecto (modelo apagado): lo mostrado sale limpio pero el modelo recibe la salida tal cual (documenta la opción apagada)", () =>
-    conVars({ LAZUNOX_SANITIZAR: undefined, LAZUNOX_SANITIZAR_MODELO: undefined }, () =>
+  it.instance("LAZUNOX_SANITIZAR_MODELO=0 (modelo apagado): lo mostrado sale limpio pero el modelo recibe la salida tal cual (documenta la opción apagada)", () =>
+    conVars({ LAZUNOX_SANITIZAR: undefined, LAZUNOX_SANITIZAR_MODELO: "0" }, () =>
       Effect.gen(function* () {
         const { herr, enviados } = yield* correrT28
         expect(herr?.state.status).toBe("completed")
@@ -179,19 +179,20 @@ describe("7.5 archivo de salida larga (reescritura)", () => {
     })
   })
 
-  test("sin la opción, o en una herramienta que no es de comandos: no toca nada", async () => {
+  test("con LAZUNOX_SANITIZAR_MODELO=0 no toca nada (ninguna herramienta)", async () => {
     const { resultadoParaElModelo } = await import("../../src/session/sanitizar-partes")
     await conCarpeta(async (archivo) => {
       const contenido = `LAZUNOX_API_KEY=${CLAVE}\n`
       fs.writeFileSync(archivo, contenido)
-      const sin = await resultadoParaElModelo("bash", { output: CLAVE, metadata: { outputPath: archivo } })
-      expect(sin.output).toBe(CLAVE)
-      process.env.LAZUNOX_SANITIZAR_MODELO = "1"
+      process.env.LAZUNOX_SANITIZAR_MODELO = "0"
       try {
+        const sin = await resultadoParaElModelo("bash", { output: CLAVE, metadata: { outputPath: archivo } })
+        expect(sin.output).toBe(CLAVE)
         const otra = await resultadoParaElModelo("glob", { output: CLAVE, metadata: { outputPath: archivo } })
         expect(otra.output).toBe(CLAVE)
         expect(fs.readFileSync(archivo, "utf-8")).toBe(contenido)
-        // Una ruta fuera de la carpeta de salidas no se reescribe nunca.
+        // Una ruta fuera de la carpeta de salidas no se reescribe nunca (ni con la opción encendida).
+        delete process.env.LAZUNOX_SANITIZAR_MODELO
         const fuera = path.join(path.dirname(archivo), "..", `fuera_${Date.now()}`)
         fs.writeFileSync(fuera, contenido)
         try {

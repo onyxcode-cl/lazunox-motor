@@ -6,8 +6,9 @@
 //
 // Interruptores (se leen en cada llamada):
 //   LAZUNOX_SANITIZAR=0          apaga todo (lo mostrado/guardado queda como antes).
-//   LAZUNOX_SANITIZAR_MODELO=1   además tapa lo que VE EL MODELO (salida de shell y de celdas, avisos de fondo, archivos de salida
-//                                larga). Apagado por defecto: es heurística y enmascarar de más rompe salidas útiles (decisión D7).
+//   LAZUNOX_SANITIZAR_MODELO=0   deja de tapar lo que VE EL MODELO (salida de las herramientas, avisos de fondo, archivos de salida
+//                                larga). Encendido por defecto desde Q28: antes era opt-in (=1) y la clave salía tapada en pantalla
+//                                pero viajaba en claro a la IA (T28 del banco). Es heurística: puede tapar de más (decisión D7).
 //   LAZUNOX_SANITIZAR_EXTRA      secretos literales extra (JSON de cadenas, o uno por línea); mínimo 8 caracteres cada uno.
 //                                También se pueden registrar por código con `registrarSecretos`.
 
@@ -23,7 +24,7 @@ export function activo(env: Record<string, string | undefined> = process.env) {
 }
 
 export function activoParaElModelo(env: Record<string, string | undefined> = process.env) {
-  return activo(env) && env.LAZUNOX_SANITIZAR_MODELO === "1"
+  return activo(env) && env.LAZUNOX_SANITIZAR_MODELO !== "0"
 }
 
 const registrados: string[] = []
