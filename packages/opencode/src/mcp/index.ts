@@ -423,8 +423,9 @@ const layer = Layer.effect(
             instructions: mcpClient.getInstructions()?.trim(),
           } satisfies CreateResult
         }).pipe(
-          Effect.catchCause((cause) =>
-            Effect.tryPromise(() => mcpClient.close()).pipe(Effect.ignore, Effect.andThen(Effect.failCause(cause))),
+          // Lazunox (Q1.1, RI1-B1): también al interrumpirse (instancia descartada mientras se listan las herramientas) se cierra el cliente; si no, su proceso queda huérfano.
+          Effect.onExit((exit) =>
+            Exit.isSuccess(exit) ? Effect.void : Effect.tryPromise(() => mcpClient.close()).pipe(Effect.ignore),
           ),
         )
       },
@@ -610,11 +611,13 @@ const layer = Layer.effect(
         const plazo = Espera.plazoMs()
         const scope = yield* Effect.scope
 
+        // Marca de «instancia cerrada»: el finalizador (abajo) corre antes de que se interrumpa la fibra de fondo; nada se guarda después.
+        let cerrado = false
         const conectar = (key: string, mcp: ConfigMCPV1.Info) =>
           Effect.gen(function* () {
             const result = yield* create(key, mcp)
             // Si mientras tanto alguien conectó/desconectó este conector a mano (`pendientes` ya no lo tiene), se respeta lo suyo.
-            if (!s.pendientes.has(key)) {
+            if (cerrado || !s.pendientes.has(key)) {
               if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
               return
             }
@@ -663,6 +666,7 @@ const layer = Layer.effect(
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
+            cerrado = true
             const clients = Object.values(s.clients)
             s.clients = {}
             s.defs = {}
