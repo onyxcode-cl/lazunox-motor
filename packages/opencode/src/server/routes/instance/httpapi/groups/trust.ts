@@ -19,6 +19,15 @@ export const TrustInput = Schema.Struct({
   directory: Schema.String.annotate({ description: "Absolute path of the folder (must exist and be a folder)" }),
 })
 
+// Lazunox (Q1.1): `preload` es opt-in. Solo `true` precarga la instancia plena de la carpeta recién confiada; la app lo manda
+// únicamente cuando la persona confía una carpeta (no al redeclarar todas las carpetas al arrancar el motor). Por defecto `false`.
+export const TrustAddInput = Schema.Struct({
+  directory: TrustInput.fields.directory,
+  preload: Schema.optional(Schema.Boolean).annotate({
+    description: "Preload the full instance in the background after trusting (default false). Only applies when the folder was newly trusted.",
+  }),
+})
+
 export const TrustResult = Schema.Struct({
   directory: Schema.String.annotate({ description: "Canonical (physical) path that was trusted or untrusted" }),
   trusted: Schema.Boolean,
@@ -44,7 +53,7 @@ export const TrustApi = HttpApi.make("trust").add(
         }),
       ),
       HttpApiEndpoint.post("add", TrustPaths.trust, {
-        payload: TrustInput,
+        payload: TrustAddInput,
         success: described(TrustResult, "Folder trusted"),
         error: [InvalidRequestError, FolderNotFoundError, ForbiddenError],
       }).annotateMerge(
@@ -52,7 +61,7 @@ export const TrustApi = HttpApi.make("trust").add(
           identifier: "lazunox.trust.add",
           summary: "Trust a folder",
           description:
-            "Trusts the exact physical folder (symlinks resolved). Not inherited by child folders nor by parents. Idempotent. Takes effect on the next request; nothing is loaded by this call.",
+            "Trusts the exact physical folder (symlinks resolved). Not inherited by child folders nor by parents. Idempotent. Takes effect on the next request; nothing is loaded by this call unless `preload: true` is sent (opt-in: the full instance is then preloaded in the background).",
         }),
       ),
       HttpApiEndpoint.delete("remove", TrustPaths.trust, {

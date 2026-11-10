@@ -61,7 +61,7 @@ const carpetaGit = () =>
     }),
     (dir) => Effect.sync(() => fs.rmSync(dir, { recursive: true, force: true })),
   )
-const body = (directory: string) => HttpClientRequest.bodyJsonUnsafe({ directory })
+const body = (directory: string) => HttpClientRequest.bodyJsonUnsafe({ directory, preload: true })
 const confiar = (d: string) => HttpClientRequest.post("/lazunox/trust").pipe(body(d), HttpClient.execute)
 const quitar = (d: string) => HttpClientRequest.delete("/lazunox/trust").pipe(body(d), HttpClient.execute)
 

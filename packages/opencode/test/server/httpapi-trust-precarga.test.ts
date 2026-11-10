@@ -1,4 +1,4 @@
-// Lazunox (Q1.1, paso 3): tras confiar una carpeta, el motor precarga su instancia plena en segundo plano.
+// Lazunox (Q1.1, paso 3): tras confiar una carpeta CON `preload: true` (opt-in), el motor precarga su instancia plena en segundo plano.
 // No retrasa la respuesta del POST, no carga carpetas que ya estaban confiadas ni nada sin la bandera de confianza.
 import { NodeHttpServer } from "@effect/platform-node"
 import { afterEach, beforeEach, describe, expect } from "bun:test"
@@ -64,8 +64,11 @@ const tmpdirScoped = () =>
     (dir) => Effect.sync(() => fs.rmSync(dir, { recursive: true, force: true })),
   )
 
-const confiar = (directory: string) =>
-  HttpClientRequest.post("/lazunox/trust").pipe(HttpClientRequest.bodyJsonUnsafe({ directory }), HttpClient.execute)
+const confiar = (directory: string, preload?: unknown) =>
+  HttpClientRequest.post("/lazunox/trust").pipe(
+    HttpClientRequest.bodyJsonUnsafe(preload === undefined ? { directory } : { directory, preload }),
+    HttpClient.execute,
+  )
 
 describe("precarga al confiar (Q1.1 paso 3)", () => {
   const saved = process.env.LAZUNOX_TRUST_REQUIRED
@@ -85,7 +88,7 @@ describe("precarga al confiar (Q1.1 paso 3)", () => {
       process.env.LAZUNOX_TRUST_REQUIRED = "1"
       const dir = yield* tmpdirScoped()
       const t0 = Date.now()
-      const r = yield* confiar(dir)
+      const r = yield* confiar(dir, true)
       const ms = Date.now() - t0
       expect(r.status).toBe(200)
       expect(ms).toBeLessThan(LENTA_MS - 200)
@@ -99,13 +102,37 @@ describe("precarga al confiar (Q1.1 paso 3)", () => {
     }),
   )
 
+  it.live("sin `preload` (por defecto) o con `preload: false`: se descarta la fría pero no se precarga nada", () =>
+    Effect.gen(function* () {
+      process.env.LAZUNOX_TRUST_REQUIRED = "1"
+      const a = yield* tmpdirScoped()
+      const b = yield* tmpdirScoped()
+      expect((yield* confiar(a)).status).toBe(200)
+      expect((yield* confiar(b, false)).status).toBe(200)
+      yield* Effect.sleep(100)
+      expect(llamadas.filter((l) => l.op === "load")).toEqual([])
+      expect(llamadas.filter((l) => l.op === "evict").length).toBeGreaterThanOrEqual(2)
+      expect(FolderTrust.isTrusted(a) && FolderTrust.isTrusted(b)).toBe(true)
+    }),
+  )
+
+  it.live("`preload` que no es booleano: 400 y la carpeta no se confía", () =>
+    Effect.gen(function* () {
+      process.env.LAZUNOX_TRUST_REQUIRED = "1"
+      const dir = yield* tmpdirScoped()
+      expect((yield* confiar(dir, "si")).status).toBe(400)
+      expect(FolderTrust.isTrusted(dir)).toBe(false)
+      expect(llamadas).toEqual([])
+    }),
+  )
+
   it.live("carpeta ya confiada (sin cambios): no se vuelve a cargar", () =>
     Effect.gen(function* () {
       process.env.LAZUNOX_TRUST_REQUIRED = "1"
       const dir = yield* tmpdirScoped()
-      yield* confiar(dir)
+      yield* confiar(dir, true)
       llamadas.length = 0
-      const r = yield* confiar(dir)
+      const r = yield* confiar(dir, true)
       expect(((yield* r.json) as { changed: boolean }).changed).toBe(false)
       yield* Effect.sleep(50)
       expect(llamadas).toEqual([])
@@ -116,7 +143,7 @@ describe("precarga al confiar (Q1.1 paso 3)", () => {
     Effect.gen(function* () {
       delete process.env.LAZUNOX_TRUST_REQUIRED
       const dir = yield* tmpdirScoped()
-      const r = yield* confiar(dir)
+      const r = yield* confiar(dir, true)
       expect(r.status).toBe(200)
       yield* Effect.sleep(50)
       expect(llamadas).toEqual([])
@@ -126,7 +153,7 @@ describe("precarga al confiar (Q1.1 paso 3)", () => {
   it.live("carpeta inexistente: 404 y no se carga nada", () =>
     Effect.gen(function* () {
       process.env.LAZUNOX_TRUST_REQUIRED = "1"
-      const r = yield* confiar("/no/existe/q11-xyz")
+      const r = yield* confiar("/no/existe/q11-xyz", true)
       expect(r.status).toBe(404)
       yield* Effect.sleep(50)
       expect(llamadas).toEqual([])

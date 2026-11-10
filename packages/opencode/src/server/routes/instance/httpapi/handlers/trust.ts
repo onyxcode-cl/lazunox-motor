@@ -6,7 +6,7 @@ import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { RootHttpApi } from "../api"
 import { ForbiddenError, InvalidRequestError } from "../errors"
-import { FolderNotFoundError, TrustInput } from "../groups/trust"
+import { FolderNotFoundError, TrustAddInput } from "../groups/trust"
 
 export const trustHandlers = HttpApiBuilder.group(RootHttpApi, "trust", (handlers) =>
   Effect.gen(function* () {
@@ -40,17 +40,21 @@ export const trustHandlers = HttpApiBuilder.group(RootHttpApi, "trust", (handler
       } catch {
         return yield* new InvalidRequestError({ message: "body is not valid JSON", kind: "Payload" })
       }
-      const decoded = Schema.decodeUnknownOption(TrustInput)(body)
+      const decoded = Schema.decodeUnknownOption(TrustAddInput)(body)
       if (decoded._tag === "None")
-        return yield* new InvalidRequestError({ message: 'expected {"directory": "<absolute path>"}', kind: "Payload", field: "directory" })
-      return decoded.value.directory
+        return yield* new InvalidRequestError({
+          message: 'expected {"directory": "<absolute path>", "preload"?: boolean}',
+          kind: "Payload",
+          field: "directory",
+        })
+      return { directory: decoded.value.directory, preload: decoded.value.preload === true }
     })
 
     const answer = <A>(value: A) => HttpServerResponse.jsonUnsafe(value)
 
     const add = Effect.fn("TrustHttpApi.add")(function* () {
       yield* checkOrigin
-      const directory = yield* leerDirectorio
+      const { directory, preload } = yield* leerDirectorio
       if (!FolderTrust.esAbsolutaValida(directory))
         return yield* new InvalidRequestError({ message: "directory must be an absolute path", field: "directory" })
       const result = FolderTrust.trust(directory)
@@ -59,10 +63,11 @@ export const trustHandlers = HttpApiBuilder.group(RootHttpApi, "trust", (handler
       if (FolderTrust.required() && result.added) {
         yield* store.evict(result.entry.display)
         if (result.entry.canonical !== result.entry.display) yield* store.evict(result.entry.canonical)
-        // Lazunox (Q1.1): precarga de la instancia plena en segundo plano (no retrasa esta respuesta). Solo la carpeta recién confiada;
+        // Lazunox (Q1.1): precarga de la instancia plena en segundo plano (no retrasa esta respuesta). OPT-IN: solo con `preload: true`
+        // (la app lo manda al confiar la persona, no al redeclarar todas las carpetas al arrancar). Solo la carpeta recién confiada;
         // `load` comparte la caché de instancias, así que una petición que llegue mientras tanto espera esta misma carga, no otra.
         // RI1-B2: `evict` es asíncrono; un DELETE que llegó mientras tanto ya quitó la confianza y no habría nada que descargar después.
-        if (!FolderTrust.isTrusted(result.entry.canonical))
+        if (!preload || !FolderTrust.isTrusted(result.entry.canonical))
           return answer({ directory: result.entry.canonical, trusted: true, changed: result.added, required: FolderTrust.required() })
         yield* store.load({ directory: result.entry.display }).pipe(
           Effect.asVoid,
@@ -75,7 +80,7 @@ export const trustHandlers = HttpApiBuilder.group(RootHttpApi, "trust", (handler
 
     const remove = Effect.fn("TrustHttpApi.remove")(function* () {
       yield* checkOrigin
-      const directory = yield* leerDirectorio
+      const { directory } = yield* leerDirectorio
       if (!FolderTrust.esAbsolutaValida(directory))
         return yield* new InvalidRequestError({ message: "directory must be an absolute path", field: "directory" })
       // Primero se quita (lo que sigue ya no sirve nada de la caché) y luego se descarga.
