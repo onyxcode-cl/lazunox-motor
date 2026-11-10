@@ -21,6 +21,7 @@ import { MAX_STEPS_PROMPT } from "@opencode-ai/core/session/runner/max-steps"
 import { ToolRegistry } from "@/tool/registry"
 import { MCP } from "../mcp"
 import { McpElicitation } from "../mcp/elicitation"
+import * as McpEspera from "../mcp/espera"
 import { LSP } from "@/lsp/lsp"
 import { ulid } from "ulid"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -1670,6 +1671,8 @@ const layer = Layer.effect(
               }
             }
             const modelMsgs = yield* MessageV2.toModelMessagesEffect(msgs, model)
+            // Lazunox (Q1.1): mientras haya conectores MCP conectando, nota efímera al final (no se guarda ni toca el sistema fijo: la caché del inicio se conserva).
+            const notaMcp = McpEspera.nota(mcp.pendientes ? yield* mcp.pendientes() : [])
             // Lazunox (P02): orden estable para la caché; el entorno (con la fecha) va al final.
             const system = SystemPrompt.assemble({ env, instructions, mcp: mcpInstructions, skills })
             const format = lastUser.format ?? { type: "text" as const }
@@ -1684,6 +1687,7 @@ const layer = Layer.effect(
               system,
               messages: [
                 ...modelMsgs,
+                ...(notaMcp ? [{ role: "user" as const, content: notaMcp }] : []),
                 ...(isLastStep ? [{ role: "assistant" as const, content: MAX_STEPS_PROMPT }] : []),
               ],
               tools,

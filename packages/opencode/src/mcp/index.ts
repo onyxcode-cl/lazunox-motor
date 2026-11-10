@@ -28,7 +28,7 @@ import { McpOAuthCallback } from "./oauth-callback"
 import { McpAuth } from "./auth"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { TuiEvent } from "@/server/tui-event"
-import { Cause, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
+import { Cause, Deferred, Effect, Exit, Layer, Context, Schema, Stream } from "effect"
 import { EffectBridge } from "@/effect/bridge"
 import { InstanceState } from "@/effect/instance-state"
 import { ChildProcess, ChildProcessSpawner } from "effect/unstable/process"
@@ -41,6 +41,7 @@ import { McpElicitation } from "./elicitation"
 import { elicitacionActiva } from "./elicitation-esquema"
 import * as EnCurso from "./en-curso"
 import { Politica } from "@/permission/politica"
+import * as Espera from "./espera"
 
 const DEFAULT_TIMEOUT = 30_000
 // Lazunox: la capacidad `elicitation: { form: {} }` solo se anuncia con LAZUNOX_MCP_ELICITATION=1 (la app lo pone en Code y
@@ -156,6 +157,10 @@ interface State {
   clients: Record<string, MCPClient>
   defs: Record<string, MCPToolDef[]>
   instructions: Record<string, string>
+  /** Lazunox (Q1.1): conectores que siguen conectando en segundo plano (pasado el plazo del primer mensaje). */
+  pendientes: Set<string>
+  /** Se completa cuando todos los conectores de la config terminaron (conectados, fallidos o vencidos). */
+  listos: Deferred.Deferred<void>
 }
 
 export interface ServerInstructions {
@@ -176,6 +181,8 @@ export interface Interface {
   readonly status: () => Effect.Effect<Record<string, Status>>
   readonly clients: () => Effect.Effect<Record<string, MCPClient>>
   readonly instructions: () => Effect.Effect<ServerInstructions[]>
+  /** Lazunox (Q1.1): nombres de los conectores que aún están conectando. Opcional para no romper dobles de prueba. */
+  readonly pendientes?: () => Effect.Effect<string[]>
   readonly tools: () => Effect.Effect<Record<string, McpTool>>
   readonly prompts: () => Effect.Effect<Record<string, PromptInfo & { client: string }>>
   readonly resources: (clientName?: string) => Effect.Effect<Record<string, ResourceInfo & { client: string }>>
@@ -596,9 +603,39 @@ const layer = Layer.effect(
           clients: {},
           defs: {},
           instructions: {},
+          pendientes: new Set(),
+          listos: Deferred.makeUnsafe<void>(),
         }
+        // Lazunox (Q1.1): `undefined` = esperar a todos (comportamiento anterior); un número = plazo corto, el resto sigue en segundo plano.
+        const plazo = Espera.plazoMs()
+        const scope = yield* Effect.scope
 
-        yield* Effect.forEach(
+        const conectar = (key: string, mcp: ConfigMCPV1.Info) =>
+          Effect.gen(function* () {
+            const result = yield* create(key, mcp)
+            // Si mientras tanto alguien conectó/desconectó este conector a mano (`pendientes` ya no lo tiene), se respeta lo suyo.
+            if (!s.pendientes.has(key)) {
+              if (result.mcpClient) yield* Effect.tryPromise(() => result.mcpClient!.close()).pipe(Effect.ignore)
+              return
+            }
+            s.status[key] = result.status
+            if (result.mcpClient) {
+              s.clients[key] = result.mcpClient
+              s.defs[key] = result.defs!
+              if (result.instructions) s.instructions[key] = result.instructions
+              watch(s, key, result.mcpClient, bridge, mcp.timeout)
+            }
+          }).pipe(
+            // Un conector que falla no rompe la conversación: queda como `failed` y deja de estar pendiente.
+            Effect.catchCause((cause) =>
+              Effect.sync(() => {
+                if (s.pendientes.has(key)) s.status[key] = { status: "failed", error: Cause.pretty(cause) }
+              }),
+            ),
+            Effect.ensuring(Effect.sync(() => s.pendientes.delete(key))),
+          )
+
+        const todos = Effect.forEach(
           Object.entries(config),
           ([key, mcp]) =>
             Effect.gen(function* () {
@@ -612,17 +649,17 @@ const layer = Layer.effect(
                 return
               }
 
-              const result = yield* create(key, mcp)
-              s.status[key] = result.status
-              if (result.mcpClient) {
-                s.clients[key] = result.mcpClient
-                s.defs[key] = result.defs!
-                if (result.instructions) s.instructions[key] = result.instructions
-                watch(s, key, result.mcpClient, bridge, mcp.timeout)
-              }
+              s.pendientes.add(key)
+              yield* conectar(key, mcp)
             }),
-          { concurrency: "unbounded" },
-        )
+          { concurrency: "unbounded", discard: true },
+        ).pipe(Effect.ensuring(Deferred.succeed(s.listos, undefined)))
+
+        if (plazo === undefined) yield* todos
+        else {
+          yield* todos.pipe(Effect.forkIn(scope))
+          yield* Deferred.await(s.listos).pipe(Effect.timeoutOption(plazo))
+        }
 
         yield* Effect.addFinalizer(() =>
           Effect.gen(function* () {
@@ -686,6 +723,8 @@ const layer = Layer.effect(
 
     const status = Effect.fn("MCP.status")(function* () {
       const s = yield* InstanceState.get(state)
+      // Lazunox (Q1.1): el estado de los conectores sigue siendo exacto (como antes): espera a los que aún conectan.
+      yield* Deferred.await(s.listos)
 
       const cfg = yield* cfgSvc.get()
       const config = cfg.mcp ?? {}
@@ -722,8 +761,14 @@ const layer = Layer.effect(
         }))
     })
 
+    const pendientes = Effect.fn("MCP.pendientes")(function* () {
+      const s = yield* InstanceState.get(state)
+      return [...s.pendientes].filter((name) => !Politica.mcpDenegado(name)).sort((a, b) => a.localeCompare(b))
+    })
+
     const createAndStore = Effect.fn("MCP.createAndStore")(function* (name: string, mcp: ConfigMCPV1.Info) {
       const s = yield* InstanceState.get(state)
+      s.pendientes.delete(name) // Lazunox (Q1.1): lo que se conecta a mano manda sobre la conexión inicial en segundo plano.
       const result = yield* create(name, mcp)
 
       s.status[name] = result.status
@@ -751,6 +796,7 @@ const layer = Layer.effect(
     const disconnect = Effect.fn("MCP.disconnect")(function* (name: string) {
       yield* requireMcpConfig(name)
       const s = yield* InstanceState.get(state)
+      s.pendientes.delete(name)
       yield* closeClient(s, name)
       delete s.clients[name]
       s.status[name] = { status: "disabled" }
@@ -1074,6 +1120,7 @@ const layer = Layer.effect(
       status,
       clients,
       instructions,
+      pendientes,
       tools,
       prompts,
       resources,

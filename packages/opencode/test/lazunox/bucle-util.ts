@@ -57,12 +57,16 @@ const resumen = Layer.succeed(
   }),
 )
 
+/** Lazunox (Q1.1): conectores que el MCP falso dice que siguen conectando (los tests lo cambian entre pasos). */
+export const mcpPendientes: { nombres: string[] } = { nombres: [] }
+
 const mcpVacio = Layer.succeed(
   MCP.Service,
   MCP.Service.of({
     status: () => Effect.succeed({}),
     clients: () => Effect.succeed({}),
     instructions: () => Effect.succeed([]),
+    pendientes: () => Effect.sync(() => [...mcpPendientes.nombres]),
     tools: () => Effect.succeed({}),
     prompts: () => Effect.succeed({}),
     resources: () => Effect.succeed({}),
