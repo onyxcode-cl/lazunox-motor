@@ -73,4 +73,35 @@ describe("cierre con conectores pendientes", () => {
   caso("en-initialize", { DELAY: "2000" }, 200)
   caso("en-tools-list", { DELAY: "0", LIST_DELAY: "2000" }, 200)
   caso("en-tools-list-largo", { DELAY: "0", LIST_DELAY: "10000" }, 200)
+
+  // Marca `cerrado` del finalizador: conectores que terminan de conectar MIENTRAS corre el finalizador no deben guardarse ni quedar vivos.
+  const dirMarca = pidDir()
+  it.instance(
+    "conectores que terminan mientras corre el finalizador no quedan vivos (marca cerrado)",
+    () =>
+      Effect.gen(function* () {
+        process.env.LAZUNOX_MCP_ESPERA_MS = "300"
+        const mcp = yield* MCP.Service
+        const directory = yield* InstanceState.directory
+        yield* mcp.tools().pipe(Effect.ensuring(Effect.sync(() => delete process.env.LAZUNOX_MCP_ESPERA_MS)))
+        // Los 4 rápidos ya están guardados; los lentos entregan tools/list entre 300 y 900 ms, durante el finalizador.
+        yield* Effect.promise(() => disposeInstance(directory))
+        const quedan = yield* hastaCero(dirMarca, 4000)
+        const total = pids(dirMarca).length
+        limpiar(dirMarca)
+        expect(total).toBe(4 + 41)
+        expect(quedan).toEqual([])
+      }),
+    {
+      config: {
+        mcp: {
+          ...Object.fromEntries(Array.from({ length: 4 }, (_, i) => [`rapido${i}`, local(`rapido${i}`, dirMarca, { DELAY: "0" })])),
+          ...Object.fromEntries(
+            Array.from({ length: 41 }, (_, i) => [`lento${i}`, local(`lento${i}`, dirMarca, { DELAY: "0", LIST_DELAY: String(300 + i * 15) })]),
+          ),
+        },
+      },
+    },
+    30_000,
+  )
 })
