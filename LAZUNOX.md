@@ -967,3 +967,11 @@ La revisión independiente (`documentos/v1813/RI1-B2-b2-confianza.md`) RECHAZÓ 
 - **Orden dentro de un mapa de patrones (ronda 2, BL-1)**: dentro de una misma fuente y una misma clave, un `deny` con patrón específico escrito ANTES de un `*` que no niega sigue negando (`bash: {"rm *":"deny","*":"ask"}` niega `rm -rf x`). `{"*":"deny","git status":"allow"}` y un `allow` específico posterior a un `deny` específico siguen ganando por posición. Solo con la bandera encendida.
 - Pruebas: `test/lazunox/permisos-capas.test.ts` y `permisos-capas-ask.test.ts`; con el motor real, los casos B1 de la batería de la 1.8.13 (`/tmp/b1-permisos/` al escribirlo; copia en el informe).
 - **Lo que NO hace** (ver el informe): agentes definidos en `.opencode/agents/*.md` no entran en el piso; el «siempre» no se probó en la propiedad aleatoria; `apply_patch` con varios recursos no se probó con el motor real; Windows (B1-32) no se probó.
+
+## Modelo pequeño por servicio (Q1.3; rama `v1815/q13-modelo-chico`)
+
+- **Config** (esquema `ConfigV1.Info`, campo opcional `small_model_por_servicio`): `{ "<idServicio>": "<idServicio>/<idModelo>" }`. Un motor sin esta clave no cambia; la app la escribe solo para servicios sin familia pequeña conocida.
+- **Orden en `Provider.getSmallModel(providerID)`**: (1) `small_model` global si la persona lo puso (intacto); (2) plugin experimental (Copilot) y familias conocidas (`gemini-flash`, `gpt-nano`, `claude-haiku`; lista curada, gana al mapa); (3) la entrada del mapa para ese servicio, SOLO si su modelo es del mismo servicio, existe en el catálogo y admite herramientas; si no, se ignora en silencio; (4) sin resultado, quien llama usa el modelo principal. Azure sigue sin inferencia. Nunca devuelve un modelo de otro servicio por esta vía.
+- Por qué después de las familias: esa lista está curada; el mapa solo cubre servicios que no tienen familia, así que nunca pisa una elección buena.
+- No toca permisos, confianza ni compactación (el resumen no usa el modelo pequeño).
+- Pruebas: `test/provider/provider.test.ts` (bloque «getSmallModel por servicio»: válida, otro servicio, inexistente, sin herramientas, sin mapa, familia gana, mapa ajeno, `small_model` global manda).

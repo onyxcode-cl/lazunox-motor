@@ -2040,6 +2040,17 @@ const layer = Layer.effect(
         if (candidates[0]) return candidates[0]
       }
 
+      // Lazunox: mapa por servicio, DESPUÉS de las familias conocidas (lista curada). Solo del mismo servicio,
+      // existente y con herramientas; si no, se ignora en silencio.
+      const porServicio = cfg.small_model_por_servicio?.[providerID]
+      if (typeof porServicio === "string") {
+        const parsed = parseModel(porServicio)
+        if (parsed.providerID === providerID) {
+          const model = provider.models[parsed.modelID]
+          if (model && model.capabilities.toolcall) return model
+        }
+      }
+
       return undefined
     })
 
