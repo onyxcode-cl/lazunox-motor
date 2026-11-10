@@ -1,7 +1,7 @@
 import { InstanceStore } from "@/project/instance-store"
 import { FolderTrust } from "@opencode-ai/core/folder-trust"
 import { isAllowedRequestOrigin } from "@opencode-ai/server/cors"
-import { Effect, Schema } from "effect"
+import { Effect, Schema, Scope } from "effect"
 import { HttpServerRequest, HttpServerResponse } from "effect/unstable/http"
 import { HttpApiBuilder } from "effect/unstable/httpapi"
 import { RootHttpApi } from "../api"
@@ -11,6 +11,7 @@ import { FolderNotFoundError, TrustInput } from "../groups/trust"
 export const trustHandlers = HttpApiBuilder.group(RootHttpApi, "trust", (handlers) =>
   Effect.gen(function* () {
     const store = yield* InstanceStore.Service
+    const scope = yield* Scope.Scope
 
     // Anti-CSRF: un origen ajeno (p. ej. una página web) no puede mover la confianza ni con credenciales válidas.
     const checkOrigin = Effect.gen(function* () {
@@ -54,10 +55,17 @@ export const trustHandlers = HttpApiBuilder.group(RootHttpApi, "trust", (handler
         return yield* new InvalidRequestError({ message: "directory must be an absolute path", field: "directory" })
       const result = FolderTrust.trust(directory)
       if (!result) return yield* new FolderNotFoundError({ message: "directory does not exist or is not a folder" })
-      // Con la confianza encendida, al confiar se descarta toda instancia previa (la fría); la plena se carga en la siguiente petición.
+      // Con la confianza encendida, al confiar se descarta toda instancia previa (la fría); la plena se precarga en segundo plano (abajo) y, si no alcanzó, se carga en la siguiente petición.
       if (FolderTrust.required() && result.added) {
         yield* store.evict(result.entry.display)
         if (result.entry.canonical !== result.entry.display) yield* store.evict(result.entry.canonical)
+        // Lazunox (Q1.1): precarga de la instancia plena en segundo plano (no retrasa esta respuesta). Solo la carpeta recién confiada;
+        // `load` comparte la caché de instancias, así que una petición que llegue mientras tanto espera esta misma carga, no otra.
+        yield* store.load({ directory: result.entry.display }).pipe(
+          Effect.asVoid,
+          Effect.catchCause((cause) => Effect.logWarning("precarga de carpeta confiada falló", { cause })),
+          Effect.forkIn(scope, { startImmediately: true }),
+        )
       }
       return answer({ directory: result.entry.canonical, trusted: true, changed: result.added, required: FolderTrust.required() })
     })
