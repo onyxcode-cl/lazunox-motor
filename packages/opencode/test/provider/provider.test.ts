@@ -831,6 +831,222 @@ it.instance(
   { config: { small_model: "anthropic/not-a-real-model" } },
 )
 
+it.instance(
+  "getSmallModel por servicio: entrada válida se usa",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.getSmallModel(ProviderV2.ID.make("svc-a"))
+    expect(model ? `${model.providerID}/${model.id}` : undefined).toBe("svc-a/a-mini")
+  }),
+  {
+    config: {
+      small_model_por_servicio: { "svc-a": "svc-a/a-mini" },
+      provider: {
+        "svc-a": {
+          name: "Svc A",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "a-big": { release_date: "2026-01-01" }, "a-mini": { release_date: "2026-01-01" }, "a-notools": { release_date: "2026-01-01", tool_call: false } },
+          options: { apiKey: "test-key" },
+        },
+        "svc-b": {
+          name: "Svc B",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "b-mini": { release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "getSmallModel por servicio: entrada de otro servicio se ignora",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.getSmallModel(ProviderV2.ID.make("svc-a"))
+    expect(model ? `${model.providerID}/${model.id}` : undefined).toBe(undefined)
+  }),
+  {
+    config: {
+      small_model_por_servicio: { "svc-a": "svc-b/b-mini" },
+      provider: {
+        "svc-a": {
+          name: "Svc A",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "a-big": { release_date: "2026-01-01" }, "a-mini": { release_date: "2026-01-01" }, "a-notools": { release_date: "2026-01-01", tool_call: false } },
+          options: { apiKey: "test-key" },
+        },
+        "svc-b": {
+          name: "Svc B",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "b-mini": { release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "getSmallModel por servicio: modelo inexistente se ignora",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.getSmallModel(ProviderV2.ID.make("svc-a"))
+    expect(model ? `${model.providerID}/${model.id}` : undefined).toBe(undefined)
+  }),
+  {
+    config: {
+      small_model_por_servicio: { "svc-a": "svc-a/no-existe" },
+      provider: {
+        "svc-a": {
+          name: "Svc A",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "a-big": { release_date: "2026-01-01" }, "a-mini": { release_date: "2026-01-01" }, "a-notools": { release_date: "2026-01-01", tool_call: false } },
+          options: { apiKey: "test-key" },
+        },
+        "svc-b": {
+          name: "Svc B",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "b-mini": { release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "getSmallModel por servicio: modelo sin herramientas se ignora",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.getSmallModel(ProviderV2.ID.make("svc-a"))
+    expect(model ? `${model.providerID}/${model.id}` : undefined).toBe(undefined)
+  }),
+  {
+    config: {
+      small_model_por_servicio: { "svc-a": "svc-a/a-notools" },
+      provider: {
+        "svc-a": {
+          name: "Svc A",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "a-big": { release_date: "2026-01-01" }, "a-mini": { release_date: "2026-01-01" }, "a-notools": { release_date: "2026-01-01", tool_call: false } },
+          options: { apiKey: "test-key" },
+        },
+        "svc-b": {
+          name: "Svc B",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "b-mini": { release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "getSmallModel por servicio: sin mapa es igual que hoy",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.getSmallModel(ProviderV2.ID.make("svc-a"))
+    expect(model ? `${model.providerID}/${model.id}` : undefined).toBe(undefined)
+  }),
+  {
+    config: {
+      provider: {
+        "svc-a": {
+          name: "Svc A",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "a-big": { release_date: "2026-01-01" }, "a-mini": { release_date: "2026-01-01" }, "a-notools": { release_date: "2026-01-01", tool_call: false } },
+          options: { apiKey: "test-key" },
+        },
+        "svc-b": {
+          name: "Svc B",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "b-mini": { release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "getSmallModel por servicio: la familia conocida gana al mapa",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.getSmallModel(ProviderV2.ID.make("svc-a"))
+    expect(model ? `${model.providerID}/${model.id}` : undefined).toBe("svc-a/a-flash")
+  }),
+  {
+    config: {
+      small_model_por_servicio: { "svc-a": "svc-a/a-mini" },
+      provider: {
+        "svc-a": {
+          name: "Svc A",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "a-big": { release_date: "2026-01-01" }, "a-mini": { release_date: "2026-01-01" }, "a-flash": { family: "gemini-flash", release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+        "svc-b": {
+          name: "Svc B",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "b-mini": { release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "getSmallModel por servicio: el mapa de otro servicio no afecta a este",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.getSmallModel(ProviderV2.ID.make("svc-b"))
+    expect(model ? `${model.providerID}/${model.id}` : undefined).toBe(undefined)
+  }),
+  {
+    config: {
+      small_model_por_servicio: { "svc-a": "svc-a/a-mini" },
+      provider: {
+        "svc-a": {
+          name: "Svc A",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "a-big": { release_date: "2026-01-01" }, "a-mini": { release_date: "2026-01-01" }, "a-notools": { release_date: "2026-01-01", tool_call: false } },
+          options: { apiKey: "test-key" },
+        },
+        "svc-b": {
+          name: "Svc B",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "b-mini": { release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
+it.instance(
+  "getSmallModel por servicio: small_model global sigue mandando",
+  Effect.gen(function* () {
+    const model = yield* Provider.use.getSmallModel(ProviderV2.ID.make("svc-a"))
+    expect(model ? `${model.providerID}/${model.id}` : undefined).toBe("svc-b/b-mini")
+  }),
+  {
+    config: {
+      small_model: "svc-b/b-mini",
+      small_model_por_servicio: { "svc-a": "svc-a/a-mini" },
+      provider: {
+        "svc-a": {
+          name: "Svc A",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "a-big": { release_date: "2026-01-01" }, "a-mini": { release_date: "2026-01-01" }, "a-notools": { release_date: "2026-01-01", tool_call: false } },
+          options: { apiKey: "test-key" },
+        },
+        "svc-b": {
+          name: "Svc B",
+          npm: "@ai-sdk/openai-compatible",
+          models: { "b-mini": { release_date: "2026-01-01" } },
+          options: { apiKey: "test-key" },
+        },
+      },
+    },
+  },
+)
+
 test("provider.sort prioritizes preferred models", () => {
   const models = [
     { id: "random-model", name: "Random" },
