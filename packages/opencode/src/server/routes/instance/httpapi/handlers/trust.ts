@@ -61,6 +61,9 @@ export const trustHandlers = HttpApiBuilder.group(RootHttpApi, "trust", (handler
         if (result.entry.canonical !== result.entry.display) yield* store.evict(result.entry.canonical)
         // Lazunox (Q1.1): precarga de la instancia plena en segundo plano (no retrasa esta respuesta). Solo la carpeta recién confiada;
         // `load` comparte la caché de instancias, así que una petición que llegue mientras tanto espera esta misma carga, no otra.
+        // RI1-B2: `evict` es asíncrono; un DELETE que llegó mientras tanto ya quitó la confianza y no habría nada que descargar después.
+        if (!FolderTrust.isTrusted(result.entry.canonical))
+          return answer({ directory: result.entry.canonical, trusted: true, changed: result.added, required: FolderTrust.required() })
         yield* store.load({ directory: result.entry.display }).pipe(
           Effect.asVoid,
           Effect.catchCause((cause) => Effect.logWarning("precarga de carpeta confiada falló", { cause })),
