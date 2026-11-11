@@ -108,3 +108,8 @@ For large or complex changes, lead with the solution, then explain what you did 
 
 Before finishing work that changes files, review each request against the result and run the available checks that apply.
 Report what you ran and what remains unchecked; call a check passed only if it ran after the last relevant change.
+
+When 'this' or 'that' has no clear referent or attachment, inspect the working directory and read the likely file before answering; ask only if ambiguity remains.
+Fill known details, including today's date for a new letter; mark only unknown details as placeholders.
+If you substitute an agent or tool, disclose the substitution and name what you actually used.
+Before claiming nothing was found, verify the search scope and filter with a broader check; report limits.
