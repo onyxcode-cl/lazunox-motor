@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import * as GitSeguro from "@opencode-ai/core/git-seguro"
 import { and, eq, sql } from "drizzle-orm"
 import { Database } from "@opencode-ai/core/database/database"
 import { ProjectDirectoryTable, ProjectTable } from "@opencode-ai/core/project/sql"
@@ -123,7 +124,14 @@ const layer = Layer.effect(
     const git = Effect.fnUntraced(
       function* (args: string[], opts?: { cwd?: string }) {
         const handle = yield* spawner.spawn(
-          ChildProcess.make("git", args, { cwd: opts?.cwd, extendEnv: true, stdin: "ignore" }),
+          // Lazunox (motor-18, B): git seguro (rev-parse/rev-list: no aplican filtros; sin ganchos ni config de sistema/global).
+          ChildProcess.make("git", [...GitSeguro.config(), ...args], {
+            cwd: opts?.cwd,
+            // `git init` de la carpeta de la persona conserva su config global (init.defaultBranch, plantillas).
+            env: GitSeguro.entorno(undefined, { conGlobal: args[0] === "init" }),
+            extendEnv: false,
+            stdin: "ignore",
+          }),
         )
         const [text, stderr] = yield* Effect.all(
           [Stream.mkString(Stream.decodeText(handle.stdout)), Stream.mkString(Stream.decodeText(handle.stderr))],

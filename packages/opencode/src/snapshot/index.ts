@@ -5,6 +5,7 @@ import { formatPatch, structuredPatch } from "diff"
 import path from "path"
 import fsp from "fs/promises"
 import { AppProcess } from "@opencode-ai/core/process"
+import * as GitSeguro from "@opencode-ai/core/git-seguro"
 import { InstanceState } from "@/effect/instance-state"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Hash } from "@opencode-ai/core/util/hash"
@@ -130,10 +131,23 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
         const encodeTopLevelLiteralPathspecs = (files: string[]) =>
           encodeNulTerminatedPaths(files.map((file) => `:(top,literal)${file}`))
 
+        // Lazunox (motor-18, B): git seguro. En el repositorio PROPIO de fotos (`state.gitdir`): config canónica, sin info/attributes y
+        // con los .gitattributes de la carpeta ignorados (`attr.tree` vacío): ningún filtro clean/smudge corre. Sin ganchos ni fsmonitor,
+        // sin config de sistema ni global, entorno limpio.
+        const comando = (cmd: string[], env?: Record<string, string>) => {
+          const esPropio = cmd.includes(state.gitdir) || env?.GIT_DIR === state.gitdir
+          if (esPropio) GitSeguro.sanearRepoPropio(state.gitdir)
+          return {
+            args: [...GitSeguro.config({ propio: esPropio }), ...GitSeguro.blindar(cmd)],
+            env: GitSeguro.entorno(env),
+          }
+        }
+
         const git = Effect.fnUntraced(
           function* (cmd: string[], opts?: { cwd?: string; env?: Record<string, string>; stdin?: string }) {
+            const c = comando(cmd, opts?.env)
             const result = yield* appProcess.run(
-              ChildProcess.make("git", cmd, { cwd: opts?.cwd, env: opts?.env, extendEnv: true }),
+              ChildProcess.make("git", c.args, { cwd: opts?.cwd, env: c.env, extendEnv: false }),
               { stdin: opts?.stdin },
             )
             return {
@@ -376,15 +390,21 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                 yield* git(["init"], {
                   env: { GIT_DIR: state.gitdir, GIT_WORK_TREE: state.worktree },
                 })
-                yield* git(["--git-dir", state.gitdir, "config", "core.autocrlf", "false"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.longpaths", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.symlinks", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.fsmonitor", "false"])
-                // Tuning for very large worktrees so the first add stays bounded.
-                yield* git(["--git-dir", state.gitdir, "config", "feature.manyFiles", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "index.version", "4"])
-                yield* git(["--git-dir", state.gitdir, "config", "index.threads", "true"])
-                yield* git(["--git-dir", state.gitdir, "config", "core.untrackedCache", "true"])
+                if (GitSeguro.activo()) {
+                  // Lazunox (motor-18, B): la config del repositorio de fotos la escribe el motor entera (la misma de abajo, canónica) y la
+                  // vuelve a imponer antes de cada uso.
+                  GitSeguro.sanearRepoPropio(state.gitdir)
+                } else {
+                  yield* git(["--git-dir", state.gitdir, "config", "core.autocrlf", "false"])
+                  yield* git(["--git-dir", state.gitdir, "config", "core.longpaths", "true"])
+                  yield* git(["--git-dir", state.gitdir, "config", "core.symlinks", "true"])
+                  yield* git(["--git-dir", state.gitdir, "config", "core.fsmonitor", "false"])
+                  // Tuning for very large worktrees so the first add stays bounded.
+                  yield* git(["--git-dir", state.gitdir, "config", "feature.manyFiles", "true"])
+                  yield* git(["--git-dir", state.gitdir, "config", "index.version", "4"])
+                  yield* git(["--git-dir", state.gitdir, "config", "index.threads", "true"])
+                  yield* git(["--git-dir", state.gitdir, "config", "core.untrackedCache", "true"])
+                }
                 yield* seed()
                 yield* Effect.logInfo("initialized")
               }
@@ -932,10 +952,12 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
                   })
                   if (!refs.length) return new Map<string, { before: string; after: string }>()
 
+                  const c = comando([...cfg, ...args(["cat-file", "--batch"])])
                   const batch = yield* appProcess.run(
-                    ChildProcess.make("git", [...cfg, ...args(["cat-file", "--batch"])], {
+                    ChildProcess.make("git", c.args, {
                       cwd: state.directory,
-                      extendEnv: true,
+                      env: c.env,
+                      extendEnv: false,
                     }),
                     { stdin: refs.map((item) => item.ref).join("\n") + "\n" },
                   )

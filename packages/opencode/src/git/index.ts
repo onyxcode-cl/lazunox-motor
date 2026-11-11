@@ -1,5 +1,6 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { AppProcess } from "@opencode-ai/core/process"
+import * as GitSeguro from "@opencode-ai/core/git-seguro"
 import { Effect, Layer, Context, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
 
@@ -107,13 +108,16 @@ const layer = Layer.effect(
     const encoder = new TextEncoder()
     const stdin = (text: string) => Stream.make(encoder.encode(text))
 
+    // Lazunox (motor-18, B): git seguro para el estado/diff del repositorio de la persona (filtros anulados, sin ganchos, sin config de
+    // sistema ni global, sin diff externo ni textconv, entorno limpio).
     const run = Effect.fn("Git.run")(
       function* (args: string[], opts: Options) {
+        const seguro = yield* GitSeguro.preparar(appProcess, [...cfg, ...args], { cwd: opts.cwd, env: opts.env })
         const result = yield* appProcess.run(
-          ChildProcess.make("git", [...cfg, ...args], {
+          ChildProcess.make("git", seguro.args, {
             cwd: opts.cwd,
-            env: opts.env,
-            extendEnv: true,
+            env: seguro.env,
+            extendEnv: false,
             stdin: opts.stdin ?? "ignore",
             stdout: "pipe",
             stderr: "pipe",

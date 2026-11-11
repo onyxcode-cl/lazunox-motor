@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import * as GitSeguro from "@opencode-ai/core/git-seguro"
 import { path } from "@opencode-ai/core/effect/app-node-platform"
 import { Global } from "@opencode-ai/core/global"
 import { InstanceStore } from "@/project/instance-store"
@@ -153,8 +154,10 @@ const layer: Layer.Layer<
 
     const git = Effect.fnUntraced(
       function* (args: string[], opts?: { cwd?: string }) {
+        // Lazunox (motor-18, B): git seguro (crear/quitar/reiniciar el árbol no corre ganchos ni filtros del repositorio).
+        const seguro = yield* GitSeguro.preparar(appProcess, args, { cwd: opts?.cwd })
         const result = yield* appProcess.run(
-          ChildProcess.make("git", args, { cwd: opts?.cwd, extendEnv: true, stdin: "ignore" }),
+          ChildProcess.make("git", seguro.args, { cwd: opts?.cwd, env: seguro.env, extendEnv: false, stdin: "ignore" }),
         )
         return {
           code: result.exitCode,

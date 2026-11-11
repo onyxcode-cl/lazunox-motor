@@ -1,6 +1,7 @@
 export * as Git from "./git"
 
 import path from "path"
+import * as GitSeguro from "./git-seguro"
 import { randomUUID } from "crypto"
 import { Context, Effect, Layer, Schema, Stream } from "effect"
 import { ChildProcess } from "effect/unstable/process"
@@ -327,12 +328,17 @@ const layer = Layer.effect(
       args: string[],
       options?: { stdin?: string; env?: Record<string, string> },
     ) {
+      // Lazunox (motor-18, B): git seguro (sin ganchos, filtros, config de sistema/global, diff externo ni textconv).
+      const seguro = yield* GitSeguro.preparar(proc, repositoryArgs(repository, args), {
+        cwd: repository.worktree,
+        env: options?.env,
+      })
       const result = yield* proc
         .run(
-          ChildProcess.make("git", repositoryArgs(repository, args), {
+          ChildProcess.make("git", seguro.args, {
             cwd: repository.worktree,
-            env: options?.env,
-            extendEnv: true,
+            env: seguro.env,
+            extendEnv: false,
           }),
           { stdin: options?.stdin },
         )
@@ -495,10 +501,11 @@ const layer = Layer.effect(
       if (!input.paths.length) return new Set<RelativePath>()
       const result = yield* proc
         .run(
-          ChildProcess.make("git", repositoryArgs(input.repository, ["check-ignore", "--no-index", "--stdin", "-z"]), {
-            cwd: input.repository.worktree,
-            extendEnv: true,
-          }),
+          ChildProcess.make(
+            "git",
+            [...GitSeguro.config(), ...repositoryArgs(input.repository, ["check-ignore", "--no-index", "--stdin", "-z"])],
+            { cwd: input.repository.worktree, env: GitSeguro.entorno(), extendEnv: false },
+          ),
           { stdin: input.paths.join("\0") + "\0" },
         )
         .pipe(
@@ -791,11 +798,13 @@ const layer = Layer.effect(
       path: AbsolutePath
       changes: ChangeSet
     }) {
+      const seguro = yield* GitSeguro.preparar(proc, ["apply", "-"], { cwd: input.path })
       const result = yield* proc
         .run(
-          ChildProcess.make("git", ["apply", "-"], {
+          ChildProcess.make("git", seguro.args, {
             cwd: input.path,
-            extendEnv: true,
+            env: seguro.env,
+            extendEnv: false,
             stdin: Stream.make(new TextEncoder().encode(input.changes)),
           }),
         )
@@ -859,8 +868,9 @@ const layer = Layer.effect(
       worktreeDirectory?: AbsolutePath,
       cwd = repository.worktree,
     ) {
+      const seguro = yield* GitSeguro.preparar(proc, args, { cwd })
       const result = yield* proc
-        .run(ChildProcess.make("git", args, { cwd, extendEnv: true, stdin: "ignore" }))
+        .run(ChildProcess.make("git", seguro.args, { cwd, env: seguro.env, extendEnv: false, stdin: "ignore" }))
         .pipe(
           Effect.mapError(
             (cause) => new WorktreeError({ operation, directory: worktreeDirectory, message: cause.message, cause }),
@@ -956,15 +966,23 @@ function run(cwd: string, proc: AppProcess.Interface) {
     execute(cwd, proc)(args).pipe(Effect.catch(() => Effect.succeed({ exitCode: 1, text: "", stderr: "" })))
 }
 
+/** Subcomandos que hablan con la red o crean el repositorio: conservan la config global (credenciales, `url.insteadOf`, rama inicial). */
+const CON_GLOBAL = new Set(["clone", "fetch", "pull", "ls-remote", "init"])
+
 function execute(cwd: string, proc: AppProcess.Interface) {
   return (args: string[]) =>
-    proc
-      .run(
-        ChildProcess.make("git", args, {
-          cwd,
-          extendEnv: true,
-          stdin: "ignore",
-        }),
+    GitSeguro.preparar(proc, args, { cwd, conGlobal: CON_GLOBAL.has(GitSeguro.subcomando(args) ?? "") })
+      .pipe(
+        Effect.flatMap((seguro) =>
+          proc.run(
+            ChildProcess.make("git", seguro.args, {
+              cwd,
+              env: seguro.env,
+              extendEnv: false,
+              stdin: "ignore",
+            }),
+          ),
+        ),
       )
       .pipe(
         Effect.map(
