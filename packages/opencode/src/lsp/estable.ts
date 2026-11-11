@@ -4,6 +4,7 @@
 // la app/usuario (config global), jamás de la del proyecto; (3) lo que dice el servidor es DATO: mensajes acotados,
 // una línea, sin etiquetas; (4) tamaño máximo por mensaje del servidor y plazos para todo.
 import fs from "fs"
+import { entornoParaHijo } from "@opencode-ai/core/entorno-limpio"
 import path from "path"
 import { Transform } from "stream"
 import type { ChildProcessWithoutNullStreams } from "child_process"
@@ -95,7 +96,8 @@ export function resolver(cmd: string, raices: string[], env: NodeJS.ProcessEnv =
 
 /** Entorno para el servidor: el del proceso, con el PATH ya filtrado. */
 export function entornoSeguro(raices: string[], extra?: Record<string, string>): NodeJS.ProcessEnv {
-  const env: NodeJS.ProcessEnv = { ...process.env, ...extra }
+  // Lazunox (motor-18, A): parte del entorno limpio (sin OPENCODE_*, LAZUNOX_* ni credenciales).
+  const env: NodeJS.ProcessEnv = entornoParaHijo(extra, true)
   const seguro = pathSeguro(raices, env).join(path.delimiter)
   for (const k of Object.keys(env)) if (k.toLowerCase() === "path") delete env[k]
   env[win ? "Path" : "PATH"] = seguro

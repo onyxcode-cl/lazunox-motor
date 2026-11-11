@@ -1,5 +1,6 @@
 import { PermisoCapas } from "@/permission/capas"
 import * as GitEndurecido from "./git-endurecido"
+import { entornoParaHijo } from "@opencode-ai/core/entorno-limpio"
 import { Effect, Exit, Fiber, Schema, Scope, Stream } from "effect"
 import os from "os"
 import { createWriteStream } from "node:fs"
@@ -739,10 +740,8 @@ export const ShellTool = Tool.define(
         { env: {} },
       )
       // Lazunox (lazunox.15): entorno de git endurecido (repositorio desnudo falso + fsmonitor). Va DESPUÉS de los plugins.
-      return GitEndurecido.endurecer({
-        ...process.env,
-        ...extra.env,
-      })
+      // Lazunox (motor-18, A): entorno limpio del motor + lo que agregan los complementos (`lazunox-env` sigue poniendo vacías sus 7).
+      return GitEndurecido.endurecer(entornoParaHijo(extra.env, true))
     })
 
     const run = Effect.fn("ShellTool.run")(function* (

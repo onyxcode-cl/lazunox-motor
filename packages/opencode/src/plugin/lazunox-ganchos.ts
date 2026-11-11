@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { spawn, spawnSync } from "node:child_process"
+import { entornoParaHijo } from "@opencode-ai/core/entorno-limpio"
 import { Exit, Schema } from "effect"
 import type { Hooks, PluginInput } from "@opencode-ai/plugin"
 import { validarEsquema } from "@/cli/cmd/run-banderas"
@@ -298,7 +299,7 @@ export type Resultado = { code: number | null; stdout: string; stderr: string; t
 const matar = (pid: number | undefined) => {
   if (!pid) return
   try {
-    if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore" })
+    if (process.platform === "win32") spawnSync("taskkill", ["/PID", String(pid), "/T", "/F"], { stdio: "ignore", env: entornoParaHijo(undefined, true) })
     else process.kill(-pid, "SIGKILL")
   } catch {}
 }
@@ -312,7 +313,8 @@ export const ejecutar = (g: Gancho, payload: unknown, cwd: string, maxSalida = d
       detached: process.platform !== "win32",
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      env: { ...process.env, LAZUNOX_HOOK: "1" },
+      // Lazunox (motor-18, A): entorno limpio; LAZUNOX_HOOK=1 se agrega a propósito.
+      env: entornoParaHijo({ LAZUNOX_HOOK: "1" }, true),
     })
     let stdout = ""
     let stderr = ""

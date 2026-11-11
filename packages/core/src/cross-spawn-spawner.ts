@@ -1,3 +1,4 @@
+import * as EntornoLimpio from "./entorno-limpio"
 import type * as Arr from "effect/Array"
 import { NodeFileSystem, NodeSink, NodeStream } from "@effect/platform-node"
 import * as NodePath from "@effect/platform-node/NodePath"
@@ -106,8 +107,10 @@ export const make = Effect.gen(function* () {
     return path.resolve(opts.cwd)
   })
 
+  // Lazunox (motor-18, A): TODO hijo del spawner recibe el entorno limpio (sin OPENCODE_*, LAZUNOX_* ni credenciales). Sin `env` y sin
+  // `extendEnv`, Node heredaría el entorno entero: se trata igual que `extendEnv: true`.
   const env = (opts: ChildProcess.CommandOptions) =>
-    opts.extendEnv ? { ...globalThis.process.env, ...opts.env } : opts.env
+    EntornoLimpio.entornoParaHijo(opts.env, !!opts.extendEnv || opts.env === undefined)
 
   const input = (x: ChildProcess.CommandInput | undefined): NodeChildProcess.IOType | undefined =>
     Stream.isStream(x) ? "pipe" : x

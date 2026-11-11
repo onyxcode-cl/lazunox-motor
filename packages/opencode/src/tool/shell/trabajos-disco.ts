@@ -1,6 +1,7 @@
 import fs from "node:fs"
 import path from "node:path"
 import { execFileSync } from "node:child_process"
+import { entornoParaHijo } from "@opencode-ai/core/entorno-limpio"
 import { Global } from "@opencode-ai/core/global"
 
 // Lazunox: marcadores en disco de los trabajos en segundo plano (shells y celdas de Code Mode).
@@ -106,7 +107,7 @@ export const cmdlineOf = (pid: number) => {
     } catch {}
   }
   try {
-    return execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"] }).trim()
+    return execFileSync("ps", ["-o", "command=", "-p", String(pid)], { encoding: "utf-8", timeout: 2000, stdio: ["ignore", "pipe", "ignore"], env: entornoParaHijo(undefined, true) }).trim()
   } catch {
     return ""
   }

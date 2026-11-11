@@ -1,4 +1,5 @@
 import path from "node:path"
+import { entornoParaHijo } from "@opencode-ai/core/entorno-limpio"
 import { pathToFileURL } from "node:url"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { ConfigV1 } from "@opencode-ai/core/v1/config/config"
@@ -368,11 +369,8 @@ const layer = Layer.effect(
         command: cmd,
         args,
         cwd,
-        env: {
-          ...process.env,
-          ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}),
-          ...mcp.environment,
-        },
+        // Lazunox (motor-18, A): entorno limpio + el `environment` del MCP en la config (se respeta: lo pasa la config a propósito).
+        env: entornoParaHijo({ ...(cmd === "opencode" ? { BUN_BE_BUN: "1" } : {}), ...mcp.environment }, true),
       })
 
       const connectTimeout = mcp.timeout ?? DEFAULT_TIMEOUT

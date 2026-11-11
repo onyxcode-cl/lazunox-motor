@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { entornoParaHijo } from "@opencode-ai/core/entorno-limpio"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import * as LSPClient from "./client"
@@ -200,7 +201,8 @@ const layer = Layer.effect(
                 spawn: async (root) => ({
                   process: lspspawn(item.command[0], item.command.slice(1), {
                     cwd: root,
-                    env: { ...process.env, ...item.env },
+                    // Lazunox (motor-18, A): entorno limpio + el `env` del LSP en la config.
+                    env: entornoParaHijo(item.env, true),
                   }),
                   initialization: item.initialization,
                 }),

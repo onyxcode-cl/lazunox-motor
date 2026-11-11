@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { entornoLimpio, entornoLimpioActivo } from "@opencode-ai/core/entorno-limpio"
 import type {
   Hooks,
   PluginInput,
@@ -166,7 +167,7 @@ const layer = Layer.effect(
             return Server.url ?? new URL("http://localhost:4096")
           },
           // @ts-expect-error
-          $: typeof Bun === "undefined" ? undefined : Bun.$,
+          $: typeof Bun === "undefined" ? undefined : shellLimpio(),
         }
 
         for (const plugin of flags.disableDefaultPlugins ? [] : internalPlugins(flags)) {
@@ -318,3 +319,14 @@ export const node = LayerNode.make({
 })
 
 export * as Plugin from "."
+
+/**
+ * Lazunox (motor-18, A): el `$` de Bun que reciben los complementos lanza sus comandos con el entorno limpio (una instancia propia, para no
+ * tocar el `Bun.$` global). Apagado (LAZUNOX_ENTORNO_LIMPIO=0): el `Bun.$` de siempre.
+ */
+export function shellLimpio() {
+  if (!entornoLimpioActivo()) return Bun.$
+  const sh = new Bun.$.Shell()
+  sh.env(entornoLimpio())
+  return sh
+}

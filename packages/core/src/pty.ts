@@ -1,6 +1,7 @@
 export * as Pty from "./pty"
 
 import { makeLocationNode } from "./effect/app-node"
+import { entornoParaHijo } from "./entorno-limpio"
 import type { Disp, Proc } from "#pty"
 import { Context, Effect, Layer, Schema, Types } from "effect"
 import { Pty } from "@opencode-ai/schema/pty"
@@ -167,9 +168,9 @@ const layer = Layer.effect(
       const command = input.command || Shell.preferred(Config.latest(yield* config.entries(), "shell"))
       const args = Shell.login(command) ? [...(input.args ?? []), "-l"] : [...(input.args ?? [])]
       const cwd = input.cwd || location.directory
+      // Lazunox (motor-18, A): el pty recibe el entorno limpio; lo que agrega el complemento `shell.env` (input.env) se respeta.
       const env = {
-        ...process.env,
-        ...input.env,
+        ...entornoParaHijo(input.env, true),
         TERM: "xterm-256color",
         OPENCODE_TERMINAL: "1",
       } as Record<string, string>

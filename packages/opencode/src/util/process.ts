@@ -1,6 +1,7 @@
 import { type ChildProcess } from "child_process"
 import type { Stream } from "node:stream"
 import launch from "cross-spawn"
+import { entornoParaHijo } from "@opencode-ai/core/entorno-limpio"
 import { buffer } from "node:stream/consumers"
 import { errorMessage } from "./error"
 
@@ -63,7 +64,8 @@ export function spawn(cmd: string[], opts: Options = {}): Child {
   const proc = launch(cmd[0], cmd.slice(1), {
     cwd: opts.cwd,
     shell: opts.shell,
-    env: opts.env === null ? {} : opts.env ? { ...process.env, ...opts.env } : undefined,
+    // Lazunox (motor-18, A): entorno limpio también aquí (LSP, `!cmd` de comandos, utilidades); `env: null` sigue siendo vacío.
+    env: opts.env === null ? {} : entornoParaHijo(opts.env, true),
     stdio: [opts.stdin ?? "ignore", opts.stdout ?? "ignore", opts.stderr ?? "ignore"],
     windowsHide: process.platform === "win32",
   })

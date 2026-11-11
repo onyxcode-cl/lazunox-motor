@@ -1,6 +1,7 @@
 export * as Shell from "./shell"
 
 import path from "path"
+import { entornoParaHijo } from "./entorno-limpio"
 import { spawn, type ChildProcess } from "child_process"
 import { readFile } from "fs/promises"
 import { statSync } from "fs"
@@ -36,6 +37,7 @@ export async function killTree(proc: ChildProcess, opts?: { exited?: () => boole
     await new Promise<void>((resolve) => {
       const killer = spawn("taskkill", ["/pid", String(pid), "/f", "/t"], {
         stdio: "ignore",
+        env: entornoParaHijo(undefined, true),
         windowsHide: true,
       })
       killer.once("exit", () => resolve())
