@@ -6,6 +6,7 @@ import { Effect, Option, Schema } from "effect"
 import { AgentV2 } from "../../agent"
 import { Config } from "../../config"
 import { ConfigAgent } from "../agent"
+import { ConfigSinCodigo } from "../sin-codigo"
 import { ConfigMarkdown } from "../markdown"
 import { FSUtil } from "../../fs-util"
 import { ModelV2 } from "../../model"
@@ -57,7 +58,10 @@ export const Plugin = define({
             const files = yield* discover(fs, entry.path)
             return yield* Effect.forEach(files, (file) =>
               fs.readFileStringSafe(file.filepath).pipe(
-                Effect.map((content) => content && decode(file, content)),
+                Effect.map(
+                  (content) =>
+                    content && decode(file, content, ConfigSinCodigo.carpetaSinCodigo(entry.path, global.home)),
+                ),
                 Effect.catch(() => Effect.succeed(undefined)),
               ),
             ).pipe(
@@ -150,7 +154,7 @@ function discover(fs: FSUtil.Interface, directory: string) {
   )
 }
 
-function decode(file: { directory: string; filepath: string; primary: boolean }, content: string) {
+function decode(file: { directory: string; filepath: string; primary: boolean }, content: string, sinCodigo: boolean) {
   const markdown = ConfigMarkdown.parseOption(content)
   if (!markdown) return
   const name = path
@@ -159,14 +163,15 @@ function decode(file: { directory: string; filepath: string; primary: boolean },
     .replace(/^(agent|agents|mode|modes)\//, "")
     .replace(/\.md$/, "")
   const body = markdown.content.trim()
-  const legacy = Object.keys(markdown.data).some((key) => !agentKeys.has(key))
+  const data = sinCodigo ? ConfigSinCodigo.limpiarAgente(markdown.data) : markdown.data
+  const legacy = Object.keys(data).some((key) => !agentKeys.has(key))
   const agent = Option.getOrUndefined(
     legacy
       ? Option.map(
-          decodeLegacyAgent({ name, ...markdown.data, prompt: body }, { errors: "all", propertyOrder: "original" }),
+          decodeLegacyAgent({ name, ...data, prompt: body }, { errors: "all", propertyOrder: "original" }),
           ConfigMigrateV1.migrateAgent,
         )
-      : decodeAgent({ ...markdown.data, system: body }, { errors: "all", propertyOrder: "original" }),
+      : decodeAgent({ ...data, system: body }, { errors: "all", propertyOrder: "original" }),
   )
   if (!agent) return
   const info = Option.getOrUndefined(

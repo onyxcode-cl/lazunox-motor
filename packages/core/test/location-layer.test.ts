@@ -5,6 +5,7 @@ import { DateTime, Effect, Equal, Hash, Schema } from "effect"
 import { Tool } from "@opencode-ai/core/tool/tool"
 import { define } from "@opencode-ai/plugin/v2/effect"
 import { AgentV2 } from "@opencode-ai/core/agent"
+import { Config } from "@opencode-ai/core/config"
 import { Catalog } from "@opencode-ai/core/catalog"
 import { AppNodeBuilder } from "@opencode-ai/core/effect/app-node-builder"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -57,6 +58,39 @@ describe("LocationServiceMap", () => {
             expect(yield* locations.contextEffect(constructed)).toBe(yield* locations.contextEffect(decoded))
           }),
         ),
+      ),
+    ),
+  )
+
+  it.live("keeps cold instance config separate from a cached warm location", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          yield* Effect.promise(() =>
+            Bun.write(path.join(dir.path, "opencode.json"), JSON.stringify({ username: "proyecto" })),
+          )
+          const locations = yield* LocationServiceMap.Service
+          const warm = Location.fromInstance({ directory: dir.path })
+          const cold = Location.fromInstance({ directory: dir.path, cold: true })
+          expect(Equal.equals(warm, Location.Ref.make({ directory: AbsolutePath.make(dir.path) }))).toBe(true)
+          expect(Equal.equals(warm, cold)).toBe(false)
+          const read = Effect.gen(function* () {
+            const config = yield* Config.Service
+            const location = yield* Location.Service
+            return { cold: location.cold, username: Config.latest(yield* config.entries(), "username") }
+          })
+          expect(yield* read.pipe(Effect.provide(locations.get(warm)))).toEqual({
+            cold: undefined,
+            username: "proyecto",
+          })
+          expect(yield* read.pipe(Effect.provide(locations.get(cold)))).toEqual({ cold: true, username: undefined })
+          expect(yield* locations.contextEffect(cold)).toBe(
+            yield* locations.contextEffect(Location.fromInstance({ directory: dir.path, cold: true })),
+          )
+        }),
       ),
     ),
   )

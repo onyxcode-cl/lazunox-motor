@@ -61,7 +61,7 @@ function testLayer(directory: string, globalDirectory: string) {
       location({ directory: AbsolutePath.make(directory) }, { projectDirectory: AbsolutePath.make(directory) }),
     ),
   )
-  return AppNodeBuilder.build(LayerNode.group([Config.node, Npm.node, FSUtil.node, Location.node]), [
+  return AppNodeBuilder.build(LayerNode.group([Config.node, Npm.node, FSUtil.node, Location.node, Global.node]), [
     [Location.node, locationLayer],
     [Global.node, Global.layerWith({ config: globalDirectory })],
     [Npm.node, npmStub],
@@ -69,16 +69,15 @@ function testLayer(directory: string, globalDirectory: string) {
 }
 
 function run(f: string, global: string, added: string[]) {
-  const ctx = host({ plugin: { add: (p) => Effect.sync(() => void added.push(p.id)), remove: () => Effect.die("unused") } })
+  const ctx = host({
+    plugin: { add: (p) => Effect.sync(() => void added.push(p.id)), remove: () => Effect.die("unused") },
+  })
   // El entorno hay que fijarlo ANTES de construir la capa de Config (que lee `Flag.LAZUNOX_TRUST_REQUIRED` al abrir
   // la ubicación): por eso `Effect.provide` va DENTRO de `withEnv`, no fuera.
   return withEnv({ LAZUNOX_TRUST_REQUIRED: "1" }, () =>
     Effect.scoped(
       Effect.gen(function* () {
-        yield* ConfigExternalPlugin.Plugin.effect(ctx)
-        // El plugin se importa de forma asíncrona en un fiber propio (forkScoped, unido al Scope de arriba);
-        // darle tiempo a terminar (o a quedarse corto, si el enlace quedó bien filtrado) antes de comprobar.
-        yield* Effect.sleep(300)
+        yield* ConfigExternalPlugin.load(ctx)
       }).pipe(Effect.provide(testLayer(f, global))),
     ),
   )

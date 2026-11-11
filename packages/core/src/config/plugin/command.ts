@@ -5,9 +5,11 @@ import path from "path"
 import { Effect, Option, Schema } from "effect"
 import { CommandV2 } from "../../command"
 import { Config } from "../../config"
+import { Global } from "../../global"
 import { FSUtil } from "../../fs-util"
 import { ModelV2 } from "../../model"
 import { ConfigCommand } from "../command"
+import { ConfigSinCodigo } from "../sin-codigo"
 import { ConfigMarkdown } from "../markdown"
 
 const decodeCommand = Schema.decodeUnknownOption(ConfigCommand.Info)
@@ -17,11 +19,12 @@ export const Plugin = define({
   effect: Effect.fn(function* (ctx) {
     const config = yield* Config.Service
     const fs = yield* FSUtil.Service
+    const global = yield* Global.Service
     yield* ctx.command.transform(
       Effect.fn(function* (draft) {
         const documents = yield* Effect.forEach(yield* config.entries(), (entry) => {
           if (entry.type === "document") return Effect.succeed([{ commands: entry.info.commands }])
-          return loadDirectory(fs, entry.path).pipe(
+          return loadDirectory(fs, entry.path, ConfigSinCodigo.carpetaSinCodigo(entry.path, global.home)).pipe(
             Effect.map((commands) => [
               { commands: Object.fromEntries(commands.map((command) => [command.name, command.info])) },
             ]),
@@ -49,14 +52,14 @@ export const Plugin = define({
   }),
 })
 
-function loadDirectory(fs: FSUtil.Interface, directory: string) {
+function loadDirectory(fs: FSUtil.Interface, directory: string, sinCodigo: boolean) {
   return Effect.gen(function* () {
     const files = yield* fs
       .glob("{command,commands}/**/*.md", { cwd: directory, absolute: true, dot: true, symlink: true })
       .pipe(Effect.catch(() => Effect.succeed([] as string[])))
     return yield* Effect.forEach(files.toSorted(), (filepath) =>
       fs.readFileStringSafe(filepath).pipe(
-        Effect.map((content) => (content === undefined ? undefined : decode(directory, filepath, content))),
+        Effect.map((content) => (content === undefined ? undefined : decode(directory, filepath, content, sinCodigo))),
         Effect.catch(() => Effect.succeed(undefined)),
       ),
     ).pipe(
@@ -67,10 +70,11 @@ function loadDirectory(fs: FSUtil.Interface, directory: string) {
   })
 }
 
-function decode(directory: string, filepath: string, content: string) {
+function decode(directory: string, filepath: string, content: string, sinCodigo: boolean) {
   const markdown = ConfigMarkdown.parseOption(content)
   if (!markdown) return
-  const info = Option.getOrUndefined(decodeCommand({ ...markdown.data, template: markdown.content.trim() }))
+  const data = { ...markdown.data, template: markdown.content.trim() }
+  const info = Option.getOrUndefined(decodeCommand(sinCodigo ? ConfigSinCodigo.limpiarComando(data) : data))
   if (!info) return
   return {
     name: path

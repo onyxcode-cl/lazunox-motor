@@ -1,12 +1,14 @@
 export * as ConfigExternalPlugin from "./external"
 
-import type { Plugin as EffectPlugin } from "@opencode-ai/plugin/v2/effect"
+import type { PluginContext, Plugin as EffectPlugin } from "@opencode-ai/plugin/v2/effect"
 import type { Plugin as PromisePlugin } from "@opencode-ai/plugin/v2/promise"
 import { Effect, Schema } from "effect"
 import path from "path"
 import { fileURLToPath, pathToFileURL } from "url"
 import { Config } from "../../config"
+import { ConfigSinCodigo } from "../sin-codigo"
 import { Confianza } from "../confianza"
+import { Global } from "../../global"
 import { FSUtil } from "../../fs-util"
 import { Location } from "../../location"
 import { Npm } from "../../npm"
@@ -30,74 +32,80 @@ const PluginModule = Schema.Struct({
   ]),
 })
 
+export const load = Effect.fn(function* (ctx: PluginContext) {
+  const config = yield* Config.Service
+  const fs = yield* FSUtil.Service
+  const global = yield* Global.Service
+  const location = yield* Location.Service
+  const npm = yield* Npm.Service
+  yield* Effect.gen(function* () {
+    // Lazunox (lazunox.16, B2, ronda 2, E8): un enlace simbólico dentro de la carpeta confiada no debe cargar un
+    // plugin con destino fuera de la cadena del proyecto. Antes de este arreglo esta vía (location services) no
+    // aplicaba el filtro; ver RI1-B2, bloqueante 2.
+    const tope = Confianza.topeDeProyecto(location.directory, location.project.directory)
+
+    const configured: { package: string; options?: Record<string, any> }[] = []
+
+    for (const entry of yield* config.entries()) {
+      const source =
+        entry.type === "directory" ? entry.path : entry.path ? path.dirname(entry.path) : location.directory
+      if (ConfigSinCodigo.carpetaSinCodigo(source, global.home)) continue
+      if (entry.type === "document") {
+        const directory = entry.path ? path.dirname(entry.path) : location.directory
+        const enlaceFuera = Confianza.filtroDeEnlaces(tope, directory)
+        for (const item of entry.info.plugins ?? []) {
+          const ref = typeof item === "string" ? { package: item } : item
+          const packageName = (() => {
+            if (ref.package.startsWith("file://")) return fileURLToPath(ref.package)
+            if (ref.package.startsWith("./") || ref.package.startsWith("../")) {
+              return path.resolve(directory, ref.package)
+            }
+            return ref.package
+          })()
+          if (path.isAbsolute(packageName) && enlaceFuera && !enlaceFuera(packageName)) continue
+          configured.push({ package: packageName, options: ref.options })
+        }
+      }
+
+      if (entry.type === "directory") {
+        const enlaceFuera = Confianza.filtroDeEnlaces(tope, entry.path)
+        const files = yield* fs
+          .glob("{plugin,plugins}/*.{ts,js}", {
+            cwd: entry.path,
+            absolute: true,
+            include: "file",
+            dot: true,
+            symlink: true,
+          })
+          .pipe(Effect.orElseSucceed(() => []))
+        files.sort()
+        for (const file of files) {
+          if (enlaceFuera && !enlaceFuera(file)) continue
+          configured.push({ package: file })
+        }
+      }
+    }
+
+    for (const ref of configured) {
+      yield* Effect.gen(function* () {
+        const entrypoint = path.isAbsolute(ref.package)
+          ? pathToFileURL(ref.package).href
+          : (yield* npm.add(ref.package)).entrypoint
+        if (!entrypoint) return
+
+        const mod = yield* Effect.promise(() => import(entrypoint))
+        const value = (yield* Schema.decodeUnknownEffect(PluginModule)(mod)).default
+        const plugin = "effect" in value ? value : PluginPromise.fromPromise(value)
+        yield* ctx.plugin.add({
+          id: plugin.id,
+          effect: (host) => plugin.effect({ ...host, options: ref.options ?? {} }),
+        })
+      }).pipe(Effect.ignoreCause)
+    }
+  })
+})
+
 export const Plugin = define({
   id: "config-plugin",
-  effect: Effect.fn(function* (ctx) {
-    const config = yield* Config.Service
-    const fs = yield* FSUtil.Service
-    const location = yield* Location.Service
-    const npm = yield* Npm.Service
-    yield* Effect.gen(function* () {
-      // Lazunox (lazunox.16, B2, ronda 2, E8): un enlace simbólico dentro de la carpeta confiada no debe cargar un
-      // plugin con destino fuera de la cadena del proyecto. Antes de este arreglo esta vía (location services) no
-      // aplicaba el filtro; ver RI1-B2, bloqueante 2.
-      const tope = Confianza.topeDeProyecto(location.directory, location.project.directory)
-
-      const configured: { package: string; options?: Record<string, any> }[] = []
-
-      for (const entry of yield* config.entries()) {
-        if (entry.type === "document") {
-          const directory = entry.path ? path.dirname(entry.path) : location.directory
-          const enlaceFuera = Confianza.filtroDeEnlaces(tope, directory)
-          for (const item of entry.info.plugins ?? []) {
-            const ref = typeof item === "string" ? { package: item } : item
-            const packageName = (() => {
-              if (ref.package.startsWith("file://")) return fileURLToPath(ref.package)
-              if (ref.package.startsWith("./") || ref.package.startsWith("../")) {
-                return path.resolve(directory, ref.package)
-              }
-              return ref.package
-            })()
-            if (path.isAbsolute(packageName) && enlaceFuera && !enlaceFuera(packageName)) continue
-            configured.push({ package: packageName, options: ref.options })
-          }
-        }
-
-        if (entry.type === "directory") {
-          const enlaceFuera = Confianza.filtroDeEnlaces(tope, entry.path)
-          const files = yield* fs
-            .glob("{plugin,plugins}/*.{ts,js}", {
-              cwd: entry.path,
-              absolute: true,
-              include: "file",
-              dot: true,
-              symlink: true,
-            })
-            .pipe(Effect.orElseSucceed(() => []))
-          files.sort()
-          for (const file of files) {
-            if (enlaceFuera && !enlaceFuera(file)) continue
-            configured.push({ package: file })
-          }
-        }
-      }
-
-      for (const ref of configured) {
-        yield* Effect.gen(function* () {
-          const entrypoint = path.isAbsolute(ref.package)
-            ? pathToFileURL(ref.package).href
-            : (yield* npm.add(ref.package)).entrypoint
-          if (!entrypoint) return
-
-          const mod = yield* Effect.promise(() => import(entrypoint))
-          const value = (yield* Schema.decodeUnknownEffect(PluginModule)(mod)).default
-          const plugin = "effect" in value ? value : PluginPromise.fromPromise(value)
-          yield* ctx.plugin.add({
-            id: plugin.id,
-            effect: (host) => plugin.effect({ ...host, options: ref.options ?? {} }),
-          })
-        }).pipe(Effect.ignoreCause)
-      }
-    }).pipe(Effect.forkScoped({ startImmediately: true }))
-  }),
+  effect: (ctx) => load(ctx).pipe(Effect.forkScoped({ startImmediately: true }), Effect.asVoid),
 })

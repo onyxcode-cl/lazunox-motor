@@ -1,11 +1,20 @@
 export * as ConfigMarkdown from "./markdown"
 
 import matter from "gray-matter"
+// gray-matter incluye eval para encabezados JS. Ningún texto del proyecto debe activar ese motor.
+const options = {
+  engines: {
+    javascript: () => {
+      throw new SyntaxError("JavaScript frontmatter is disabled")
+    },
+  },
+}
+
 export function parse(content: string) {
   try {
-    return matter(content)
+    return matter(content, options)
   } catch {
-    return matter(sanitize(content))
+    return matter(sanitize(content), options)
   }
 }
 

@@ -6,9 +6,9 @@ import type { LocationError, LocationServices } from "./location-services"
 
 export class Service extends Context.Service<
   Service,
-  LayerMap.LayerMap<Location.Ref, LocationServices, LocationError>
+  LayerMap.LayerMap<Location.ContextRef, LocationServices, LocationError>
 >()("@opencode/example/LocationServiceMap") {
-  static get(ref: Location.Ref) {
+  static get(ref: Location.ContextRef) {
     return Layer.unwrap(Effect.map(Service, (locations) => locations.get(ref)))
   }
 }

@@ -1,7 +1,6 @@
 // Lazunox (motor-18, D): LAZUNOX_PROYECTO_SIN_CODIGO=1 lee del proyecto lo que es texto y no carga ni ejecuta nada ejecutable.
 import { afterEach, describe, expect, test } from "bun:test"
 import fs from "node:fs"
-import os from "node:os"
 import path from "node:path"
 import { Effect } from "effect"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
@@ -71,7 +70,7 @@ const it = testEffect(
 
 /** Proyecto con todo lo ejecutable que H5 enumeró; cada cosa, si llegara a correr, agrega una línea al centinela. */
 function sembrar(dir: string) {
-  const centinela = path.join(fs.mkdtempSync(path.join(os.tmpdir(), "lzx-m18-d-")), "centinela.txt")
+  const centinela = path.join(dir, "centinela.txt")
   const marca = (que: string) => `require("node:fs").appendFileSync(${JSON.stringify(centinela)}, ${JSON.stringify(que + "\n")})`
   fs.mkdirSync(path.join(dir, ".opencode", "plugin"), { recursive: true })
   fs.mkdirSync(path.join(dir, ".opencode", "tool"), { recursive: true })
@@ -109,6 +108,7 @@ describe("con la bandera", () => {
       process.env.OPENCODE_SERVER_PASSWORD = "no-se-imprime"
       const t = yield* TestInstance
       const s = sembrar(t.directory)
+      expect(path.dirname(s.centinela)).toBe(t.directory)
       const cfg = yield* Config.Service.use((c) => c.get())
       expect(cfg.mcp?.trampa).toBeUndefined()
       expect((cfg.plugin ?? []).some((p) => JSON.stringify(p).includes("trampa"))).toBe(false)

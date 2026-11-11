@@ -255,40 +255,43 @@ describe("InstructionContext", () => {
     }),
   )
 
-  it.effect("honors the project instruction opt-out", () =>
-    Effect.gen(function* () {
-      const previous = process.env.OPENCODE_DISABLE_PROJECT_CONFIG
-      let scanned = false
-      process.env.OPENCODE_DISABLE_PROJECT_CONFIG = "1"
+  for (const mode of ["flag", "cold"] as const) {
+    it.effect(`honors the project instruction opt-out: ${mode}`, () =>
+      Effect.gen(function* () {
+        const previous = process.env.OPENCODE_DISABLE_PROJECT_CONFIG
+        let scanned = false
+        if (mode === "flag") process.env.OPENCODE_DISABLE_PROJECT_CONFIG = "1"
+        else delete process.env.OPENCODE_DISABLE_PROJECT_CONFIG
 
-      yield* SystemContextRegistry.Service.pipe(
-        Effect.flatMap((service) => service.load()),
-        Effect.provide(
-          instructionLayer({
-            config: "/global",
-            filesystemLayer: Layer.effect(
-              FSUtil.Service,
-              FSUtil.Service.pipe(
-                Effect.map((fs) => FSUtil.Service.of({ ...fs, up: () => Effect.sync(() => ((scanned = true), [])) })),
+        yield* SystemContextRegistry.Service.pipe(
+          Effect.flatMap((service) => service.load()),
+          Effect.provide(
+            instructionLayer({
+              config: "/global",
+              filesystemLayer: Layer.effect(
+                FSUtil.Service,
+                FSUtil.Service.pipe(
+                  Effect.map((fs) => FSUtil.Service.of({ ...fs, up: () => Effect.sync(() => ((scanned = true), [])) })),
+                ),
+              ).pipe(Layer.provide(LayerNode.compile(FSUtil.node))),
+              locationServiceLayer: Layer.succeed(
+                Location.Service,
+                Location.Service.of({ ...location({ directory: AbsolutePath.make("/repo") }), cold: mode === "cold" }),
               ),
-            ).pipe(Layer.provide(LayerNode.compile(FSUtil.node))),
-            locationServiceLayer: Layer.succeed(
-              Location.Service,
-              Location.Service.of(location({ directory: AbsolutePath.make("/repo") })),
-            ),
-          }),
-        ),
-        Effect.ensuring(
-          Effect.sync(() => {
-            if (previous === undefined) delete process.env.OPENCODE_DISABLE_PROJECT_CONFIG
-            else process.env.OPENCODE_DISABLE_PROJECT_CONFIG = previous
-          }),
-        ),
-      )
+            }),
+          ),
+          Effect.ensuring(
+            Effect.sync(() => {
+              if (previous === undefined) delete process.env.OPENCODE_DISABLE_PROJECT_CONFIG
+              else process.env.OPENCODE_DISABLE_PROJECT_CONFIG = previous
+            }),
+          ),
+        )
 
-      expect(scanned).toBe(false)
-    }),
-  )
+        expect(scanned).toBe(false)
+      }),
+    )
+  }
 
   it.effect("does not discover project instructions outside the canonical project root", () =>
     Effect.gen(function* () {

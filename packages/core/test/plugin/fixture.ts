@@ -8,6 +8,7 @@ import { LayerNodePlatform } from "@opencode-ai/core/effect/app-node-platform"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { EventV2 } from "@opencode-ai/core/event"
 import { FileSystem } from "@opencode-ai/core/filesystem"
+import { Global } from "@opencode-ai/core/global"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { Integration } from "@opencode-ai/core/integration"
 import { Location } from "@opencode-ai/core/location"
@@ -31,6 +32,7 @@ export const PluginTestLayer = AppNodeBuilder.build(
   LayerNode.group([
     FileSystem.node,
     FSUtil.node,
+    Global.node,
     Location.node,
     Npm.node,
     Credential.node,

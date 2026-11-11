@@ -87,7 +87,7 @@ export function buildLocationServiceMap(
   return Layer.effect(
     LocationServiceMap.Service,
     LayerMap.make(
-      (ref: Location.Ref) => {
+      (ref: Location.ContextRef) => {
         const allReplacements = replacements.concat([[Location.node, Location.boundNode(ref)]])
         // Apply replacements during hoist, not afterward: replacements can
         // introduce new tagged dependencies (Location.boundNode depends on

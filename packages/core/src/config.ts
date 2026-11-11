@@ -6,10 +6,12 @@ import { type ParseError, parse } from "jsonc-parser"
 import { Context, Effect, Layer, Option, Schema } from "effect"
 import { Permission } from "@opencode-ai/schema/permission"
 import { FSUtil } from "./fs-util"
+import { Flag } from "./flag/flag"
 import { Global } from "./global"
 import { Location } from "./location"
 import { Policy } from "./policy"
 import { AbsolutePath } from "./schema"
+import { ConfigSinCodigo } from "./config/sin-codigo"
 import { ConfigAgent } from "./config/agent"
 import { Confianza } from "./config/confianza"
 import { ConfigAttachments } from "./config/attachments"
@@ -150,7 +152,10 @@ const layer = Layer.effect(
       if (!text) return
 
       const errors: ParseError[] = []
-      const input: unknown = parse(text, errors, { allowTrailingComma: true })
+      const parsed: unknown = parse(text, errors, { allowTrailingComma: true })
+      const input = ConfigSinCodigo.carpetaSinCodigo(path.dirname(filepath), global.home)
+        ? ConfigSinCodigo.limpiarInfo(parsed)
+        : parsed
       if (errors.length) return
 
       const info = Option.getOrUndefined(
@@ -182,15 +187,16 @@ const layer = Layer.effect(
     const locationIsGlobal = path.resolve(location.directory) === path.resolve(global.config)
     // Read configuration once when this location opens. Later calls reuse these
     // values until the location is reopened.
-    const discovered = locationIsGlobal
-      ? []
-      : yield* fs
-          .up({
-            targets: [".opencode", ...names.toReversed()],
-            start: location.directory,
-            stop: tope,
-          })
-          .pipe(Effect.orDie)
+    const discovered =
+      locationIsGlobal || Flag.OPENCODE_DISABLE_PROJECT_CONFIG || location.cold === true
+        ? []
+        : yield* fs
+            .up({
+              targets: [".opencode", ...names.toReversed()],
+              start: location.directory,
+              stop: tope,
+            })
+            .pipe(Effect.orDie)
     const directories = [
       globalDirectory,
       ...discovered
