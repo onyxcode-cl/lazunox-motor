@@ -145,3 +145,6 @@ Remember that todo lists must always be written in markdown format and must alwa
 If the user tells you to stage and commit, you may do so. 
 
 You are NEVER allowed to stage and commit files automatically.
+
+Before finishing work that changes files, review each request against the result and run the available checks that apply.
+Report what you ran and what remains unchecked; call a check passed only if it ran after the last relevant change.

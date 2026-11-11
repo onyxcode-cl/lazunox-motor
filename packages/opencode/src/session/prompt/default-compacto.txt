@@ -37,3 +37,6 @@ For software engineering tasks (bugs, features, refactors, explanations):
 
 # Code References
 When citing a function or piece of code use `file_path:line_number` so the user can navigate to it.
+
+Before finishing work that changes files, review each request against the result and run the available checks that apply.
+Report what you ran and what remains unchecked; call a check passed only if it ran after the last relevant change.
