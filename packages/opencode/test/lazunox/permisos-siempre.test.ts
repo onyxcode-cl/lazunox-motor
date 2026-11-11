@@ -2,7 +2,7 @@ import { describe, expect, test } from "bun:test"
 import fs from "node:fs"
 import os from "node:os"
 import path from "node:path"
-import { activo, archivo, cargar, dir, guardar, olvidar, persistible } from "../../src/permission/siempre-disco"
+import { activo, archivo, cargar, dir, guardar, leer, olvidar, persistible } from "../../src/permission/siempre-disco"
 import { evaluate } from "../../src/permission"
 
 const ON = { LAZUNOX_PERMISSION_PERSIST: "1" } as NodeJS.ProcessEnv
@@ -78,5 +78,72 @@ describe("evaluate: orden de reglas", () => {
     const allow = { permission: "bash", pattern: "rm *", action: "allow" as const }
     expect(evaluate("bash", "rm -rf x", [deny]).action).toBe("deny")
     expect(evaluate("bash", "rm -rf x", [deny], [allow]).action).toBe("allow")
+  })
+})
+
+// Lazunox (motor-18, C): patrones que equivalen a «todo», nombres con comodines y lectura sin enlaces.
+describe("permisos «siempre»: endurecimiento (motor-18)", () => {
+  test("rechaza patrones de solo comodines y espacios; el `*` exacto solo para la herramienta de un conector", () => {
+    for (const pattern of ["*", "**", "?*", "*?", "* *", " ** ", "?", "*\t*"])
+      expect([pattern, persistible({ permission: "bash", pattern }, ON)]).toEqual([pattern, false])
+    for (const pattern of ["**", "?*", "* *"])
+      expect([pattern, persistible({ permission: "context7_query-docs", pattern }, ON)]).toEqual([pattern, false])
+    expect(persistible({ permission: "context7_query-docs", pattern: "*" }, ON)).toBe(true)
+    // Algo que no es herramienta propia ni de conector (sin «servidor_herramienta») tampoco guarda «*».
+    expect(persistible({ permission: "cuaderno", pattern: "*" }, ON)).toBe(false)
+    // Lo estrecho sigue valiendo.
+    expect(persistible({ permission: "bash", pattern: "git status *" }, ON)).toBe(true)
+    expect(persistible({ permission: "read", pattern: "/p/*.md" }, ON)).toBe(true)
+  })
+  test("rechaza nombres de permiso con comodines o espacios", () => {
+    for (const permission of ["*", "bas?", "b*", "context7_*", "bash ", "a b"])
+      expect([permission, persistible({ permission, pattern: "ls" }, ON)]).toEqual([permission, false])
+  })
+  test("al cargar, lo plantado amplio se descarta y lo estrecho queda", () => {
+    const base = tmp()
+    fs.writeFileSync(
+      archivo("/p", base),
+      JSON.stringify({
+        directory: "/p",
+        rules: [
+          { permission: "bash", pattern: "?*" },
+          { permission: "*", pattern: "*" },
+          { permission: "bas?", pattern: "ls" },
+          { permission: "bash", pattern: "* *" },
+          { permission: "bash", pattern: "ls *" },
+        ],
+      }),
+    )
+    expect(cargar("/p", base, ON)).toEqual([{ permission: "bash", pattern: "ls *" }])
+    expect(leer("/p", base, ON).ignoradas).toBe(4)
+  })
+  test("no sigue enlaces: un <huella>.json que apunta a otro archivo no se carga", () => {
+    if (process.platform === "win32") return
+    const base = tmp()
+    const fuera = path.join(tmp(), "plantado.json")
+    fs.writeFileSync(fuera, JSON.stringify({ directory: "/p", rules: [{ permission: "bash", pattern: "rm *" }] }))
+    fs.symlinkSync(fuera, archivo("/p", base))
+    expect(cargar("/p", base, ON)).toEqual([])
+    expect(leer("/p", base, ON).estado).toBe("ausente")
+  })
+  test("solo archivos regulares: una carpeta o un FIFO con ese nombre no se lee (ni se queda esperando)", () => {
+    const base = tmp()
+    fs.mkdirSync(archivo("/p", base))
+    expect(cargar("/p", base, ON)).toEqual([])
+    if (process.platform === "win32") return
+    const base2 = tmp()
+    const r = Bun.spawnSync({ cmd: ["mkfifo", archivo("/p", base2)] })
+    if (r.exitCode !== 0) return
+    expect(cargar("/p", base2, ON)).toEqual([])
+  })
+  test("LAZUNOX_PERMISSION_PERSIST=0 (o ausente): ni carga ni guarda aunque el archivo exista", () => {
+    const base = tmp()
+    guardar("/p", [{ permission: "bash", pattern: "ls *" }], base, ON)
+    expect(cargar("/p", base, ON)).toEqual([{ permission: "bash", pattern: "ls *" }])
+    const OFF = { LAZUNOX_PERMISSION_PERSIST: "0" } as NodeJS.ProcessEnv
+    expect(activo(OFF)).toBe(false)
+    expect(cargar("/p", base, OFF)).toEqual([])
+    guardar("/p", [{ permission: "bash", pattern: "pwd" }], base, OFF)
+    expect(cargar("/p", base, ON)).toEqual([{ permission: "bash", pattern: "ls *" }])
   })
 })

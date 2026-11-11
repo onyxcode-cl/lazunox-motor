@@ -18,6 +18,11 @@ const PROPIAS = new Set([
   "task", "webfetch", "websearch", "skill", "question", "read", "glob", "grep", "list", "todowrite", "todoread", "lsp",
 ])
 
+/**
+ * Interruptor: SOLO `LAZUNOX_PERMISSION_PERSIST=1` enciende la persistencia en disco; ausente, `0` o cualquier otro valor = apagada (ni se
+ * guarda ni se carga). La app puede apagarla en Tareas con jaula (la carpeta vive en la carpeta privada, que la tarea puede escribir) y pasar
+ * las reglas recordadas por configuración (`permission` en OPENCODE_CONFIG_CONTENT).
+ */
 export const activo = (env: NodeJS.ProcessEnv = process.env) => env.LAZUNOX_PERMISSION_PERSIST === "1"
 
 /** Lista de exclusión: nombres exactos o con «*» al final (`computer_*`). */
@@ -26,17 +31,59 @@ const excluidos = (env: NodeJS.ProcessEnv = process.env) => {
   return (permission: string) => lista.some((x) => (x.endsWith("*") ? permission.startsWith(x.slice(0, -1)) : permission === x))
 }
 
-/** ¿Es seguro recordar esta regla entre reinicios? */
+/** Herramienta de un conector («servidor_herramienta»): su «siempre» se guarda con el patrón `*` exacto (el motor no le da otro). */
+const deConector = (permission: string) => !PROPIAS.has(permission) && /^[A-Za-z0-9-]+_[A-Za-z0-9_.-]+$/.test(permission)
+
+/** ¿El patrón queda vacío al quitarle los comodines (`*`, `?`) y los espacios? (`*`, `**`, `?*`, `* *`… equivalen a «todo»). */
+export const soloComodines = (pattern: string) => pattern.replace(/[*?\s]/g, "") === ""
+
+/**
+ * ¿Es seguro recordar (o cargar) esta regla entre reinicios? Mismo criterio que la app (`isPersistableRule`, permission-store.ts):
+ * - el NOMBRE del permiso no lleva comodines ni espacios (el motor también compara el nombre con comodines: `*` aprobaría todo);
+ * - un patrón que solo tiene comodines y espacios no vale; la única excepción es el `*` exacto de la herramienta de un conector;
+ * - nada de la lista de exclusión.
+ */
 export const persistible = (r: Regla, env: NodeJS.ProcessEnv = process.env) =>
   typeof r.permission === "string" &&
   typeof r.pattern === "string" &&
   r.permission.length > 0 &&
   r.permission.length <= 200 &&
+  !/[*?\s]/.test(r.permission) &&
   r.pattern.length > 0 &&
   r.pattern.length <= 500 &&
-  (r.pattern.trim() !== "*" || !PROPIAS.has(r.permission)) &&
+  (!soloComodines(r.pattern) || (r.pattern === "*" && deConector(r.permission))) &&
   !/[\r\n\0]/.test(r.pattern) &&
   !excluidos(env)(r.permission)
+
+/** Tope de lo que se lee de un archivo de reglas (500 reglas cortas caben de sobra). */
+const MAX_ARCHIVO = 1024 * 1024
+
+/**
+ * Lee el archivo de reglas SIN seguir enlaces y solo si es un archivo regular (la carpeta vive donde la tarea puede escribir: un enlace
+ * `<huella>.json → ../../carpeta/x.json` cargaría lo que quisiera). Con O_NOFOLLOW donde existe; si no (Windows), lstat antes y fstat
+ * después de abrir, comparando el mismo archivo. Lanza si no se puede (los llamadores lo tratan como «ausente»).
+ */
+export const leerSinEnlaces = (file: string): string => {
+  const NOFOLLOW = (fs.constants as Record<string, number>).O_NOFOLLOW ?? 0
+  const antes = fs.lstatSync(file)
+  if (!antes.isFile()) throw new Error("no es un archivo regular")
+  const fd = fs.openSync(file, fs.constants.O_RDONLY | NOFOLLOW)
+  try {
+    const st = fs.fstatSync(fd)
+    if (!st.isFile() || st.ino !== antes.ino || st.dev !== antes.dev) throw new Error("no es un archivo regular")
+    if (st.size > MAX_ARCHIVO) throw new Error("archivo demasiado grande")
+    const buf = Buffer.alloc(st.size)
+    let leido = 0
+    while (leido < st.size) {
+      const n = fs.readSync(fd, buf, leido, st.size - leido, leido)
+      if (n <= 0) break
+      leido += n
+    }
+    return buf.subarray(0, leido).toString("utf-8")
+  } finally {
+    fs.closeSync(fd)
+  }
+}
 
 /** LAZUNOX_PERMISSION_DIR fija la carpeta (la app la pone dentro de su carpeta de datos); si no, la de estado del motor. */
 export const dir = (env: NodeJS.ProcessEnv = process.env) =>
@@ -48,7 +95,7 @@ export const archivo = (directory: string, base = dir()) => path.join(base, `${h
 export const cargar = (directory: string, base = dir(), env: NodeJS.ProcessEnv = process.env): Regla[] => {
   if (!activo(env)) return []
   try {
-    const j = JSON.parse(fs.readFileSync(archivo(directory, base), "utf-8")) as { directory?: unknown; rules?: unknown }
+    const j = JSON.parse(leerSinEnlaces(archivo(directory, base))) as { directory?: unknown; rules?: unknown }
     if (j.directory !== directory || !Array.isArray(j.rules)) return []
     return j.rules.filter((r): r is Regla => !!r && typeof r === "object" && persistible(r as Regla, env)).slice(0, 500)
   } catch {
@@ -86,7 +133,7 @@ export type Lectura = { reglas: Guardada[]; estado: "ok" | "ausente" | "corrupto
 export const leer = (directory: string, base = dir(), env: NodeJS.ProcessEnv = process.env): Lectura => {
   let texto: string
   try {
-    texto = fs.readFileSync(archivo(directory, base), "utf-8")
+    texto = leerSinEnlaces(archivo(directory, base))
   } catch {
     return { reglas: [], estado: "ausente", ignoradas: 0 }
   }
@@ -138,7 +185,7 @@ const conCerrojo = <T>(directory: string, base: string, fn: () => T): T => {
 const escribir = (directory: string, base: string, reglas: Regla[]) => {
   const file = archivo(directory, base)
   const tmp = `${file}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
-  fs.writeFileSync(tmp, JSON.stringify({ directory, rules: reglas.slice(-500) }), { mode: 0o600 })
+  fs.writeFileSync(tmp, JSON.stringify({ directory, rules: reglas.slice(-500) }), { mode: 0o600, flag: "wx" })
   fs.renameSync(tmp, file)
 }
 
