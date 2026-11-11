@@ -21,7 +21,7 @@ import { httpApiLayer, requestInDirectory } from "../server/httpapi-layer"
 const ON = { LAZUNOX_PERMISSION_PERSIST: "1" } as NodeJS.ProcessEnv
 const tmp = () => fs.mkdtempSync(path.join(os.tmpdir(), "lzx-siempre-"))
 const A = { permission: "bash", pattern: "git status *" }
-const B = { permission: "bash", pattern: "bun test *" }
+const B = { permission: "bash", pattern: "npm test *" }
 const C = { permission: "context7_query-docs", pattern: "*" }
 
 describe("siempre-disco: gestión", () => {
@@ -30,7 +30,7 @@ describe("siempre-disco: gestión", () => {
     guardar("/p", [A, B, C], base, ON)
     const apagado = leer("/p", base, {} as NodeJS.ProcessEnv)
     expect(apagado.estado).toBe("ok")
-    expect(apagado.reglas.map((r) => r.pattern)).toEqual(["git status *", "bun test *", "*"])
+    expect(apagado.reglas.map((r) => r.pattern)).toEqual(["git status *", "npm test *", "*"])
     expect(apagado.reglas[0]!.id).toBe(idDe(A))
     expect(leer("/p", base, ON).reglas.map((r) => r.id)).toEqual(apagado.reglas.map((r) => r.id))
     expect(leer("/otra", base, ON)).toEqual({ reglas: [], estado: "ausente", ignoradas: 0 })
@@ -160,7 +160,7 @@ describe("rutas /permission/siempre", () => {
         yield* requestInDirectory("/permission/siempre", directory),
       )
       expect(lista.activo).toBe(false)
-      expect(lista.reglas.map((r) => r.pattern)).toEqual(["git status *", "bun test *", "*"])
+      expect(lista.reglas.map((r) => r.pattern)).toEqual(["git status *", "npm test *", "*"])
       expect(lista.aviso).toBeUndefined()
 
       const uno = yield* requestInDirectory(`/permission/siempre/${lista.reglas[1]!.id}`, directory, { method: "DELETE" })
@@ -220,9 +220,9 @@ describe("Permission.siempre (servicio)", () => {
       expect(yield* svc.siempre!.borrar(lista.reglas[0]!.id)).toBe(false)
       // Ya no está aprobada: la petición queda esperando respuesta (pendiente) en vez de pasar sola.
       expect(yield* pide("git status -s")).toEqual(Option.none())
-      expect(yield* pide("bun test x")).toEqual(Option.some("aprobada"))
+      expect(yield* pide("npm test x")).toEqual(Option.some("aprobada"))
       expect(yield* svc.siempre!.borrarTodos()).toBe(1)
-      expect(yield* pide("bun test x")).toEqual(Option.none())
+      expect(yield* pide("npm test x")).toEqual(Option.none())
     }),
   )
 })

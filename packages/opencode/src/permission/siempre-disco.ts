@@ -37,6 +37,22 @@ const deConector = (permission: string) => !PROPIAS.has(permission) && /^[A-Za-z
 /** ¿El patrón queda vacío al quitarle los comodines (`*`, `?`) y los espacios? (`*`, `**`, `?*`, `* *`… equivalen a «todo»). */
 export const soloComodines = (pattern: string) => pattern.replace(/[*?\s]/g, "") === ""
 
+/** Patrones de shell demasiado generales no deben sobrevivir entre sesiones. */
+const bashPersistible = (pattern: string) => {
+  // Se rechazan construcciones de shell y escapes: no se intenta interpretar un programa arbitrario.
+  if (/[|&;<>$`(){}\\]/.test(pattern)) return false
+  const words = pattern.replace(/["']/g, "").trim().split(/\s+/)
+  const command = words[0]?.split("/").pop()?.toLowerCase() ?? ""
+  if (!command || /[*?\[\]]/.test(command)) return false
+  const genericos = new Set(["env", "xargs", "sudo", "eval", "exec", "nohup", "time", "python", "python3", "node", "bun", "deno", "ruby", "perl", "php", "osascript", "docker", "kubectl", "ssh"])
+  if (genericos.has(command)) return false
+  if (["bash", "sh", "zsh"].includes(command))
+    return !words.slice(1).some((w) => /^-.*c/.test(w) || /[*?\[\]]/.test(w))
+  if (["git", "npm", "npx", "pnpm", "yarn"].includes(command))
+    return !!words[1] && !/^[-*?\[]/.test(words[1])
+  return true
+}
+
 /**
  * ¿Es seguro recordar (o cargar) esta regla entre reinicios? Mismo criterio que la app (`isPersistableRule`, permission-store.ts):
  * - el NOMBRE del permiso no lleva comodines ni espacios (el motor también compara el nombre con comodines: `*` aprobaría todo);
@@ -53,6 +69,7 @@ export const persistible = (r: Regla, env: NodeJS.ProcessEnv = process.env) =>
   r.pattern.length <= 500 &&
   (!soloComodines(r.pattern) || (r.pattern === "*" && deConector(r.permission))) &&
   !/[\r\n\0]/.test(r.pattern) &&
+  (r.permission !== "bash" || bashPersistible(r.pattern)) &&
   !excluidos(env)(r.permission)
 
 /** Tope de lo que se lee de un archivo de reglas (500 reglas cortas caben de sobra). */

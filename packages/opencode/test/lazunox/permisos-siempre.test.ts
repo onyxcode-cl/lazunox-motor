@@ -147,3 +147,26 @@ describe("permisos «siempre»: endurecimiento (motor-18)", () => {
     expect(cargar("/p", base, ON)).toEqual([{ permission: "bash", pattern: "ls *" }])
   })
 })
+
+
+describe("permisos de bash: lanzadores y composición", () => {
+  const unsafe = [
+    "bash -c *", "sh -c *", "zsh -c *", "bash -lc *", "env *", "xargs *", "sudo *", "eval *", "exec *",
+    "nohup *", "time *", "python *", "python3 *", "node *", "bun *", "deno *", "ruby *", "perl *", "php *",
+    "osascript *", "git", "npm", "npx", "pnpm", "yarn", "docker *", "kubectl *", "ssh *", "git *",
+    " '/usr/bin/bash'   '-c' *", "b''ash -c *", "ls | cat", "ls > salida", "echo $(id)", "echo `id`", "ls; id",
+  ]
+  test("rechaza cada prefijo genérico y sintaxis compuesta, conserva órdenes concretas", () => {
+    for (const pattern of unsafe) expect([pattern, persistible({ permission: "bash", pattern }, ON)]).toEqual([pattern, false])
+    for (const pattern of ["git status *", "npm test", "ls *.txt"])
+      expect([pattern, persistible({ permission: "bash", pattern }, ON)]).toEqual([pattern, true])
+  })
+  test("ni guarda ni carga patrones inseguros ya plantados", () => {
+    const base = tmp()
+    const rules = unsafe.map((pattern) => ({ permission: "bash", pattern }))
+    guardar("/p", rules, base, ON)
+    expect(cargar("/p", base, ON)).toEqual([])
+    fs.writeFileSync(archivo("/p", base), JSON.stringify({ directory: "/p", rules: [...rules, { permission: "bash", pattern: "git status *" }] }))
+    expect(cargar("/p", base, ON)).toEqual([{ permission: "bash", pattern: "git status *" }])
+  })
+})
