@@ -124,6 +124,37 @@ describe("regla", () => {
     expect(n).not.toContain("LAZUNOX_CENTINELA")
     expect(n).not.toContain("OPENCODE_SERVER_PASSWORD")
   })
+  test("H: por nombre (forma de secreto) y por VALOR, con excepciones y variables del proyecto", () => {
+    const base: Record<string, string> = {
+      PATH: "/bin",
+      INOCENTE_A: "ghp_" + "a".repeat(36),
+      INOCENTE_B: "-----BEGIN OPENSSH PRIVATE KEY-----\nxx",
+      INOCENTE_C: "AKIA" + "B".repeat(16),
+      INOCENTE_D: "postgres://usuario:clave@db.invalid/x",
+      INOCENTE_E: "xoxb-" + "1".repeat(12),
+      INOCENTE_F: "sk-ant-" + "c".repeat(30),
+      INOCENTE_G: "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTYifQ.abcdefghijklmn",
+      NORMAL: "hola mundo",
+      DB_PASSWORD: "x",
+      MYPASSWORD: "x",
+      NPM_AUTH: "x",
+      GPG_KEY: "x",
+      SSH_AUTH_SOCK: "/tmp/agent",
+      GPG_TTY: "/dev/ttys001",
+      HTTP_PROXY: "http://lzx:tok@127.0.0.1:9",
+      https_proxy: "http://lzx:tok@127.0.0.1:9",
+      SSL_CERT_FILE: "/c.pem",
+      NODE_EXTRA_CA_CERTS: "/c.pem",
+      XDG_CONFIG_HOME: "/x",
+      MI_TOKEN_PROYECTO: "ghp_" + "z".repeat(36),
+      LAZUNOX_VARIABLES_PROYECTO: "MI_TOKEN_PROYECTO",
+    }
+    const n = Object.keys(entornoLimpio(base, base)).sort()
+    expect(n).toEqual(
+      ["GPG_TTY", "HTTP_PROXY", "MI_TOKEN_PROYECTO", "NODE_EXTRA_CA_CERTS", "NORMAL", "PATH", "SSH_AUTH_SOCK", "SSL_CERT_FILE",
+        "XDG_CONFIG_HOME", "https_proxy"].sort(),
+    )
+  })
   test("bandera: ausente = encendido; apagan 0, off, false", () => {
     expect(entornoLimpioActivo({})).toBe(true)
     expect(entornoLimpioActivo({ LAZUNOX_ENTORNO_LIMPIO: "1" })).toBe(true)

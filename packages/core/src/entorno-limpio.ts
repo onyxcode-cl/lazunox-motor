@@ -10,6 +10,9 @@
 //    persona y que no son secretas (`LAZUNOX_PYTHON`, `LAZUNOX_BIN_DIR`, `LAZUNOX_NODE`, `LAZUNOX_CHROMIUM`, las de ArtCraft);
 //  - fuera las claves de servicios de IA conocidas y cualquier nombre con forma de credencial (`*_API_KEY`, `*_TOKEN`, `*_SECRET`,
 //    `*PASSWORD*`, `*_ACCESS_KEY*`, `*_PRIVATE_KEY`, `*_CREDENTIALS`…);
+//  - (H) también se quita una variable cuyo VALOR tiene forma de secreto (clave PEM, tokens de GitHub/GitLab/Google/AWS/Stripe/Slack,
+//    claves sk-…, JWT, usuario:clave en una URL), salvo las exentas (PATH, HOME, SSH_AUTH_SOCK, GPG_TTY, proxies, certificados,
+//    XDG_*) y las del proyecto que la app nombre en LAZUNOX_VARIABLES_PROYECTO;
 //  - todo lo demás pasa (PATH, HOME, TMPDIR, LANG/LC_*, TERM, proxies HTTP(S)_PROXY/NO_PROXY/NODE_USE_ENV_PROXY, XDG_*, GIT_AUTHOR_*…).
 // Por qué lista negra y no blanca: el motor también corre fuera de la app (desarrollo, pruebas, Windows/WSL) y sus hijos son herramientas
 // generales (LSP, formateadores, compiladores) que necesitan variables que no se pueden enumerar (JAVA_HOME, GOPATH, CARGO_HOME,
@@ -56,14 +59,77 @@ export const LAZUNOX_PARA_HIJOS = [
  * AWS_BEARER_TOKEN_BEDROCK, GOOGLE_APPLICATION_CREDENTIALS, HF_TOKEN…) y tokens en general (GITHUB_TOKEN, NPM_TOKEN…).
  */
 const FORMA_DE_CREDENCIAL =
-  /(^|_)(API_?KEYS?|TOKENS?|SECRETS?|SECRET_KEY|PASSWORD|PASSWD|PASSPHRASE|ACCESS_KEY(_ID)?|PRIVATE_KEY|CREDENTIALS?|AUTH_CONTENT|SESSION_KEY)($|_)/
+  /(^|_)(API_?KEYS?|TOKENS?|SECRETS?|SECRET_KEY|PASSWORD|PASSWD|PASSPHRASE|ACCESS_KEY(_ID)?|PRIVATE_KEY|CREDENTIALS?|CREDS|AUTH|AUTH_CONTENT|SESSION_KEY|PRIVATE|KEY)($|_)|PASSWORD|PASSWD/
 
-/** ¿Es una variable que ningún hijo debe ver? Sin distinguir mayúsculas (en Windows los nombres no las distinguen). */
-export function nombreOculto(nombre: string): boolean {
+/**
+ * Lazunox (motor-18, H; idea de Gemini CLI, services/environmentSanitization.ts: filtrar también por VALOR; listas y expresiones
+ * propias, no copiadas). Valores con forma de secreto, aunque el nombre sea inocente.
+ */
+const VALORES_SECRETOS: RegExp[] = [
+  /-----BEGIN [A-Z ]*PRIVATE KEY-----/, // clave privada PEM
+  /\b(ghp|gho|ghu|ghs|ghr)_[A-Za-z0-9]{20,}/, // GitHub
+  /\bgithub_pat_[A-Za-z0-9_]{20,}/,
+  /\bglpat-[A-Za-z0-9_-]{20,}/, // GitLab
+  /\bAIza[0-9A-Za-z_-]{35}\b/, // Google
+  /\b(AKIA|ASIA)[0-9A-Z]{16}\b/, // AWS (fija y temporal)
+  /\b(sk|rk)_(live|test)_[A-Za-z0-9]{16,}/, // Stripe
+  /\bxox[abposr]-[A-Za-z0-9-]{10,}/, // Slack
+  /\bsk-(ant-|proj-)?[A-Za-z0-9_-]{20,}/, // claves estilo OpenAI/Anthropic
+  /\beyJ[A-Za-z0-9_-]{8,}\.eyJ[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}/, // JWT
+  /^[a-z][a-z0-9+.-]*:\/\/[^\s/:@]+:[^\s/@]+@/i, // usuario:clave dentro de una URL
+]
+
+/**
+ * Nunca se filtran por nombre ni por valor (sí por familia OPENCODE_/LAZUNOX_): lo que los programas necesitan para funcionar. Los proxies
+ * llevan a propósito el token del proxy de salida de la jaula en la URL; los certificados son públicos.
+ */
+const EXENTAS = new Set([
+  "PATH",
+  "HOME",
+  "SSH_AUTH_SOCK",
+  "SSH_AGENT_PID",
+  "GPG_TTY",
+  "GPG_AGENT_INFO",
+  "HTTP_PROXY",
+  "HTTPS_PROXY",
+  "ALL_PROXY",
+  "NO_PROXY",
+  "NODE_USE_ENV_PROXY",
+  "SSL_CERT_FILE",
+  "SSL_CERT_DIR",
+  "NODE_EXTRA_CA_CERTS",
+  "REQUESTS_CA_BUNDLE",
+  "CURL_CA_BUNDLE",
+  "GIT_SSL_CAINFO",
+  "KEYTIMEOUT",
+])
+
+/** Variables del PROYECTO que la app pasa a propósito (nombres en LAZUNOX_VARIABLES_PROYECTO, separados por comas): no se filtran por forma. */
+const delProyecto = (flags: NodeJS.ProcessEnv = process.env) =>
+  new Set((flags.LAZUNOX_VARIABLES_PROYECTO ?? "").split(",").map((x) => x.trim().toUpperCase()).filter(Boolean))
+
+const exenta = (n: string, flags: NodeJS.ProcessEnv = process.env) => EXENTAS.has(n) || n.startsWith("XDG_") || delProyecto(flags).has(n)
+
+/** ¿Es una variable que ningún hijo debe ver, por su NOMBRE? Sin distinguir mayúsculas (en Windows los nombres no las distinguen). */
+export function nombreOculto(nombre: string, flags: NodeJS.ProcessEnv = process.env): boolean {
   const n = nombre.toUpperCase()
   if ((LAZUNOX_PARA_HIJOS as readonly string[]).includes(n)) return false
   if (PREFIJOS_OCULTOS.some((p) => n.startsWith(p))) return true
+  if (exenta(n, flags)) return false
   return FORMA_DE_CREDENCIAL.test(n)
+}
+
+/** ¿Tiene el VALOR forma de secreto? */
+export function valorSecreto(valor: string): boolean {
+  return VALORES_SECRETOS.some((r) => r.test(valor))
+}
+
+/** Nombre o valor: ¿se oculta? */
+export function oculta(nombre: string, valor: string | undefined, flags: NodeJS.ProcessEnv = process.env): boolean {
+  if (nombreOculto(nombre, flags)) return true
+  const n = nombre.toUpperCase()
+  if ((LAZUNOX_PARA_HIJOS as readonly string[]).includes(n) || exenta(n, flags)) return false
+  return valor !== undefined && valorSecreto(valor)
 }
 
 /** Interruptor `LAZUNOX_ENTORNO_LIMPIO`: ausente o cualquier valor = encendido; apagan "0", "off" y "false". */
@@ -79,7 +145,7 @@ export function entornoLimpio(
 ): Record<string, string> {
   const activo = entornoLimpioActivo(flags)
   const env: Record<string, string> = {}
-  for (const [k, v] of Object.entries(base)) if (v !== undefined && (!activo || !nombreOculto(k))) env[k] = v
+  for (const [k, v] of Object.entries(base)) if (v !== undefined && (!activo || !oculta(k, v, flags))) env[k] = v
   return env
 }
 
@@ -104,7 +170,7 @@ export function extraSinCopias(
   const activo = entornoLimpioActivo(flags)
   for (const [k, v] of Object.entries(extra)) {
     if (v === undefined) continue
-    if (activo && nombreOculto(k) && v !== "" && valorEn(base, k) === v) continue
+    if (activo && oculta(k, v, flags) && v !== "" && valorEn(base, k) === v) continue
     env[k] = v
   }
   return env
