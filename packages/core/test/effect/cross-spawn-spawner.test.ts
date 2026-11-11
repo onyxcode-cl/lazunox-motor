@@ -229,7 +229,7 @@ describe("cross-spawn spawner", () => {
   })
 
   describe("process control", () => {
-    for (const mode of ["exit", "SIGKILL"] as const) {
+    for (const mode of ["exit", "SIGKILL", "delayed reader", "activity", "backpressure"] as const) {
       const test = mode === "SIGKILL" && process.platform === "win32" ? fx.live.skip : fx.live
       test(
         `finishes capture after ${mode} while a grandchild holds stdio`,
@@ -249,14 +249,23 @@ describe("cross-spawn spawner", () => {
           // Lazunox: process.execPath (Bun) en vez de "node" (no siempre está instalado).
           const handle = yield* ChildProcess.make(
             process.execPath,
-            [path.join(import.meta.dir, "../fixture/held-stdio.cjs"), mode, pidFile],
+            [
+              path.join(import.meta.dir, "../fixture/held-stdio.cjs"),
+              mode === "SIGKILL" ? mode : "exit",
+              pidFile,
+              mode,
+            ],
             { stdin: "ignore", forceKillAfter: 100 },
           )
+          const delay = mode === "delayed reader" || mode === "backpressure" ? 1500 : 0
+          if (mode === "backpressure") yield* handle.exitCode.pipe(Effect.timeout("1 second"))
           const [exit, stdout, stderr] = yield* Effect.all(
             [
               Effect.exit(handle.exitCode),
-              decodeByteStream(handle.stdout),
-              decodeByteStream(handle.stderr.pipe(Stream.tap(() => Deferred.succeed(ready, undefined)))),
+              decodeByteStream(handle.stdout).pipe(Effect.delay(delay)),
+              decodeByteStream(handle.stderr.pipe(Stream.tap(() => Deferred.succeed(ready, undefined)))).pipe(
+                Effect.delay(delay),
+              ),
               mode === "SIGKILL"
                 ? Deferred.await(ready).pipe(Effect.andThen(handle.kill({ killSignal: "SIGKILL" })))
                 : Effect.void,
@@ -265,9 +274,21 @@ describe("cross-spawn spawner", () => {
           ).pipe(Effect.timeout("3 seconds"))
 
           // Completion must retain foreground output without waiting for the inherited pipes to close.
-          expect(stdout).toBe("foreground-out")
-          expect(stderr).toBe("foreground-err")
-          expect(Exit.isSuccess(exit)).toBe(mode === "exit")
+          expect(stdout).toBe(
+            mode === "backpressure"
+              ? ("foreground-out\n" + "buffered-out\n".repeat(8192)).trim()
+              : mode === "activity"
+                ? "foreground-out\nlate-out-1\nlate-out-2"
+                : "foreground-out",
+          )
+          expect(stderr).toBe(
+            mode === "backpressure"
+              ? ("foreground-err\n" + "buffered-err\n".repeat(8192)).trim()
+              : mode === "activity"
+                ? "foreground-err\nlate-err-1\nlate-err-2"
+                : "foreground-err",
+          )
+          expect(Exit.isSuccess(exit)).toBe(mode !== "SIGKILL")
           if (Exit.isSuccess(exit)) expect(exit.value).toBe(ChildProcessSpawner.ExitCode(0))
           expect(yield* handle.isRunning).toBe(false)
           expect(alive(Number(yield* Effect.promise(() => fs.readFile(pidFile, "utf8"))))).toBe(true)

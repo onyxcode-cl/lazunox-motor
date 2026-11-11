@@ -802,7 +802,7 @@ export const ShellTool = Tool.define(
           yield* Effect.addFinalizer(closeSink)
           const handle = yield* spawner.spawn(cmd(input.shell, input.command, input.cwd, input.env))
 
-          yield* Effect.forkScoped(
+          const reader = yield* Effect.forkScoped(
             Stream.runForEach(Stream.decodeText(handle.all), (chunk) => {
               const size = Buffer.byteLength(chunk, "utf-8")
               list.push({ text: chunk, size })
@@ -873,6 +873,8 @@ export const ShellTool = Tool.define(
             yield* handle.kill({ forceKillAfter: "3 seconds" }).pipe(Effect.catch(() => Effect.void))
           }
 
+          // Process completion can precede delivery of bytes already buffered by the spawner.
+          yield* Fiber.join(reader)
           return exit.kind === "exit" ? exit.code : null
         }),
       ).pipe(Effect.orDie)
@@ -1004,8 +1006,8 @@ export const ShellTool = Tool.define(
       yield* handle.exitCode.pipe(
         Effect.map((code) => Number(code) as number | null),
         Effect.catch(() => Effect.succeed(null as number | null)),
-        // Deja drenar la salida pendiente (máx. 2 s por si un hijo mantiene abierta la tubería).
-        Effect.tap(() => Fiber.await(reader).pipe(Effect.timeoutOption("2 seconds"))),
+        // El spawner acota las tuberías heredadas; el lector debe consumir todos los bytes capturados.
+        Effect.tap(() => Fiber.await(reader)),
         Effect.flatMap(finish),
         Effect.forkIn(scope),
       )

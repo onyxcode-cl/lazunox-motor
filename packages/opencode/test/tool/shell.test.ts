@@ -212,6 +212,29 @@ describe("tool.shell git endurecido (lazunox.15)", () => {
 })
 
 describe("tool.shell", () => {
+  it.live(
+    "preserves complete output from 200 immediately exiting commands",
+    () =>
+      runIn(
+        projectRoot,
+        Effect.gen(function* () {
+          const expected = Array.from({ length: 32 }, (_, i) => `${i + 1}\n`).join("")
+          yield* Effect.forEach(
+            Array.from({ length: 200 }, (_, i) => i),
+            (i) =>
+              Effect.gen(function* () {
+                const result = yield* run({
+                  command: process.platform === "win32" ? fill("lines", 32) : `printf '${expected}'`,
+                })
+                expect(result.metadata.exit, `command ${i + 1}`).toBe(0)
+                expect(result.output.replaceAll("\r\n", "\n"), `command ${i + 1}`).toBe(expected)
+              }),
+          )
+        }),
+      ),
+    120_000,
+  )
+
   each("basic", () =>
     runIn(
       projectRoot,

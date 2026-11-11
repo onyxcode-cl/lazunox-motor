@@ -96,7 +96,6 @@ const toPlatformError = (
 }
 
 type ExitSignal = Deferred.Deferred<readonly [code: number | null, signal: NodeJS.Signals | null]>
-type Spawned = readonly [process: NodeChildProcess.ChildProcess, closed: ExitSignal, exited: ExitSignal]
 
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem
@@ -251,16 +250,16 @@ export const make = Effect.gen(function* () {
     stopOutput: Deferred.Deferred<void>,
   ) => {
     const capture = (readable: NodeChildProcess.ChildProcess["stdout"], name: string) => {
-      if (!readable) return Stream.empty
+      if (!readable) return { stream: Stream.empty, drain: () => {}, end: () => {} }
       // Bun resumes stdio on exit; retain bytes before the lazy Effect reader attaches.
       const buffer = new PassThrough()
+      const write = (chunk: Uint8Array) => void buffer.write(chunk)
       readable.on("error", (cause) => buffer.destroy(toError(cause)))
       readable.pipe(buffer)
-      return NodeStream.fromReadable({
+      const stream = NodeStream.fromReadable({
         evaluate: () => buffer,
         onError: (cause) => toPlatformError(`fromReadable(${name})`, toError(cause), command),
       }).pipe(
-        Stream.interruptWhen(Deferred.await(stopOutput)),
         Stream.ensuring(
           Effect.gen(function* () {
             // Only the capture deadline transfers the reader back to the process scope.
@@ -269,21 +268,67 @@ export const make = Effect.gen(function* () {
           }),
         ),
       )
+      return {
+        stream,
+        drain: () => {
+          if (readable.readableEnded || readable.destroyed) return
+          // After exit, drain already-written bytes even before a slow consumer makes room.
+          readable.unpipe(buffer)
+          readable.on("data", write)
+          readable.once("end", () => buffer.end())
+          readable.resume()
+        },
+        end: () => {
+          readable.off("data", write)
+          buffer.end()
+          discard(readable)
+        },
+      }
     }
 
-    let stdout = capture(proc.stdout, "stdout")
-    let stderr = capture(proc.stderr, "stderr")
-    if (Sink.isSink(out.stream)) stdout = Stream.transduce(stdout, out.stream)
-    if (Sink.isSink(err.stream)) stderr = Stream.transduce(stderr, err.stream)
+    const stdout = capture(proc.stdout, "stdout")
+    const stderr = capture(proc.stderr, "stderr")
+    const sout = Sink.isSink(out.stream) ? Stream.transduce(stdout.stream, out.stream) : stdout.stream
+    const serr = Sink.isSink(err.stream) ? Stream.transduce(stderr.stream, err.stream) : stderr.stream
 
-    return { stdout, stderr, all: Stream.merge(stdout, stderr) }
+    return {
+      stdout: sout,
+      stderr: serr,
+      all: Stream.merge(sout, serr),
+      drain: () => {
+        stdout.drain()
+        stderr.drain()
+      },
+      end: () => {
+        stdout.end()
+        stderr.end()
+      },
+    }
   }
 
   const launchProcess = (command: ChildProcess.StandardCommand, opts: NodeChildProcess.SpawnOptions) =>
-    Effect.callback<Spawned, PlatformError.PlatformError>((resume) => {
+    Effect.callback<
+      readonly [
+        NodeChildProcess.ChildProcess,
+        ExitSignal,
+        ExitSignal,
+        Deferred.Deferred<void>,
+        ReturnType<typeof setupOutput>,
+      ],
+      PlatformError.PlatformError
+    >((resume) => {
       const closed = Deferred.makeUnsafe<readonly [code: number | null, signal: NodeJS.Signals | null]>()
       const exited = Deferred.makeUnsafe<readonly [code: number | null, signal: NodeJS.Signals | null]>()
       const proc = launch(command.command, command.args, opts)
+      const stopOutput = Deferred.makeUnsafe<void>()
+      // Attach synchronously: a short-lived process may exit before the spawn effect resumes.
+      const out = setupOutput(
+        command,
+        proc,
+        stdio(command.options, "stdout"),
+        stdio(command.options, "stderr"),
+        stopOutput,
+      )
       let end = false
       let exit: readonly [code: number | null, signal: NodeJS.Signals | null] | undefined
       proc.on("error", (err) => {
@@ -300,31 +345,44 @@ export const make = Effect.gen(function* () {
         Deferred.doneUnsafe(closed, Exit.succeed(exit ?? args))
       })
       proc.on("spawn", () => {
-        resume(Effect.succeed([proc, closed, exited]))
+        resume(Effect.succeed([proc, closed, exited, stopOutput, out]))
       })
       return Effect.sync(() => {
         proc.kill("SIGTERM")
       })
     })
 
-  const spawn = Effect.fnUntraced(function* (command: ChildProcess.StandardCommand, opts: NodeChildProcess.SpawnOptions) {
-    const [proc, closed, exited] = yield* launchProcess(command, opts)
-    const stopOutput = yield* Deferred.make<void>()
+  const spawn = Effect.fnUntraced(function* (
+    command: ChildProcess.StandardCommand,
+    opts: NodeChildProcess.SpawnOptions,
+  ) {
+    const [proc, closed, exited, stopOutput, out] = yield* launchProcess(command, opts)
     // Register before process release so the deadline remains active during termination.
     yield* Effect.forkScoped(
       Effect.gen(function* () {
         yield* Deferred.await(exited)
-        // Particularly on Windows, some shell calls will cause detached descendants. Inherited stdio can hang the call.
-        // Almost every ecosystem has tried to fix this; there's no single "good" answer here.
-        // Calls that trigger this are e.g. dotnet build with warmed MSBuild processes, agent-browser, etc.
-        // One shared deadline covers stdout and stderr, then the output pump finishes its file.
-        if ((yield* Effect.timeoutOption(Deferred.await(closed), "1 second"))._tag === "Some") return
+        out.drain()
+        // Inherited pipes may stay open after exit. New bytes reset the shared idle deadline;
+        // normal EOF completes immediately, without waiting for the timer.
+        const idle = Effect.callback<void>((resume) => {
+          const timer = setTimeout(() => resume(Effect.void), 250)
+          const reset = () => void timer.refresh()
+          proc.stdout?.on("data", reset)
+          proc.stderr?.on("data", reset)
+          return Effect.sync(() => {
+            clearTimeout(timer)
+            proc.stdout?.off("data", reset)
+            proc.stderr?.off("data", reset)
+          })
+        })
+        if (!(yield* Effect.raceFirst(Deferred.await(closed).pipe(Effect.as(false)), idle.pipe(Effect.as(true)))))
+          return
         yield* Deferred.succeed(stopOutput, undefined)
-        discard(proc.stdout)
-        discard(proc.stderr)
+        // End capture gracefully so consumers drain the PassThrough buffers before finishing.
+        out.end()
       }),
     )
-    return [proc, closed, exited, stopOutput] as const
+    return [proc, closed, exited, stopOutput, out] as const
   })
 
   const discard = (readable: NodeChildProcess.ChildProcess["stdout"]) => {
@@ -424,7 +482,7 @@ export const make = Effect.gen(function* () {
           const extra = fds(command.options)
           const dir = yield* cwd(command.options)
 
-          const [proc, closed, exited, stopOutput] = yield* Effect.acquireRelease(
+          const [proc, closed, exited, stopOutput, out] = yield* Effect.acquireRelease(
             spawn(command, {
               cwd: dir,
               env: env(command.options),
@@ -464,7 +522,6 @@ export const make = Effect.gen(function* () {
             Deferred.await(stopOutput).pipe(Effect.andThen(Deferred.await(exited))),
           )
           const fd = yield* setupFds(command, proc, extra)
-          const out = setupOutput(command, proc, sout, serr, stopOutput)
           let ref = true
           return makeHandle({
             pid: ProcessId(proc.pid!),
