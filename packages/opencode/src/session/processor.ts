@@ -31,6 +31,8 @@ import { EventV2Bridge } from "@/event-v2-bridge"
 import { Database } from "@opencode-ai/core/database/database"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
 
+import { Bucles } from "./bucles"
+
 const DOOM_LOOP_THRESHOLD = 3
 export type Result = "compact" | "stop" | "continue"
 
@@ -380,6 +382,8 @@ const layer = Layer.effect(
         }
       })
 
+      // Lazunox (motor-18, J): revisión de texto repetido por parte de texto.
+      const bucleTexto = new Map<string, { visto: number; avisado: boolean }>()
       const handleEvent = Effect.fnUntraced(function* (value: StreamEvent) {
         switch (value.type) {
           case "reasoning-start":
@@ -462,25 +466,32 @@ const layer = Layer.effect(
             )
             const recentParts = parts.slice(-DOOM_LOOP_THRESHOLD)
 
-            if (
-              recentParts.length !== DOOM_LOOP_THRESHOLD ||
-              !recentParts.every(
+            const identicas =
+              recentParts.length === DOOM_LOOP_THRESHOLD &&
+              recentParts.every(
                 (part) =>
                   part.type === "tool" &&
                   part.tool === value.name &&
                   part.state.status !== "pending" &&
                   JSON.stringify(part.state.input) === JSON.stringify(input),
               )
-            ) {
-              return
-            }
+            // Lazunox (motor-18, J): también ciclos de 2 a 5 llamadas (A-B-A-B…), comparando herramienta + argumentos.
+            const largo =
+              !identicas && Bucles.activo()
+                ? Bucles.ciclo(
+                    parts
+                      .filter((part) => part.type === "tool" && part.state.status !== "pending")
+                      .map((part) => (part.type === "tool" ? Bucles.firma(part.tool, part.state.input) : "")),
+                  )
+                : undefined
+            if (!identicas && largo === undefined) return
 
             const agent = yield* agents.get(ctx.assistantMessage.agent)
             yield* permission.ask({
               permission: "doom_loop",
               patterns: [value.name],
               sessionID: ctx.assistantMessage.sessionID,
-              metadata: { tool: value.name, input },
+              metadata: { tool: value.name, input, ...(largo ? { ciclo: largo } : {}) },
               always: [value.name],
               ruleset: agent.permission,
             })
@@ -650,6 +661,27 @@ const layer = Layer.effect(
               field: "text",
               delta: value.text,
             })
+            // Lazunox (motor-18, J): texto repetido del asistente (se revisa cada ~500 caracteres nuevos; una vez por parte).
+            if (Bucles.activo()) {
+              const marca = bucleTexto.get(ctx.currentText.id) ?? { visto: 0, avisado: false }
+              if (!marca.avisado && ctx.currentText.text.length - marca.visto >= 500) {
+                marca.visto = ctx.currentText.text.length
+                if (Bucles.textoRepetido(ctx.currentText.text)) {
+                  marca.avisado = true
+                  bucleTexto.set(ctx.currentText.id, marca)
+                  const agent = yield* agents.get(ctx.assistantMessage.agent)
+                  yield* permission.ask({
+                    permission: "doom_loop",
+                    patterns: ["texto-repetido"],
+                    sessionID: ctx.assistantMessage.sessionID,
+                    metadata: { motivo: "texto-repetido" },
+                    always: ["texto-repetido"],
+                    ruleset: agent.permission,
+                  })
+                }
+              }
+              bucleTexto.set(ctx.currentText.id, marca)
+            }
             return
 
           case "text-end":
