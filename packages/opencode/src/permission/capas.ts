@@ -191,9 +191,11 @@ const cacheFuentes = new Map<string, { firma: string; fuentes: Fuente[] }>()
 export function fuentes(directory: string): Fuente[] {
   const archivos: string[] = []
   const g = Global.Path.config
-  for (const n of ["config.json", "opencode.json", "opencode.jsonc"]) archivos.push(path.join(g, n))
+  // Lazunox (motor-18, D): con LAZUNOX_PROYECTO_SIN_CODIGO ni el proyecto ni la config global del motor aportan permisos.
+  const sinCodigo = Flag.LAZUNOX_PROYECTO_SIN_CODIGO
+  if (!sinCodigo) for (const n of ["config.json", "opencode.json", "opencode.jsonc"]) archivos.push(path.join(g, n))
   if (Flag.OPENCODE_CONFIG) archivos.push(Flag.OPENCODE_CONFIG)
-  if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG) {
+  if (!Flag.OPENCODE_DISABLE_PROJECT_CONFIG && !sinCodigo) {
     const cadena = cadenaDeCarpetas(directory)
     for (const d of cadena.toReversed()) {
       archivos.push(path.join(d, "opencode.jsonc"), path.join(d, "opencode.json"))

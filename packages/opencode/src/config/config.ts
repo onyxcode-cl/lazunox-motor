@@ -34,6 +34,7 @@ import { ConfigParse } from "./parse"
 import { ConfigPaths } from "./paths"
 import { ConfigPlugin } from "./plugin"
 import { ConfigVariable } from "./variable"
+import { SinCodigo } from "./sin-codigo"
 import { ConfigV2Compat } from "./v2-compat"
 import { Npm } from "@opencode-ai/core/npm"
 import { withTransientReadRetry } from "@/util/effect-http-client"
@@ -229,8 +230,11 @@ const layer = Layer.effect(
       text: string,
       options: { path: string } | { dir: string; source: string },
       env?: Record<string, string>,
+      // Lazunox (motor-18, D): fuente no confiable con LAZUNOX_PROYECTO_SIN_CODIGO: sin {env:}/{file:}, solo claves de texto, sin escribir.
+      sinCodigo = false,
     ) {
       const source = "path" in options ? options.path : options.source
+      if (sinCodigo) return yield* decodeConfig(SinCodigo.limpiarInfo(ConfigParse.jsonc(text, source)), source)
       const expanded = yield* Effect.promise(() =>
         ConfigVariable.substitute(
           "path" in options
@@ -251,11 +255,11 @@ const layer = Layer.effect(
       return data
     })
 
-    const loadFile = Effect.fnUntraced(function* (filepath: string, env?: Record<string, string>) {
-      yield* Effect.logInfo("loading", { path: filepath })
+    const loadFile = Effect.fnUntraced(function* (filepath: string, env?: Record<string, string>, sinCodigo = false) {
+      yield* Effect.logInfo("loading", { path: filepath, ...(sinCodigo ? { sinCodigo } : {}) })
       const text = yield* readConfigFile(filepath)
       if (!text) return {} as Info
-      return yield* loadConfig(text, { path: filepath }, env)
+      return yield* loadConfig(text, { path: filepath }, env, sinCodigo)
     })
 
     const loadGlobal = Effect.fnUntraced(function* (env?: Record<string, string>) {
@@ -270,12 +274,15 @@ const layer = Layer.effect(
             .pipe(Effect.catch(() => Effect.void))
         }
       }
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "config.json"), env))
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.json"), env))
-      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.jsonc"), env))
+      // Lazunox (motor-18, D): con LAZUNOX_PROYECTO_SIN_CODIGO la config global del motor es fuente no confiable (en Tareas vive en la
+      // carpeta privada, escribible desde la jaula).
+      const sc = SinCodigo.activo()
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "config.json"), env, sc))
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.json"), env, sc))
+      result = mergeConfig(result, yield* loadFile(path.join(Global.Path.config, "opencode.jsonc"), env, sc))
 
       const legacy = path.join(Global.Path.config, "config")
-      if (existsSync(legacy)) {
+      if (!sc && existsSync(legacy)) {
         yield* Effect.promise(() =>
           import(pathToFileURL(legacy).href, { with: { type: "toml" } })
             .then(async (mod) => {
@@ -425,7 +432,7 @@ const layer = Layer.effect(
           const enlaceFuera = filtroDeEnlaces(tope, tope)
           for (const file of yield* ConfigPaths.files("opencode", ctx.directory, tope).pipe(Effect.orDie)) {
             if (enlaceFuera && !enlaceFuera(file)) continue
-            yield* merge(file, yield* loadFile(file, authEnv), "local")
+            yield* merge(file, yield* loadFile(file, authEnv, SinCodigo.activo()), "local")
           }
         }
 
@@ -454,23 +461,26 @@ const layer = Layer.effect(
           raicesClaude.push(...cadena)
         }
         let agentesClaude: Record<string, any> = {}
-        for (const root of raicesClaude)
+        for (const root of raicesClaude) {
           // El más cercano reemplaza al más lejano del mismo nombre (sin mezclar campos entre archivos).
+          const cargados = yield* Effect.promise(() => ConfigAgent.loadClaude(root, process.env, filtroDeEnlaces(tope, root)))
           agentesClaude = {
             ...agentesClaude,
-            ...(yield* Effect.promise(() =>
-              ConfigAgent.loadClaude(root, process.env, filtroDeEnlaces(tope, root)),
-            )),
+            // Lazunox (motor-18, D): los del proyecto, sin modelo y con permisos solo restrictivos.
+            ...(SinCodigo.activo() && root !== Global.Path.home ? SinCodigo.limpiarAgentes(cargados) : cargados),
           }
+        }
 
         for (const dir of directories) {
           const enlaceFuera = filtroDeEnlaces(tope, dir)
+          // Lazunox (motor-18, D): carpeta de config no confiable (proyecto o global del motor) con LAZUNOX_PROYECTO_SIN_CODIGO.
+          const sc = SinCodigo.carpetaSinCodigo(dir)
           if (dir.endsWith(".opencode") || dir === Flag.OPENCODE_CONFIG_DIR) {
             for (const file of ["opencode.json", "opencode.jsonc"]) {
               const source = path.join(dir, file)
               if (enlaceFuera && !enlaceFuera(source)) continue
               yield* Effect.logDebug(`loading config from ${source}`)
-              yield* merge(source, yield* loadFile(source, authEnv))
+              yield* merge(source, yield* loadFile(source, authEnv, sc))
               result.agent ??= {}
               result.mode ??= {}
               result.plugin ??= []
@@ -478,7 +488,7 @@ const layer = Layer.effect(
           }
 
           // Lazunox (B2): una instancia fría no toca el disco ni instala nada (ni siquiera en las carpetas globales).
-          if (!ctx.cold) {
+          if (!ctx.cold && !sc) {
             yield* ensureGitignore(dir).pipe(Effect.orDie)
 
             const dep = yield* npmSvc
@@ -503,19 +513,19 @@ const layer = Layer.effect(
             deps.push(dep)
           }
 
-          result.command = mergeDeep(
-            result.command ?? {},
-            yield* Effect.promise(() => ConfigCommand.load(dir, enlaceFuera)),
-          )
-          result.agent = mergeDeep(result.agent ?? {}, yield* Effect.promise(() => ConfigAgent.load(dir, enlaceFuera)))
-          result.agent = mergeDeep(
-            result.agent ?? {},
-            yield* Effect.promise(() => ConfigAgent.loadMode(dir, enlaceFuera)),
-          )
+          const comandos = yield* Effect.promise(() => ConfigCommand.load(dir, enlaceFuera))
+          result.command = mergeDeep(result.command ?? {}, sc ? SinCodigo.limpiarComandos(comandos) : comandos)
+          const agentes = yield* Effect.promise(() => ConfigAgent.load(dir, enlaceFuera))
+          result.agent = mergeDeep(result.agent ?? {}, sc ? SinCodigo.limpiarAgentes(agentes) : agentes)
+          const modos = yield* Effect.promise(() => ConfigAgent.loadMode(dir, enlaceFuera))
+          result.agent = mergeDeep(result.agent ?? {}, sc ? SinCodigo.limpiarAgentes(modos) : modos)
           // Auto-discovered plugins under `.opencode/plugin(s)` are already local files, so ConfigPlugin.load
           // returns normalized Specs and we only need to attach origin metadata here.
-          const list = yield* Effect.promise(() => ConfigPlugin.load(dir, enlaceFuera))
-          yield* mergePluginOrigins(dir, list)
+          // Lazunox (motor-18, D): de una carpeta no confiable no se carga ningún complemento.
+          if (!sc) {
+            const list = yield* Effect.promise(() => ConfigPlugin.load(dir, enlaceFuera))
+            yield* mergePluginOrigins(dir, list)
+          }
         }
 
         if (process.env.OPENCODE_CONFIG_CONTENT) {
@@ -640,6 +650,12 @@ const layer = Layer.effect(
 
         if (result.autoshare === true && !result.share) {
           result.share = "auto"
+        }
+
+        // Lazunox (motor-18, D): formateadores y LSP apagados (los incluidos ejecutan binarios del proyecto).
+        if (SinCodigo.activo()) {
+          result.formatter = false
+          result.lsp = false
         }
 
         if (Flag.OPENCODE_DISABLE_AUTOCOMPACT) {

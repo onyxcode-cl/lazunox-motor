@@ -1,4 +1,5 @@
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
+import { SinCodigo } from "@/config/sin-codigo"
 import { httpClient } from "@opencode-ai/core/effect/app-node-platform"
 import { Ripgrep } from "@opencode-ai/core/ripgrep"
 import { PlanEnterTool, PlanExitTool } from "./plan"
@@ -200,7 +201,8 @@ const layer = Layer.effect(
           }
         }
 
-        const dirs = yield* config.directories()
+        // Lazunox (motor-18, D): con LAZUNOX_PROYECTO_SIN_CODIGO no se cargan herramientas del proyecto ni de la config global del motor.
+        const dirs = (yield* config.directories()).filter((dir) => !SinCodigo.carpetaSinCodigo(dir))
         const matches = dirs.flatMap((dir) =>
           Glob.scanSync("{tool,tools}/*.{js,ts}", { cwd: dir, absolute: true, dot: true, symlink: true }),
         )

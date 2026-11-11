@@ -54,6 +54,10 @@ export const Flag = {
   get OPENCODE_DISABLE_PROJECT_CONFIG() {
     return truthy("OPENCODE_DISABLE_PROJECT_CONFIG")
   },
+  // Lazunox (motor-18, D): del proyecto (y de la config global del motor) se lee lo que es texto, pero no se carga ni ejecuta nada.
+  get LAZUNOX_PROYECTO_SIN_CODIGO() {
+    return truthy("LAZUNOX_PROYECTO_SIN_CODIGO")
+  },
   // Lazunox (lazunox.16, B2): confianza de carpetas. Solo `unset`, "", "0" y "false" la apagan; cualquier otro valor la enciende
   // (falla cerrado). Se evalúa al usar (los exámenes y la app cambian el entorno en tiempo de ejecución).
   get LAZUNOX_TRUST_REQUIRED() {
