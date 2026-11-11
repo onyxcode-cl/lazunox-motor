@@ -12,7 +12,9 @@ const CLAVE = "sk-FALSAq1w2e3r4t5y6u7i8o9p0aAsSdDfFgGhHjJkKlL"
 const COLA = CLAVE.slice(-16)
 
 const sinVars = <A, E, R>(fx: () => Effect.Effect<A, E, R>) =>
-  conEntorno("LAZUNOX_SANITIZAR", undefined, () => conEntorno("LAZUNOX_SANITIZAR_MODELO", undefined, fx))
+  conEntorno("LAZUNOX_SANITIZAR", undefined, () =>
+    conEntorno("LAZUNOX_SANITIZAR_MODELO", undefined, () => conEntorno("LAZUNOX_ENTORNO_LIMPIO", undefined, fx)),
+  )
 
 /** Corre una herramienta una vez y devuelve la parte guardada y el texto de cada petición al modelo. */
 const correr = (tool: string, args: (dir: string) => Record<string, unknown>, preparar: (dir: string) => void) =>
@@ -73,39 +75,67 @@ describe("Q28 el modelo no recibe claves (por defecto)", () => {
     ),
   )
 
-  it.instance("(c) env | grep: la clave que imprime `env` no llega al modelo", () =>
-    sinVars(() =>
-      Effect.gen(function* () {
-        const { enviados } = yield* correr(
-          "bash",
-          () => ({ command: "env | grep '^LAZUNOX_' | sort", description: "Variables" }),
-          () => {},
-        ).pipe(
-          // La variable se pone en el entorno del proceso del motor, que el shell hereda.
-          (fx) => conEntorno("LAZUNOX_API_KEY", CLAVE, () => conEntorno("LAZUNOX_REGION", "sur", () => fx)),
-        )
-        expect(enviados).toHaveLength(2)
-        expect(enviados[1]).toContain("LAZUNOX_REGION=sur")
-        expect(enviados[1]).toContain("LAZUNOX_API_KEY=[REDACTED_SECRET]")
-        expect(enviados[1]).not.toContain(COLA)
-      }),
-    ),
-  )
+  for (const modo of [undefined, "0"]) {
+    const entorno = modo === undefined ? "por defecto: variable ausente" : "=0: variable heredada y tapada"
 
-  it.instance("(c2) printenv de una sola variable: el valor suelto (sin nombre) con forma sk- también se tapa", () =>
-    sinVars(() =>
-      Effect.gen(function* () {
-        const { enviados } = yield* correr(
-          "bash",
-          () => ({ command: "printenv LAZUNOX_API_KEY", description: "Una variable" }),
-          () => {},
-        ).pipe((fx) => conEntorno("LAZUNOX_API_KEY", CLAVE, () => fx))
-        expect(enviados).toHaveLength(2)
-        expect(enviados[1]).toContain("[REDACTED_SECRET]")
-        expect(enviados[1]).not.toContain(COLA)
-      }),
-    ),
-  )
+    it.instance(`(c) env | grep con LAZUNOX_ENTORNO_LIMPIO ${entorno}`, () =>
+      sinVars(() =>
+        conEntorno("LAZUNOX_ENTORNO_LIMPIO", modo, () =>
+          Effect.gen(function* () {
+            const { herr, enviados } = yield* correr(
+              "bash",
+              () => ({
+                command:
+                  "if printenv LAZUNOX_API_KEY >/dev/null; then echo CLAVE_PRESENTE; else echo CLAVE_AUSENTE; fi; env | grep '^LAZUNOX_' | sort",
+                description: "Variables",
+              }),
+              () => {},
+            ).pipe((fx) => conEntorno("LAZUNOX_API_KEY", CLAVE, () => conEntorno("LAZUNOX_REGION", "sur", () => fx)))
+            expect(herr?.state.status).toBe("completed")
+            if (herr?.state.status !== "completed") return
+            expect(enviados).toHaveLength(2)
+            expect(enviados[1]).toContain(JSON.stringify(herr.state.output).slice(1, -1))
+            expect(enviados.join("\n")).not.toContain(COLA)
+            expect(JSON.stringify(herr)).not.toContain(COLA)
+            if (modo === undefined) {
+              expect(herr.state.output).toBe("CLAVE_AUSENTE\n")
+              expect(enviados[1]).not.toContain("[REDACTED_SECRET]")
+              return
+            }
+            expect(herr.state.output).toContain("CLAVE_PRESENTE\n")
+            expect(herr.state.output).toContain("LAZUNOX_REGION=sur")
+            expect(herr.state.output).toContain("LAZUNOX_API_KEY=[REDACTED_SECRET]")
+          }),
+        ),
+      ),
+    )
+
+    it.instance(`(c2) printenv de un valor suelto con LAZUNOX_ENTORNO_LIMPIO ${entorno}`, () =>
+      sinVars(() =>
+        conEntorno("LAZUNOX_ENTORNO_LIMPIO", modo, () =>
+          Effect.gen(function* () {
+            const { herr, enviados } = yield* correr(
+              "bash",
+              () => ({
+                command: 'printenv LAZUNOX_API_KEY; printf "estado_printenv=%s\\n" "$?"',
+                description: "Una variable",
+              }),
+              () => {},
+            ).pipe((fx) => conEntorno("LAZUNOX_API_KEY", CLAVE, () => fx))
+            expect(herr?.state.status).toBe("completed")
+            if (herr?.state.status !== "completed") return
+            expect(enviados).toHaveLength(2)
+            expect(herr.state.output).toBe(
+              modo === undefined ? "estado_printenv=1\n" : "[REDACTED_SECRET]\nestado_printenv=0\n",
+            )
+            expect(enviados[1]).toContain(JSON.stringify(herr.state.output).slice(1, -1))
+            expect(enviados.join("\n")).not.toContain(COLA)
+            expect(JSON.stringify(herr)).not.toContain(COLA)
+          }),
+        ),
+      ),
+    )
+  }
 
   it.instance("(d) salida sin secretos: llega idéntica byte a byte (con tildes, tabuladores y espacios finales)", () =>
     sinVars(() =>
