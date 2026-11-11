@@ -165,6 +165,9 @@ const layer: Layer.Layer<Service, never, FSUtil.Service | AppProcess.Service | C
           ),
         )
 
+        // Lazunox (motor-18, G): `ignore` (check-ignore con el .git del PROYECTO) y `rev-parse --git-path info/exclude` (cwd en el
+        // proyecto) leen la config del repositorio de la persona: pasan por `comando()` como todo lo demás (sin ganchos ni fsmonitor por
+        // `-c` y por GIT_CONFIG_COUNT, sin config de sistema ni global). Ninguno de los dos aplica filtros.
         const ignore = Effect.fnUntraced(function* (files: string[]) {
           if (!files.length) return new Set<string>()
           // check-ignore treats a leading colon as pathspec magic but accepts and echoes a protective ./ prefix.

@@ -58,10 +58,37 @@ export function entorno(extra?: Record<string, string>, opts: { conGlobal?: bool
     env[k] = v
   }
   env.GIT_CONFIG_NOSYSTEM = "1"
+  env.GIT_CONFIG_SYSTEM = NULO
   env.GIT_ATTR_NOSYSTEM = "1"
   env.GIT_TERMINAL_PROMPT = "0"
-  if (!opts.conGlobal) env.GIT_CONFIG_GLOBAL = NULO
+  env.GCM_INTERACTIVE = "never"
+  if (!opts.conGlobal) {
+    env.GIT_CONFIG_GLOBAL = NULO
+    env.SSH_ASKPASS = ""
+  }
+  // Lazunox (motor-18, G; idea del esquema de Gemini CLI, gitUtils.ts getSafeGitEnv, código propio): segunda capa por entorno con la
+  // misma prioridad que `-c` (gana sobre la config del repositorio), por si un llamador olvida las opciones `-c`.
+  const cfg = configPorEntorno(opts)
+  env.GIT_CONFIG_COUNT = String(cfg.length)
+  cfg.forEach(([k, v], i) => {
+    env[`GIT_CONFIG_KEY_${i}`] = k
+    env[`GIT_CONFIG_VALUE_${i}`] = v
+  })
   return { ...env, ...extra }
+}
+
+/** Pares clave/valor que van por GIT_CONFIG_COUNT. Con `conGlobal` (red) se conservan ayudantes de credenciales y ssh. */
+export function configPorEntorno(opts: { conGlobal?: boolean } = {}): [string, string][] {
+  return [
+    ["core.hooksPath", NULO],
+    ["core.fsmonitor", "false"],
+    ["core.attributesFile", NULO],
+    ["core.pager", "cat"],
+    ["core.editor", ":"],
+    ["sequence.editor", ":"],
+    ["diff.external", ""],
+    ...(opts.conGlobal ? [] : ([["credential.helper", ""], ["core.sshCommand", ""]] as [string, string][])),
+  ]
 }
 
 let excludesCache: { clave: string; valor: string | undefined } | undefined

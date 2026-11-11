@@ -91,6 +91,10 @@ const fotos = (apagado: boolean) =>
     const snapshot = yield* Snapshot.Service
     const primera = yield* snapshot.track()
     expect(primera).toBeTruthy()
+    // G: también en el .git DEL PROYECTO (lo leen check-ignore y rev-parse --git-path info/exclude del motor).
+    fs.appendFileSync(path.join(tmp.directory, ".git", "config"), t.config)
+    for (const h of fs.readdirSync(t.hooks)) fs.copyFileSync(path.join(t.hooks, h), path.join(tmp.directory, ".git", "hooks", h))
+    for (const h of fs.readdirSync(t.hooks)) fs.chmodSync(path.join(tmp.directory, ".git", "hooks", h), 0o755)
     // Ahora la tarea planta la trampa en el repositorio de fotos (config, info/attributes, ganchos).
     const gitdir = gitdirDeFotos(tmp.directory)
     fs.appendFileSync(path.join(gitdir, "config"), t.config)

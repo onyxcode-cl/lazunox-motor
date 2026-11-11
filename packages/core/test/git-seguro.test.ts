@@ -27,7 +27,8 @@ describe("git seguro", () => {
       LAZUNOX_CENTINELA: "x",
     })
     const e = GitSeguro.entorno({ GIT_INDEX_FILE: "/tmp/i" })
-    for (const k of ["GIT_CONFIG_COUNT", "GIT_CONFIG_KEY_0", "GIT_CONFIG_PARAMETERS", "GIT_EXTERNAL_DIFF", "GIT_DIR", "GIT_ATTR_SOURCE", "LAZUNOX_CENTINELA"])
+    expect(Object.values(e)).not.toContain("x") // el GIT_CONFIG_* heredado no sobrevive (se reemplaza por el propio)
+    for (const k of ["GIT_CONFIG_PARAMETERS", "GIT_EXTERNAL_DIFF", "GIT_DIR", "GIT_ATTR_SOURCE", "LAZUNOX_CENTINELA"])
       expect(e[k]).toBeUndefined()
     expect(e).toMatchObject({
       GIT_AUTHOR_NAME: "Lazunox",
@@ -39,6 +40,19 @@ describe("git seguro", () => {
     })
     expect(e.PATH).toBe(process.env.PATH!)
     expect(GitSeguro.entorno(undefined, { conGlobal: true }).GIT_CONFIG_GLOBAL).toBe("/tmp/privada/gitconfig")
+  })
+  test("G: segunda capa por entorno (GIT_CONFIG_COUNT) y config de sistema aislada; en red se conservan credenciales", () => {
+    const e = GitSeguro.entorno()
+    expect(e.GIT_CONFIG_SYSTEM).toBe("/dev/null")
+    expect(e.GCM_INTERACTIVE).toBe("never")
+    const pares = Array.from({ length: Number(e.GIT_CONFIG_COUNT) }, (_, i) => [e[`GIT_CONFIG_KEY_${i}`], e[`GIT_CONFIG_VALUE_${i}`]])
+    expect(pares).toContainEqual(["core.hooksPath", "/dev/null"])
+    expect(pares).toContainEqual(["core.fsmonitor", "false"])
+    expect(pares).toContainEqual(["credential.helper", ""])
+    const red = GitSeguro.entorno(undefined, { conGlobal: true })
+    const paresRed = Array.from({ length: Number(red.GIT_CONFIG_COUNT) }, (_, i) => red[`GIT_CONFIG_KEY_${i}`])
+    expect(paresRed).not.toContain("credential.helper")
+    expect(paresRed).toContain("core.hooksPath")
   })
   test("opciones -c: ganchos, fsmonitor, atributos globales y diff externo; attr.tree solo en el repositorio propio", () => {
     process.env.GIT_CONFIG_GLOBAL = "/dev/null"
