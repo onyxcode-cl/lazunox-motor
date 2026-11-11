@@ -212,6 +212,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             }
             return output
           }),
+          { signal: options.abortSignal },
         )
       },
     })
@@ -299,6 +300,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             }
             return output
           }),
+          { signal: opts.abortSignal },
         )
       },
     })
@@ -382,6 +384,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             }
             return output
           }),
+          { signal: opts.abortSignal },
         )
       },
     })
@@ -464,6 +467,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             }
             return output
           }),
+          { signal: opts.abortSignal },
         )
       },
     })
@@ -537,6 +541,8 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
           processor: input.processor,
           admiteImagen: input.model.capabilities?.input?.image,
         }),
+        // Lazunox (motor-18, F2, de OpenCode #61360): cancelar el turno corta también la espera del permiso.
+        { signal: opts.abortSignal },
       )
     tools[key] = item
   }
@@ -583,6 +589,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
             )
             return output
           }),
+          { signal: options.abortSignal },
         )
       },
     })
@@ -643,6 +650,7 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
               extraMetadata: { lazunoxMcp: { tool: entry.key, server: entry.server } },
             })
           }),
+          { signal: options.abortSignal },
         )
       },
     })
