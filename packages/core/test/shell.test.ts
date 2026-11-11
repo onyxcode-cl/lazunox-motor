@@ -60,7 +60,8 @@ describe("shell", () => {
     const zsh = Shell.args("/bin/zsh", "echo hi", "/tmp")
     expect(zsh[0]).toBe("-l")
     expect(zsh[1]).toBe("-c")
-    expect(zsh.at(-1)).toBe("/tmp")
+    expect(zsh.at(-2)).toBe("/tmp")
+    expect(zsh.at(-1)).toBe("echo hi")
   })
 
   if (process.platform === "win32") {

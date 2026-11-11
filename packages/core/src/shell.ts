@@ -165,6 +165,9 @@ function info(file: string): Item {
   }
 }
 
+// Lazunox (motor-18, E): en bash y zsh el comando va como argumento posicional ($2) y se hace `eval "$2"`. Antes iba incrustado con
+// JSON.stringify en el texto del guion, y la shell EXTERIOR expandía `$(…)`, comillas invertidas y `$var` antes del eval
+// (`d=$(mktemp -d); rm -rf "$d"` recibía `$d` vacío). fish, nu, cmd y PowerShell no usan ese guion y no cambian.
 export function args(file: string, command: string, cwd: string) {
   const n = name(file)
   if (n === "nu" || n === "fish") return ["-c", command]
@@ -176,10 +179,11 @@ export function args(file: string, command: string, cwd: string) {
         [[ -f ~/.zshenv ]] && source ~/.zshenv >/dev/null 2>&1 || true
         [[ -f "\${ZDOTDIR:-$HOME}/.zshrc" ]] && source "\${ZDOTDIR:-$HOME}/.zshrc" >/dev/null 2>&1 || true
         cd -- "$1"
-        eval ${JSON.stringify(command)}
+        eval "$2"
       `,
       "opencode",
       cwd,
+      command,
     ]
   }
   if (n === "bash") {
@@ -190,10 +194,11 @@ export function args(file: string, command: string, cwd: string) {
         shopt -s expand_aliases
         [[ -f ~/.bashrc ]] && source ~/.bashrc >/dev/null 2>&1 || true
         cd -- "$1"
-        eval ${JSON.stringify(command)}
+        eval "$2"
       `,
       "opencode",
       cwd,
+      command,
     ]
   }
   if (n === "cmd") return ["/c", command]
