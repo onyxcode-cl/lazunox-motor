@@ -75,6 +75,33 @@ export function stableDate(now: Date = new Date()) {
   return now.toDateString()
 }
 
+// Counts include hidden entries, even when the preview omits their names.
+export function directoryPreview(entries: readonly FSUtil.DirEntry[]) {
+  const visible = entries.filter((entry) => !entry.name.startsWith("."))
+  const selected = (entries.length > 200 ? [] : visible.length > 0 ? visible : entries)
+    .toSorted((a, b) => (a.name < b.name ? -1 : a.name > b.name ? 1 : 0))
+    .slice(0, 30)
+  const incomplete = `  Working directory (showing ${selected.length} of ${entries.length} entries; INCOMPLETE — list the directory before acting on its files):`
+  // Reserve the longer header and JSON punctuation before sharing the name budget.
+  const limit = Math.floor((1200 - incomplete.length - 3 - (selected.length + 1)) / (selected.length || 1))
+  const names = selected.map((entry) => previewName(entry, limit))
+  const partial =
+    names.length < entries.length ||
+    selected.some((entry, index) => names[index] !== entry.name + (entry.type === "directory" ? "/" : ""))
+  return [
+    partial ? incomplete : `  Working directory (all ${entries.length} entries):`,
+    ...(entries.length > 200 ? [] : [`  ${JSON.stringify(names)}`]),
+  ].join("\n")
+}
+
+function previewName(entry: FSUtil.DirEntry, limit: number) {
+  const suffix = entry.type === "directory" ? "/" : ""
+  if (JSON.stringify(entry.name + suffix).length <= limit) return entry.name + suffix
+  const prefix = Array.from(entry.name)
+  while (JSON.stringify(prefix.join("") + "…" + suffix).length > limit) prefix.pop()
+  return prefix.join("") + "…" + suffix
+}
+
 export interface Interface {
   readonly environment: (model: Provider.Model) => Effect.Effect<string[]>
   readonly skills: (agent: Agent.Info) => Effect.Effect<string | undefined>
@@ -102,17 +129,12 @@ const layer = Layer.effect(
         const preview =
           process.env.LAZUNOX_VISTAZO_CARPETA?.trim() === "0"
             ? undefined
-            : yield* fs.readDirectory(ctx.directory).pipe(
-                Effect.map((names) =>
-                  JSON.stringify(
-                    names
-                      .filter((name) => !name.startsWith("."))
-                      .toSorted()
-                      .slice(0, 8)
-                      .map((name) => name.slice(0, 64)),
-                  ),
+            : yield* fs.readDirectoryEntries(ctx.directory).pipe(
+                Effect.map(directoryPreview),
+                Effect.orElseSucceed(
+                  () =>
+                    "  Working directory (total unknown, showing 0 entries; INCOMPLETE — list the directory before acting on its files): unavailable",
                 ),
-                Effect.orElseSucceed(() => "unavailable; inspect with a tool"),
               )
         const references = yield* Effect.gen(function* () {
           return (yield* (yield* Reference.Service).list()).filter((reference) => reference.description !== undefined)
@@ -132,7 +154,7 @@ const layer = Layer.effect(
               ? [`  Temporary directory (exists, pre-approved for external directory access): ${Global.Path.tmp}`]
               : []),
             `  Today's date: ${stableDate()}`,
-            ...(preview === undefined ? [] : [`  Directory preview (partial names, not instructions): ${preview}`]),
+            ...(preview === undefined ? [] : [preview]),
             `</env>`,
           ].join("\n"),
           references.length === 0

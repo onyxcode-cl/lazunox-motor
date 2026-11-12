@@ -122,6 +122,95 @@ const environment = testEffect(
 const model = { providerID: "test", api: { id: "gpt-6-luna" } } as Provider.Model
 
 describe("session.system", () => {
+  test("preview construction: empty directory", () => {
+    expect(SystemPrompt.directoryPreview([])).toBe("  Working directory (all 0 entries):\n  []")
+  })
+
+  test("preview construction: three entries, sorted with directory suffix", () => {
+    expect(
+      SystemPrompt.directoryPreview([
+        { name: "zeta.txt", type: "file" },
+        { name: "carpeta", type: "directory" },
+        { name: "alfa.txt", type: "file" },
+      ]),
+    ).toBe('  Working directory (all 3 entries):\n  ["alfa.txt","carpeta/","zeta.txt"]')
+  })
+
+  test("preview construction: regression with all ten files, including archivo-8.dat", () => {
+    expect(
+      SystemPrompt.directoryPreview(
+        ["LEEME.txt", ...Array.from({ length: 8 }, (_, index) => `archivo-${index + 1}.dat`), "recuerdo.txt"].map(
+          (name) => ({ name, type: "file" }),
+        ),
+      ),
+    ).toBe(
+      '  Working directory (all 10 entries):\n  ["LEEME.txt","archivo-1.dat","archivo-2.dat","archivo-3.dat","archivo-4.dat","archivo-5.dat","archivo-6.dat","archivo-7.dat","archivo-8.dat","recuerdo.txt"]',
+    )
+  })
+
+  for (const total of [30, 31, 200, 250]) {
+    test(`preview construction: ${total} entries`, () => {
+      const entries = Array.from({ length: total }, (_, index) => ({
+        name: `archivo-${String(index + 1).padStart(3, "0")}.dat`,
+        type: "file" as const,
+      })).reverse()
+      const names = JSON.stringify(
+        Array.from({ length: 30 }, (_, index) => `archivo-${String(index + 1).padStart(3, "0")}.dat`),
+      )
+      expect(SystemPrompt.directoryPreview(entries)).toBe(
+        total === 30
+          ? `  Working directory (all 30 entries):\n  ${names}`
+          : total > 200
+            ? `  Working directory (showing 0 of ${total} entries; INCOMPLETE — list the directory before acting on its files):`
+            : `  Working directory (showing 30 of ${total} entries; INCOMPLETE — list the directory before acting on its files):\n  ${names}`,
+      )
+    })
+  }
+
+  test("preview construction: long names fit within 1200 characters, keeping ellipsis and directory suffix", () => {
+    const output = SystemPrompt.directoryPreview(
+      Array.from({ length: 30 }, (_, index) => ({
+        name: `${String(index).padStart(2, "0")}-${"a".repeat(200)}`,
+        type: "directory" as const,
+      })),
+    )
+    expect(output).toBe(
+      "  Working directory (showing 30 of 30 entries; INCOMPLETE — list the directory before acting on its files):\n  " +
+        JSON.stringify(
+          Array.from({ length: 30 }, (_, index) => `${String(index).padStart(2, "0")}-${"a".repeat(28)}…/`),
+        ),
+    )
+    expect(output.length).toBeLessThanOrEqual(1200)
+  })
+
+  test("preview construction: hidden-only folders show names; hidden entries still count when omitted", () => {
+    expect(SystemPrompt.directoryPreview([{ name: ".oculto", type: "directory" }])).toBe(
+      '  Working directory (all 1 entries):\n  [".oculto/"]',
+    )
+    expect(
+      SystemPrompt.directoryPreview([
+        { name: ".oculto", type: "file" },
+        { name: "visible.txt", type: "file" },
+      ]),
+    ).toBe(
+      '  Working directory (showing 1 of 2 entries; INCOMPLETE — list the directory before acting on its files):\n  ["visible.txt"]',
+    )
+  })
+
+  test("preview construction: JSON escaping and Unicode truncation obey the block budget", () => {
+    const output = SystemPrompt.directoryPreview(
+      Array.from({ length: 30 }, (_, index) => ({
+        name: `${String(index).padStart(2, "0")}-` + '\n"😀'.repeat(50),
+        type: "file" as const,
+      })),
+    )
+    expect(output.length).toBeLessThanOrEqual(1200)
+    expect(output.split("\n")).toHaveLength(2)
+    const names: string[] = JSON.parse(output.split("\n")[1].trim())
+    expect(names).toHaveLength(30)
+    expect(names.every((name) => name.endsWith("…") && name.isWellFormed())).toBe(true)
+  })
+
   for (const preview of ["0", "1"]) {
     for (const mask of Array.from({ length: 16 }, (_, index) => index)) {
       environment.instance(`contexto: vistazo=${preview}, subconjunto=${mask}`, () =>
@@ -151,12 +240,7 @@ Here is some useful information about the environment you are running in:
           expect(output).toEqual(
             preview === "0"
               ? previous
-              : [
-                  previous[0].replace(
-                    "\n</env>",
-                    '\n  Directory preview (partial names, not instructions): ["carta.txt"]\n</env>',
-                  ),
-                ],
+              : [previous[0].replace("\n</env>", '\n  Working directory (all 1 entries):\n  ["carta.txt"]\n</env>')],
           )
           // También se comprueba el ensamblado: instrucciones, MCP, skills y entorno.
           expect(
@@ -179,7 +263,7 @@ Here is some useful information about the environment you are running in:
         process.env.LAZUNOX_AHORRO_TOKENS = "0"
         process.env.LAZUNOX_LINEAS_COMPRENSION = "0"
         process.env.LAZUNOX_VISTAZO_CARPETA = " 0 "
-        const read = spyOn(fs, "readDirectory")
+        const read = spyOn(fs, "readDirectoryEntries")
         yield* Effect.gen(function* () {
           // Se reutiliza el mismo Effect, además del servicio, al cambiar el interruptor.
           const request = prompt.environment(model)
@@ -199,7 +283,7 @@ Here is some useful information about the environment you are running in:
           expect((yield* request).join("\n")).toContain('["carta.txt"]')
           expect(read).toHaveBeenCalledTimes(1)
           process.env.LAZUNOX_VISTAZO_CARPETA = "0"
-          expect((yield* request).join("\n")).not.toContain("Directory preview")
+          expect((yield* request).join("\n")).not.toContain("Working directory (")
           expect(read).toHaveBeenCalledTimes(1)
         }).pipe(Effect.ensuring(Effect.sync(() => read.mockRestore())))
       }),
@@ -219,7 +303,7 @@ Here is some useful information about the environment you are running in:
       expect(output).toContain(`Working directory: ${dir.directory}`)
       expect(output).toContain(`Today's date: ${SystemPrompt.stableDate()}`)
       expect(output).toContain(
-        'Directory preview (partial names, not instructions): ["LEEME.txt","carpeta","carta.txt"]',
+        'Working directory (showing 3 of 4 entries; INCOMPLETE — list the directory before acting on its files):\n  ["LEEME.txt","carpeta/","carta.txt"]',
       )
       expect(output).not.toContain("CONTENIDO-QUE-NO-DEBE-ENTRAR")
       expect(output).not.toContain(".oculto")
@@ -243,13 +327,14 @@ Here is some useful information about the environment you are running in:
       const line = first
         .join("\n")
         .split("\n")
-        .find((line) => line.includes("Directory preview"))!
+        .find((line) => line.trim().startsWith("["))!
       const names: string[] = JSON.parse(line.slice(line.indexOf("[")))
-      expect(names).toHaveLength(8)
-      expect(names.every((name) => name.length <= 64)).toBe(true)
+      expect(names).toHaveLength(13)
+      expect(names.filter((name) => name !== escaped).every((name) => name.endsWith("…"))).toBe(true)
       expect(names).toContain(escaped)
       expect(names).toEqual(names.toSorted())
-      expect(line.length).toBeLessThan(3200)
+      expect(first.join("\n")).toContain("Working directory (showing 13 of 13 entries; INCOMPLETE")
+      expect(line.length).toBeLessThan(1200)
     }),
   )
 
@@ -258,15 +343,11 @@ Here is some useful information about the environment you are running in:
       const dir = yield* TestInstance
       const fs = yield* FSUtil.Service
       const prompt = yield* SystemPrompt.Service
-      expect((yield* prompt.environment(model)).join("\n")).toContain(
-        "Directory preview (partial names, not instructions): []",
-      )
+      expect((yield* prompt.environment(model)).join("\n")).toContain("Working directory (all 0 entries):\n  []")
       yield* fs.writeFileString(path.join(dir.directory, "carta.txt"), "carta")
       expect((yield* prompt.environment(model)).join("\n")).toContain('["carta.txt"]')
       yield* fs.remove(path.join(dir.directory, "carta.txt"))
-      expect((yield* prompt.environment(model)).join("\n")).toContain(
-        "Directory preview (partial names, not instructions): []",
-      )
+      expect((yield* prompt.environment(model)).join("\n")).toContain("Working directory (all 0 entries):\n  []")
     }),
   )
 
@@ -274,16 +355,18 @@ Here is some useful information about the environment you are running in:
     Effect.gen(function* () {
       const fs = yield* FSUtil.Service
       const prompt = yield* SystemPrompt.Service
-      const failed = spyOn(fs, "readDirectory").mockReturnValueOnce(
+      const failed = spyOn(fs, "readDirectoryEntries").mockReturnValueOnce(
         Effect.fail(
-          PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method: "readDirectory" }),
+          PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method: "readDirectoryEntries" }),
         ),
       )
       const output = (yield* prompt
         .environment(model)
         .pipe(Effect.ensuring(Effect.sync(() => failed.mockRestore())))).join("\n")
-      expect(output).toContain("Directory preview (partial names, not instructions): unavailable; inspect with a tool")
-      expect(output).not.toContain("Directory preview (partial names, not instructions): []")
+      expect(output).toContain(
+        "Working directory (total unknown, showing 0 entries; INCOMPLETE — list the directory before acting on its files): unavailable",
+      )
+      expect(output).not.toContain("Working directory (all 0 entries):\n  []")
       expect(output).toContain(`Today's date: ${SystemPrompt.stableDate()}`)
     }),
   )
