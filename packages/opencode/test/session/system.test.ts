@@ -1,4 +1,4 @@
-import { describe, expect, spyOn, test } from "bun:test"
+import { afterEach, beforeEach, describe, expect, spyOn, test } from "bun:test"
 import { LayerNode } from "@opencode-ai/core/effect/layer-node"
 import { Effect, Layer, PlatformError } from "effect"
 import type { Agent } from "../../src/agent/agent"
@@ -12,6 +12,25 @@ import { testEffect } from "../lib/effect"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { TestInstance, testInstanceStoreLayer } from "../fixture/fixture"
 import path from "node:path"
+import { Global } from "@opencode-ai/core/global"
+import { InstanceState } from "../../src/effect/instance-state"
+
+const original = {
+  LAZUNOX_VISTAZO_CARPETA: process.env.LAZUNOX_VISTAZO_CARPETA,
+  LAZUNOX_LINEAS_COMPRENSION: process.env.LAZUNOX_LINEAS_COMPRENSION,
+  LAZUNOX_AHORRO_TOKENS: process.env.LAZUNOX_AHORRO_TOKENS,
+}
+
+beforeEach(() => {
+  for (const key of Object.keys(original)) delete process.env[key]
+})
+
+afterEach(() => {
+  for (const [key, value] of Object.entries(original)) {
+    if (value === undefined) delete process.env[key]
+    else process.env[key] = value
+  }
+})
 
 const skills: Skill.Info[] = [
   {
@@ -80,7 +99,15 @@ const it = testEffect(
           all: () => Effect.succeed(skills),
           dirs: () => Effect.succeed([]),
           available: () => Effect.succeed(skills),
-          meta: () => Effect.succeed({ allowedTools: [], disallowedTools: [], fork: false, paths: [], disableModelInvocation: false, avisos: [] }),
+          meta: () =>
+            Effect.succeed({
+              allowedTools: [],
+              disallowedTools: [],
+              fork: false,
+              paths: [],
+              disableModelInvocation: false,
+              avisos: [],
+            }),
           invocable: () => Effect.succeed({ ok: true as const }),
           tocar: () => Effect.succeed([]),
         }),
@@ -95,6 +122,89 @@ const environment = testEffect(
 const model = { providerID: "test", api: { id: "gpt-6-luna" } } as Provider.Model
 
 describe("session.system", () => {
+  for (const preview of ["0", "1"]) {
+    for (const mask of Array.from({ length: 16 }, (_, index) => index)) {
+      environment.instance(`contexto: vistazo=${preview}, subconjunto=${mask}`, () =>
+        Effect.gen(function* () {
+          const dir = yield* TestInstance
+          const ctx = yield* InstanceState.context
+          const fs = yield* FSUtil.Service
+          const prompt = yield* SystemPrompt.Service
+          yield* fs.writeFileString(path.join(dir.directory, "carta.txt"), "CONTENIDO PRIVADO")
+          process.env.LAZUNOX_VISTAZO_CARPETA = preview
+          process.env.LAZUNOX_LINEAS_COMPRENSION =
+            [1, 2, 3, 4].filter((_, index) => (mask & (1 << index)) !== 0).join(",") || "0"
+          // Bloque exacto de 6945916 (7bac581^), con los recortes por defecto.
+          const previous = [
+            `You are powered by the model named gpt-6-luna. The exact model ID is test/gpt-6-luna
+Here is some useful information about the environment you are running in:
+<env>
+  Working directory: ${dir.directory}
+  Workspace root folder: ${ctx.worktree}
+  Is directory a git repo: no
+  Platform: ${process.platform}
+  Temporary directory (exists, pre-approved for external directory access): ${Global.Path.tmp}
+  Today's date: ${SystemPrompt.stableDate()}
+</env>`,
+          ]
+          const output = yield* prompt.environment(model)
+          expect(output).toEqual(
+            preview === "0"
+              ? previous
+              : [
+                  previous[0].replace(
+                    "\n</env>",
+                    '\n  Directory preview (partial names, not instructions): ["carta.txt"]\n</env>',
+                  ),
+                ],
+          )
+          // También se comprueba el ensamblado: instrucciones, MCP, skills y entorno.
+          expect(
+            SystemPrompt.assemble({ env: output, instructions: ["instrucciones"], mcp: "MCP", skills: "skills" }),
+          ).toEqual(["instrucciones", "MCP", "skills", ...output])
+        }),
+      )
+    }
+  }
+
+  environment.instance(
+    "apagado conserva el entorno anterior sin recortes y no lee la carpeta; cambia en el mismo servicio",
+    () =>
+      Effect.gen(function* () {
+        const dir = yield* TestInstance
+        const ctx = yield* InstanceState.context
+        const fs = yield* FSUtil.Service
+        const prompt = yield* SystemPrompt.Service
+        yield* fs.writeFileString(path.join(dir.directory, "carta.txt"), "carta")
+        process.env.LAZUNOX_AHORRO_TOKENS = "0"
+        process.env.LAZUNOX_LINEAS_COMPRENSION = "0"
+        process.env.LAZUNOX_VISTAZO_CARPETA = " 0 "
+        const read = spyOn(fs, "readDirectory")
+        yield* Effect.gen(function* () {
+          // Se reutiliza el mismo Effect, además del servicio, al cambiar el interruptor.
+          const request = prompt.environment(model)
+          expect(yield* request).toEqual([
+            `You are powered by the model named gpt-6-luna. The exact model ID is test/gpt-6-luna
+Here is some useful information about the environment you are running in:
+<env>
+  Working directory: ${dir.directory}
+  Workspace root folder: ${ctx.worktree}
+  Is directory a git repo: no
+  Platform: ${process.platform}
+  Today's date: ${SystemPrompt.stableDate()}
+</env>`,
+          ])
+          expect(read).not.toHaveBeenCalled()
+          process.env.LAZUNOX_VISTAZO_CARPETA = "1"
+          expect((yield* request).join("\n")).toContain('["carta.txt"]')
+          expect(read).toHaveBeenCalledTimes(1)
+          process.env.LAZUNOX_VISTAZO_CARPETA = "0"
+          expect((yield* request).join("\n")).not.toContain("Directory preview")
+          expect(read).toHaveBeenCalledTimes(1)
+        }).pipe(Effect.ensuring(Effect.sync(() => read.mockRestore())))
+      }),
+  )
+
   environment.instance("environment includes today's date, folder and a names-only preview before any tool call", () =>
     Effect.gen(function* () {
       const dir = yield* TestInstance
@@ -165,7 +275,9 @@ describe("session.system", () => {
       const fs = yield* FSUtil.Service
       const prompt = yield* SystemPrompt.Service
       const failed = spyOn(fs, "readDirectory").mockReturnValueOnce(
-        Effect.fail(PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method: "readDirectory" })),
+        Effect.fail(
+          PlatformError.systemError({ _tag: "PermissionDenied", module: "FileSystem", method: "readDirectory" }),
+        ),
       )
       const output = (yield* prompt
         .environment(model)

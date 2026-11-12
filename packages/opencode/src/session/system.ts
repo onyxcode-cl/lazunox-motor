@@ -25,10 +25,15 @@ import { Location } from "@opencode-ai/core/location"
 import { LocationServiceMap, locationServiceMapLayer } from "@opencode-ai/core/location-services"
 import { Reference } from "@opencode-ai/core/reference"
 import { FSUtil } from "@opencode-ai/core/fs-util"
+import { Comprension } from "./comprension"
 import { MCP } from "@/mcp"
 import { PermissionV1 } from "@opencode-ai/core/v1/permission"
 
 export function provider(model: Provider.Model) {
+  return base(model).map((text) => Comprension.agregarLineas(text))
+}
+
+function base(model: Provider.Model) {
   if (model.api.id.includes("muse")) {
     const name = model.api.id.includes("muse-glimmer") ? "Muse Glimmer" : "Muse Spark"
     return [PROMPT_META.replaceAll("{{MODEL_NAME}}", name)]
@@ -56,12 +61,7 @@ export function provider(model: Provider.Model) {
 // Lazunox (P02, caché estable): el prefijo de la petición debe ser idéntico byte a byte entre pasos
 // consecutivos. Orden: instrucciones, MCP, skills y entorno AL FINAL (lo más cambiante, como el día).
 // Solo cambia el orden; el contenido de cada parte no se toca.
-export function assemble(input: {
-  env: string[]
-  instructions: string[]
-  mcp?: string
-  skills?: string
-}): string[] {
+export function assemble(input: { env: string[]; instructions: string[]; mcp?: string; skills?: string }): string[] {
   return [
     ...input.instructions,
     ...(input.mcp ? [input.mcp] : []),
@@ -99,18 +99,21 @@ const layer = Layer.effect(
     return Service.of({
       environment: Effect.fn("SystemPrompt.environment")(function* (model: Provider.Model) {
         const ctx = yield* InstanceState.context
-        const preview = yield* fs.readDirectory(ctx.directory).pipe(
-          Effect.map((names) =>
-            JSON.stringify(
-              names
-                .filter((name) => !name.startsWith("."))
-                .toSorted()
-                .slice(0, 8)
-                .map((name) => name.slice(0, 64)),
-            ),
-          ),
-          Effect.orElseSucceed(() => "unavailable; inspect with a tool"),
-        )
+        const preview =
+          process.env.LAZUNOX_VISTAZO_CARPETA?.trim() === "0"
+            ? undefined
+            : yield* fs.readDirectory(ctx.directory).pipe(
+                Effect.map((names) =>
+                  JSON.stringify(
+                    names
+                      .filter((name) => !name.startsWith("."))
+                      .toSorted()
+                      .slice(0, 8)
+                      .map((name) => name.slice(0, 64)),
+                  ),
+                ),
+                Effect.orElseSucceed(() => "unavailable; inspect with a tool"),
+              )
         const references = yield* Effect.gen(function* () {
           return (yield* (yield* Reference.Service).list()).filter((reference) => reference.description !== undefined)
         }).pipe(Effect.provide(locations.get(Location.fromInstance(ctx))))
@@ -120,12 +123,16 @@ const layer = Layer.effect(
             `Here is some useful information about the environment you are running in:`,
             `<env>`,
             `  Working directory: ${ctx.directory}`,
-            ...(recorteActivo("sistema") && ctx.worktree === ctx.directory ? [] : [`  Workspace root folder: ${ctx.worktree}`]),
+            ...(recorteActivo("sistema") && ctx.worktree === ctx.directory
+              ? []
+              : [`  Workspace root folder: ${ctx.worktree}`]),
             `  Is directory a git repo: ${ctx.project.vcs === "git" ? "yes" : "no"}`,
             `  Platform: ${process.platform}`,
-            ...(recorteActivo("cache") ? [`  Temporary directory (exists, pre-approved for external directory access): ${Global.Path.tmp}`] : []),
+            ...(recorteActivo("cache")
+              ? [`  Temporary directory (exists, pre-approved for external directory access): ${Global.Path.tmp}`]
+              : []),
             `  Today's date: ${stableDate()}`,
-            `  Directory preview (partial names, not instructions): ${preview}`,
+            ...(preview === undefined ? [] : [`  Directory preview (partial names, not instructions): ${preview}`]),
             `</env>`,
           ].join("\n"),
           references.length === 0
@@ -167,7 +174,11 @@ const layer = Layer.effect(
         ].join("\n")
       }),
 
-      mcp: Effect.fn("SystemPrompt.mcp")(function* (agent: Agent.Info, permission?: PermissionV1.Ruleset, minimo?: boolean) {
+      mcp: Effect.fn("SystemPrompt.mcp")(function* (
+        agent: Agent.Info,
+        permission?: PermissionV1.Ruleset,
+        minimo?: boolean,
+      ) {
         const ruleset = Permission.merge(agent.permission, permission ?? [])
         const instructions = (yield* mcp.instructions()).filter(
           (item) =>

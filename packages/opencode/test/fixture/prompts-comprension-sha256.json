@@ -1,0 +1,46 @@
+{
+  "anthropic": {
+    "base": "9378fd1c7df240c1aa342520f2c8299ad93951a0a931e4861f75d2d5bf906f7c",
+    "enabled": "c3d21046dc30f46ad9a05c9ec1ea0a557d59fb44a3bf95b71b3f5932d0f70744"
+  },
+  "beast": {
+    "base": "e4f51ff1a1917333ced0a7e4e66222be13689e1d088b8c659094077d20669b82",
+    "enabled": "83fef62851784651a49b55199225c373de6dd7c66cc33caafac0804b83df4061"
+  },
+  "codex": {
+    "base": "97c6f6df9542147b3b6b7b05c41e75f2df1fd70a0a15adaaa008f0416c628abf",
+    "enabled": "ec2e5b140626f1fe6ed500a7e058fc303ad8840005f831e4b81f9ca2e4db0ab9"
+  },
+  "default": {
+    "base": "c9839102ec99f410ef809783a8ce83ff332b13c87a3f1d803be32a32d32d8aaf",
+    "enabled": "4edb99c440909018b8baaaefab23efae3fbd7e9c8ce2ca2a16c58c9052ab21bb"
+  },
+  "default-compacto": {
+    "base": "2209247b2d16e614621d48c918ae7ac1115272d033cd0a7ab77e47f9a8e07114",
+    "enabled": "51b4e8ee85c8dbb6503ad0ba18891a9de88a885400bbf0a0c0c2aeb9cd9ff4c1"
+  },
+  "gemini": {
+    "base": "ec09f6feec25a9e1cf010b09520ecbaa3f892adcb59c0d98a11eaeeef750e126",
+    "enabled": "eeced428311ab98e7dc83ca9f300dbb18b254119d27c514bbc4aa023c8d031cf"
+  },
+  "gpt": {
+    "base": "8cea1f474d59041c4af287b57f55a3653dbd16c39bbb86a4426e0de5c739f756",
+    "enabled": "f9a016bc9600688bca17c727934da20a4a9f48f1bf916cb370686d1154e93c96"
+  },
+  "gpt-astra": {
+    "base": "797a2bdf298b843f67d0c182edf079367279211fafc8095f30679f1b751e9272",
+    "enabled": "38ac81692a4af0dc5966c2e88c2f9368dfaf25fcc4693754c855dc7cb6d6e7e8"
+  },
+  "kimi": {
+    "base": "7fa5a92c56408f6591e4c81cb23835453ecb5c55e535abf2ecc614b27d0a6f4e",
+    "enabled": "a2da5e535d5945ea7747aa715bf276d7db51b4f873bbf8d4b6d2d23842dfcb82"
+  },
+  "meta": {
+    "base": "47e5f2829923704c8f8529e4756199ce99395b95e5a2048034b48dce3bac3d1a",
+    "enabled": "6e51f23804ea09ffe73e0a57545abe44f8444168fcc9a9c1842b425ead441f57"
+  },
+  "trinity": {
+    "base": "faa378e29c2625669e3c443a78f3e9ee819700bcc005c4aac3a0f9443996a08c",
+    "enabled": "c661d7f027ee7b2d570c6c7b5c486193a6fc9420bf7be93abdc87ac9956dc5a2"
+  }
+}
